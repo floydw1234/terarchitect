@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  # PostgreSQL database
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: terarchitect-postgres
+    environment:
+      POSTGRES_USER: terarchitect
+      POSTGRES_PASSWORD: terarchitect
+      POSTGRES_DB: terarchitect
+    volumes:
+      - ./migrations:/docker-entrypoint-initdb.d
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U terarchitect -d terarchitect"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Flask backend
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: terarchitect-backend
+    environment:
+      - DATABASE_URL=postgresql://terarchitect:terarchitect@postgres:5432/terarchitect
+      - VLLM_URL=http://host.docker.internal:8000
+      - VLLM_PROXY_URL=http://host.docker.internal:8080
+      - FLASK_ENV=development
+    volumes:
+      - ./backend:/app
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # React frontend
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: terarchitect-frontend
+    environment:
+      - REACT_APP_API_URL=http://localhost:5000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
