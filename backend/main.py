@@ -2,9 +2,10 @@
 Terarchitect Backend - Flask Application
 """
 import os
+
 from flask import Flask, jsonify
 from flask_cors import CORS
-from .models.db import db
+from models.db import db
 
 def create_app():
     app = Flask(__name__)
@@ -13,17 +14,20 @@ def create_app():
     CORS(app, resources={
         r"/api/*": {
             "origins": ["http://localhost:3000", "http://127.0.0.1:3000"],
-            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
             "allow_headers": ["Content-Type"]
         }
     })
 
-    # Load configuration
+    # Load configuration (SQLALCHEMY_DATABASE_URI from env for tests)
     app.config.update(
-        SQLALCHEMY_DATABASE_URI=os.environ.get("DATABASE_URL", "postgresql://terarchitect:terarchitect@localhost:5432/terarchitect"),
+        SQLALCHEMY_DATABASE_URI=os.environ.get(
+            "SQLALCHEMY_DATABASE_URI",
+            "postgresql://terarchitect:terarchitect@postgres:5432/terarchitect",
+        ),
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
-        VLLM_URL=os.environ.get("VLLM_URL", "http://localhost:8000"),
-        VLLM_PROXY_URL=os.environ.get("VLLM_PROXY_URL", "http://localhost:8080"),
+        VLLM_URL="http://host.docker.internal:8000",
+        VLLM_PROXY_URL="http://host.docker.internal:8080",
     )
 
     # Initialize database
@@ -34,7 +38,7 @@ def create_app():
         db.create_all()
 
     # Register blueprints
-    from .api import api_bp
+    from api import api_bp
     app.register_blueprint(api_bp, url_prefix="/api")
 
     # Health check endpoint

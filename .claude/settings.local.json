@@ -3,7 +3,27 @@
     "allow": [
       "WebSearch",
       "WebFetch(domain:weather.com)",
-      "WebFetch(domain:www.accuweather.com)"
+      "WebFetch(domain:www.accuweather.com)",
+      "Bash(chmod +x /home/william/Documents/codingProj/terarchitect/backend/wait-for-db.sh)",
+      "Bash(docker compose -f /home/william/Documents/codingProj/terarchitect/docker-compose.yml up -d)",
+      "Bash(docker compose -f /home/william/Documents/codingProj/terarchitect/docker-compose.yml logs)",
+      "Bash(docker compose -f /home/william/Documents/codingProj/terarchitect/docker-compose.yml up -d backend)",
+      "Bash(docker compose -f /home/william/Documents/codingProj/terarchitect/docker-compose.yml logs backend)",
+      "Bash(docker exec terarchitect-backend cat /app/app.py)",
+      "Bash(docker compose -f /home/william/Documents/codingProj/terarchitect/docker-compose.yml build backend)",
+      "Bash(docker compose -f /home/william/Documents/codingProj/terarchitect/docker-compose.yml ps)",
+      "Bash(curl -s http://localhost:5000/health)",
+      "Bash(curl -s http://localhost:5000/api/projects)",
+      "Bash(curl -s -X POST http://localhost:5000/api/projects -H \"Content-Type: application/json\" -d '{\"\"name\"\": \"\"Test Project\"\", \"\"description\"\": \"\"A test project\"\"}')",
+      "Bash(docker exec -i terarchitect-postgres-1 psql -U terarchitect -d terarchitect -c \"ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_url TEXT;\")",
+      "Bash(docker exec -i terarchitect-postgres psql -U terarchitect -d terarchitect -c \"ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_url TEXT;\")",
+      "Bash(docker exec -i terarchitect-postgres psql -U terarchitect -d terarchitect -c \"\\\\d projects\")",
+      "Bash(docker exec -i terarchitect-postgres psql -U terarchitect -d terarchitect -c \"ALTER TABLE projects RENAME COLUMN git_repo_path TO project_path;\")",
+      "Bash(docker compose restart backend)",
+      "Bash(curl -s -X POST http://localhost:5000/api/projects -H \"Content-Type: application/json\" -d '{\"\"name\"\":\"\"Test Project 2\"\",\"\"description\"\":\"\"Testing github_url\"\",\"\"project_path\"\":\"\"/home/user/test\"\",\"\"github_url\"\":\"\"https://github.com/test/repo\"\"}')",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s -X DELETE http://localhost:5000/api/projects/7484f317-148e-4ae8-a5d3-8f0ee769f8e7)",
+      "Bash(docker exec -i terarchitect-postgres psql -U terarchitect -d terarchitect -c \"SELECT column_name, data_type FROM information_schema.columns WHERE table_name = ''projects'' ORDER BY ordinal_position;\")"
     ]
   }
 }

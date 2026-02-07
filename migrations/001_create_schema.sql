@@ -9,7 +9,8 @@ CREATE TABLE projects (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name VARCHAR(255) NOT NULL,
     description TEXT,
-    git_repo_path TEXT,
+    project_path TEXT,  -- Local file path where Claude Code runs
+    github_url TEXT,    -- GitHub repository URL for PR creation
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );

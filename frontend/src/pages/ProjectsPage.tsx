@@ -1,21 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { Box, Typography, Button, Card, CardContent, CardActions, Grid, Paper, TextField } from '@mui/material';
 import { Link } from 'react-router-dom';
-
-interface Project {
-  id: string;
-  name: string;
-  description: string;
-  git_repo_path: string;
-  created_at: string;
-}
+import { getProjects, createProject, type Project } from '../utils/api';
 
 const ProjectsPage: React.FC = () => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [gitRepoPath, setGitRepoPath] = useState('');
+  const [projectPath, setProjectPath] = useState('');
+  const [githubUrl, setGithubUrl] = useState('');
 
   useEffect(() => {
     fetchProjects();
@@ -23,8 +17,7 @@ const ProjectsPage: React.FC = () => {
 
   const fetchProjects = async () => {
     try {
-      const response = await fetch('/api/projects');
-      const data = await response.json();
+      const data = await getProjects();
       setProjects(data);
     } catch (error) {
       console.error('Failed to fetch projects:', error);
@@ -37,32 +30,18 @@ const ProjectsPage: React.FC = () => {
     if (!name.trim()) return;
 
     try {
-      const response = await fetch('/api/projects', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          name,
-          description,
-          git_repo_path: gitRepoPath,
-        }),
-      });
-      const data = await response.json();
-
-      // Reset form
-      setName('');
-      setDescription('');
-      setGitRepoPath('');
-
-      // Add new project to list
-      setProjects(prev => [...prev, {
-        id: data.id,
+      const data = await createProject({
         name,
         description,
-        git_repo_path: gitRepoPath,
-        created_at: data.created_at,
-      }]);
+        project_path: projectPath || undefined,
+        github_url: githubUrl || undefined,
+      });
+
+      setName('');
+      setDescription('');
+      setProjectPath('');
+      setGithubUrl('');
+      setProjects((prev) => [...prev, data]);
     } catch (error) {
       console.error('Failed to create project:', error);
     }
@@ -103,10 +82,18 @@ const ProjectsPage: React.FC = () => {
             rows={2}
           />
           <TextField
-            label="Git Repository Path"
-            value={gitRepoPath}
-            onChange={(e) => setGitRepoPath(e.target.value)}
-            placeholder="/path/to/local/git/repo"
+            label="Project Directory Path"
+            value={projectPath}
+            onChange={(e) => setProjectPath(e.target.value)}
+            placeholder="/path/to/project/root"
+            helperText="Local file path where Claude Code will run (contains codebase)"
+          />
+          <TextField
+            label="GitHub Repository URL"
+            value={githubUrl}
+            onChange={(e) => setGithubUrl(e.target.value)}
+            placeholder="https://github.com/username/repo"
+            helperText="GitHub repository URL for PR creation"
           />
           <Button
             variant="contained"
@@ -144,9 +131,14 @@ const ProjectsPage: React.FC = () => {
                       {project.description}
                     </Typography>
                   )}
-                  {project.git_repo_path && (
+                  {project.project_path && (
                     <Typography variant="body2" color="textSecondary" sx={{ mt: 1, fontSize: '0.75rem' }}>
-                      Git: {project.git_repo_path}
+                      Path: {project.project_path}
+                    </Typography>
+                  )}
+                  {project.github_url && (
+                    <Typography variant="body2" color="textSecondary" sx={{ mt: 1, fontSize: '0.75rem' }}>
+                      GitHub: {project.github_url}
                     </Typography>
                   )}
                 </CardContent>

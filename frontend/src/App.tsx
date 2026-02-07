@@ -1,5 +1,5 @@
 import React from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { Box, CssBaseline, ThemeProvider, createTheme } from '@mui/material';
 import Navbar from './components/Navbar';
 import ProjectsPage from './pages/ProjectsPage';
@@ -34,18 +34,20 @@ function App() {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-        <Navbar />
-        <Box sx={{ flex: 1, p: 3 }}>
-          <Routes>
-            <Route path="/" element={<ProjectsPage />} />
-            <Route path="/projects" element={<ProjectsPage />} />
-            <Route path="/projects/:projectId" element={<ProjectPage />} />
-            <Route path="/projects/:projectId/graph" element={<GraphEditorPage />} />
-            <Route path="/projects/:projectId/kanban" element={<KanbanPage />} />
-          </Routes>
+      <Router>
+        <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+          <Navbar />
+          <Box sx={{ flex: 1, p: 3 }}>
+            <Routes>
+              <Route path="/" element={<ProjectsPage />} />
+              <Route path="/projects" element={<ProjectsPage />} />
+              <Route path="/projects/:projectId" element={<ProjectPage />} />
+              <Route path="/projects/:projectId/graph" element={<GraphEditorPage />} />
+              <Route path="/projects/:projectId/kanban" element={<KanbanPage />} />
+            </Routes>
+          </Box>
         </Box>
-      </Box>
+      </Router>
     </ThemeProvider>
   );
 }

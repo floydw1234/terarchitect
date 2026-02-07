@@ -27,12 +27,6 @@ venv/
 ENV/
 env/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
 # Environment variables
 .env
 .env.local
@@ -42,6 +36,31 @@ env/
 *.sqlite
 *.sqlite3
 
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+.DS_Store?
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Flask
+instance/
+.flaskenv
+
+# Test coverage
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
 # Frontend
 node_modules/
 frontend/build/
@@ -49,10 +68,10 @@ frontend/build/
 # Docker
 docker-compose.override.yml
 
-# OS
-.DS_Store
-Thumbs.db
+# VS Code
+.launch/
+.settings/
+*.code-workspace
 
-# Logs
-*.log
-logs/
+# Jupyter
+.ipynb_checkpoints/

@@ -1,32 +1,73 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Box, Typography, Paper, Grid, Card, CardContent, CardActions, Button } from '@mui/material';
-
-interface Project {
-  id: string;
-  name: string;
-  description: string;
-  git_repo_path: string;
-}
+import {
+  Box,
+  Typography,
+  Paper,
+  Grid,
+  Card,
+  CardContent,
+  CardActions,
+  Button,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  TextField,
+} from '@mui/material';
+import { getProject, updateProject, type Project } from '../utils/api';
 
 const ProjectPage: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editProjectPath, setEditProjectPath] = useState('');
+  const [editGithubUrl, setEditGithubUrl] = useState('');
 
   useEffect(() => {
-    fetchProject();
+    if (projectId) {
+      fetchProject();
+    }
   }, [projectId]);
 
   const fetchProject = async () => {
+    if (!projectId) return;
     try {
-      const response = await fetch(`/api/projects/${projectId}`);
-      const data = await response.json();
+      const data = await getProject(projectId);
       setProject(data);
     } catch (error) {
       console.error('Failed to fetch project:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const openEdit = () => {
+    if (project) {
+      setEditName(project.name);
+      setEditDescription(project.description ?? '');
+      setEditProjectPath(project.project_path ?? '');
+      setEditGithubUrl(project.github_url ?? '');
+      setEditOpen(true);
+    }
+  };
+
+  const handleSaveProject = async () => {
+    if (!projectId) return;
+    try {
+      const data = await updateProject(projectId, {
+        name: editName.trim() || project?.name,
+        description: editDescription.trim() || undefined,
+        project_path: editProjectPath.trim() || undefined,
+        github_url: editGithubUrl.trim() || undefined,
+      });
+      setProject(data);
+      setEditOpen(false);
+    } catch (error) {
+      console.error('Failed to update project:', error);
     }
   };
 
@@ -48,9 +89,12 @@ const ProjectPage: React.FC = () => {
 
   return (
     <Box>
-      <Typography variant="h4" sx={{ mb: 3 }}>
-        {project.name}
-      </Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3, flexWrap: 'wrap', gap: 2 }}>
+        <Typography variant="h4">{project.name}</Typography>
+        <Button variant="outlined" size="small" onClick={openEdit}>
+          Edit project
+        </Button>
+      </Box>
 
       <Grid container spacing={3}>
         <Grid item xs={12}>
@@ -60,9 +104,14 @@ const ProjectPage: React.FC = () => {
                 {project.description}
               </Typography>
             )}
-            {project.git_repo_path && (
+            {project.project_path && (
               <Typography variant="body2" color="textSecondary">
-                Git Repository: {project.git_repo_path}
+                Project Path: {project.project_path}
+              </Typography>
+            )}
+            {project.github_url && (
+              <Typography variant="body2" color="textSecondary">
+                GitHub URL: {project.github_url}
               </Typography>
             )}
           </Paper>
@@ -106,6 +155,50 @@ const ProjectPage: React.FC = () => {
           </Grid>
         </Grid>
       </Grid>
+
+      <Dialog open={editOpen} onClose={() => setEditOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Edit project</DialogTitle>
+        <DialogContent>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
+            <TextField
+              label="Name"
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              fullWidth
+              size="small"
+            />
+            <TextField
+              label="Description"
+              value={editDescription}
+              onChange={(e) => setEditDescription(e.target.value)}
+              multiline
+              minRows={2}
+              fullWidth
+              size="small"
+            />
+            <TextField
+              label="Project path"
+              value={editProjectPath}
+              onChange={(e) => setEditProjectPath(e.target.value)}
+              placeholder="Local path for Claude Code"
+              fullWidth
+              size="small"
+            />
+            <TextField
+              label="GitHub URL"
+              value={editGithubUrl}
+              onChange={(e) => setEditGithubUrl(e.target.value)}
+              placeholder="https://github.com/..."
+              fullWidth
+              size="small"
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={handleSaveProject}>Save</Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

@@ -2,6 +2,8 @@
 Database Models for Terarchitect
 """
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.dialects.postgresql import JSONB, ARRAY
+from sqlalchemy import Float
 
 db = SQLAlchemy()
 
@@ -12,7 +14,8 @@ class Project(db.Model):
     id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
     name = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text)
-    git_repo_path = db.Column(db.Text)
+    project_path = db.Column(db.Text)  # Local file path where Claude Code runs
+    github_url = db.Column(db.Text)    # GitHub repository URL for PR creation
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
 
@@ -31,8 +34,8 @@ class Graph(db.Model):
 
     id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
     project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
-    nodes = db.Column(db.JSONB, default=lambda: [])
-    edges = db.Column(db.JSONB, default=lambda: [])
+    nodes = db.Column(JSONB, default=[])
+    edges = db.Column(JSONB, default=[])
     version = db.Column(db.Integer, default=1)
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
@@ -43,7 +46,7 @@ class KanbanBoard(db.Model):
 
     id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
     project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
-    columns = db.Column(db.JSONB, default=lambda: [{"id": "backlog", "title": "Backlog", "order": 0}])
+    columns = db.Column(JSONB, default=[])
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
 
@@ -53,11 +56,11 @@ class Ticket(db.Model):
 
     id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
     project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
-    column_id = db.Column(db.UUID, nullable=False)
+    column_id = db.Column(db.Text, nullable=False)
     title = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text)
-    associated_node_ids = db.Column(db.JSONB, default=lambda: [])
-    associated_edge_ids = db.Column(db.JSONB, default=lambda: [])
+    associated_node_ids = db.Column(JSONB, default=[])
+    associated_edge_ids = db.Column(JSONB, default=[])
     priority = db.Column(db.String(50), default="medium")
     status = db.Column(db.String(50), default="todo")
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
@@ -124,7 +127,7 @@ class Setting(db.Model):
     id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
     project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
     key = db.Column(db.String(255), nullable=False)
-    value = db.Column(db.JSONB)
+    value = db.Column(JSONB)
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
 
@@ -139,5 +142,5 @@ class RAGEmbedding(db.Model):
     source_type = db.Column(db.String(50), nullable=False)  # "node", "edge", "note", "ticket", "ticket_comment"
     source_id = db.Column(db.UUID, nullable=False)
     content = db.Column(db.Text, nullable=False)
-    embedding = db.Column(db.ARRAY(db.FLOAT), nullable=False)  # 1536 dimensions
+    embedding = db.Column(ARRAY(Float), nullable=False)  # 768 dimensions (embedding service)
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())

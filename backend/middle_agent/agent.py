@@ -43,7 +43,8 @@ class MiddleAgent:
         self._log(ticket.project_id, ticket_id, session_id, "context_loaded", "Loaded project context and graph")
 
         # Step 2: Send initial prompt to Claude Code
-        response = self._send_to_claude_code(context, session_id)
+        initial_prompt = "Implement the following ticket.\n\nContext:\n" + json.dumps(context, indent=2)
+        response = self._send_to_claude_code(initial_prompt, session_id)
         self._log(ticket.project_id, ticket_id, session_id, "prompt_sent", "Sent initial task to Claude Code")
 
         # Step 3: Loop until task is complete
@@ -70,7 +71,8 @@ class MiddleAgent:
         context = {
             "project_name": project.name,
             "project_description": project.description,
-            "git_repo_path": project.git_repo_path,
+            "project_path": project.project_path,
+            "github_url": project.github_url,
             "ticket": {
                 "id": str(ticket.id),
                 "title": ticket.title,

@@ -168,6 +168,9 @@ terarchitect/
 ### Tickets
 - `GET /api/projects/:id/tickets` - List tickets
 - `POST /api/projects/:id/tickets` - Create ticket
+- `GET /api/projects/:id/tickets/:ticket_id` - Get ticket
+- `PATCH /api/projects/:id/tickets/:ticket_id` - Update ticket (moving to "In Progress" triggers Middle Agent)
+- `DELETE /api/projects/:id/tickets/:ticket_id` - Delete ticket
 
 ### Notes
 - `GET /api/projects/:id/notes` - List notes
@@ -180,13 +183,12 @@ terarchitect/
 
 ### Prerequisites
 - Docker and Docker Compose
-- PostgreSQL with pgvector extension
 - vLLM running Qwen-Coder-Next-FP8 on localhost:8000
 - Claude Code CLI installed
 
-### Docker Deployment
+### Quick Start (Docker)
 ```bash
-# Build and start all services
+# Build and start all services (Postgres, Flask, React)
 docker-compose up -d
 
 # View logs
@@ -194,6 +196,9 @@ docker-compose logs -f
 
 # Stop services
 docker-compose down
+
+# Stop and remove volumes
+docker-compose down -v
 ```
 
 ### Environment Variables
@@ -203,6 +208,10 @@ VLLM_URL=http://host.docker.internal:8000
 VLLM_PROXY_URL=http://host.docker.internal:8080
 FLASK_ENV=development
 ```
+
+### Data Persistence
+- **PostgreSQL data**: `./data/postgres/` - persists across restarts
+- **Migrations**: `./migrations/` - auto-run on first start
 
 ### Development (Local)
 ```bash
@@ -236,3 +245,55 @@ npm start
    - If yes: finalize
 6. Commit → Push → Create PR → Move to Done
 ```
+
+## Test Suite (pytest)
+
+### Structure
+```
+backend/tests/
+├── __init__.py
+├── conftest.py           # Test fixtures (app, client, db_session)
+├── factories.py          # FactoryBoy factories
+├── models/               # Model unit tests
+│   ├── test_project.py
+│   ├── test_graph.py
+│   ├── test_ticket.py
+│   ├── test_note.py
+│   ├── test_execution_log.py
+│   └── test_rag_embedding.py
+├── api/                  # API endpoint tests
+│   ├── test_projects.py
+│   ├── test_graph.py
+│   ├── test_kanban.py
+│   ├── test_tickets.py
+│   ├── test_notes.py
+│   └── test_rag.py
+├── middle_agent/         # Agent logic tests
+│   ├── test_agent.py
+│   └── test_integration.py
+└── test_health.py
+```
+
+### Running Tests
+```bash
+# Install test dependencies
+cd backend
+pip install -r requirements-test.txt
+
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=backend --cov-report=html
+
+# Run specific test file
+pytest tests/api/test_projects.py
+```
+
+### Test Coverage
+- **Models**: CRUD operations, relationships, defaults
+- **API**: All endpoints (GET, POST, PUT, DELETE), error handling
+- **Middle Agent**: Logic functions, filtering, completion detection
+- **Integration**: Full ticket processing flow
+
+## Current State
