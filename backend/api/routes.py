@@ -7,7 +7,7 @@ from uuid import UUID, uuid5, NAMESPACE_DNS
 from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy import text
 
-from models.db import db, Project, Graph, KanbanBoard, Ticket, Note, Setting, RAGEmbedding
+from models.db import db, Project, Graph, KanbanBoard, Ticket, Note, Setting, RAGEmbedding, ExecutionLog
 from utils.embedding_client import embed_single
 from utils.rag import upsert_embedding, delete_embeddings_for_source
 
@@ -217,16 +217,25 @@ def tickets(project_id):
 
 def _trigger_middle_agent(ticket_id):
     """Run Middle Agent for the ticket in a background thread (non-blocking)."""
+    import sys
+    print(f"[Terarchitect] Middle Agent triggered for ticket {ticket_id}", file=sys.stderr, flush=True)
     app = current_app._get_current_object()
+    current_app.logger.info("Starting Middle Agent for ticket %s", ticket_id)
 
     def run():
         with app.app_context():
             try:
-                from middle_agent.agent import MiddleAgent
+                from middle_agent.agent import MiddleAgent, AgentAPIError
+            except ImportError as e:
+                current_app.logger.exception("Middle Agent import failed: %s", e)
+                return
+            try:
                 agent = MiddleAgent()
                 agent.process_ticket(ticket_id)
-            except Exception:
-                pass  # Log in production
+            except AgentAPIError as e:
+                current_app.logger.error("Middle Agent API error: %s", e, exc_info=True)
+            except Exception as e:
+                current_app.logger.exception("Middle Agent failed: %s", e)
 
     threading.Thread(target=run, daemon=True).start()
 
@@ -289,6 +298,39 @@ def ticket_detail(project_id, ticket_id):
         db.session.delete(ticket)
         db.session.commit()
         return jsonify({"message": "Ticket deleted"})
+
+
+@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/logs", methods=["GET"])
+def ticket_logs(project_id, ticket_id):
+    """Get execution logs for a ticket (for debugging)."""
+    logs = ExecutionLog.query.filter_by(
+        project_id=project_id,
+        ticket_id=ticket_id,
+    ).order_by(ExecutionLog.created_at.asc()).all()
+    return jsonify([{
+        "id": str(log.id),
+        "step": log.step,
+        "summary": log.summary,
+        "raw_output": log.raw_output,
+        "success": log.success,
+        "created_at": log.created_at.isoformat() if log.created_at else None,
+    } for log in logs])
+
+
+@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/cancel", methods=["POST"])
+def cancel_ticket_execution_api(project_id, ticket_id):
+    """Request cancellation of the Middle Agent execution for a ticket."""
+    ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
+    try:
+        from middle_agent.agent import cancel_ticket_execution as cancel_fn
+    except ImportError as e:
+        current_app.logger.exception("Middle Agent import failed for cancel: %s", e)
+        return jsonify({"error": "Middle Agent not available"}), 500
+
+    cancelled = cancel_fn(ticket.id)
+    if cancelled:
+        return jsonify({"message": "Cancellation requested"}), 200
+    return jsonify({"message": "No active execution for this ticket"}), 202
 
 
 @api_bp.route("/projects/<uuid:project_id>/notes", methods=["GET", "POST"])

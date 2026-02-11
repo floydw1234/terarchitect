@@ -181,6 +181,27 @@ export async function deleteTicket(projectId: string, ticketId: string) {
   return checkResponse(response);
 }
 
+export interface ExecutionLogEntry {
+  id: string;
+  step: string;
+  summary: string;
+  raw_output?: string;
+  success: boolean;
+  created_at?: string;
+}
+
+export async function getTicketLogs(projectId: string, ticketId: string): Promise<ExecutionLogEntry[]> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/tickets/${ticketId}/logs`);
+  return checkResponse<ExecutionLogEntry[]>(response);
+}
+
+export async function cancelTicketExecution(projectId: string, ticketId: string): Promise<void> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/tickets/${ticketId}/cancel`, {
+    method: 'POST',
+  });
+  await checkResponse(response);
+}
+
 export interface Note {
   id: string;
   project_id: string;

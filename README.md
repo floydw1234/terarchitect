@@ -1,6 +1,19 @@
 Project: Architask AI (Working Title)
 Concept: A visual-first, autonomous SDLC (Software Development Lifecycle) orchestrator that uses a "Director-Worker" agent model to build complex systems locally.
 
+## Quick Start
+
+```bash
+# Postgres + frontend (Docker)
+docker compose up -d
+
+# Backend on host (for Claude Code + local project access)
+cd backend && pip install -r requirements.txt && flask run --host=0.0.0.0 --port=5010
+```
+
+- App: http://localhost:3000
+- API: http://localhost:5010
+
 1. The Core Innovation
 Unlike current AI coding tools that rely on a single chat window, this system separates High-Level Design (The Graph) from Local Execution (The Worker). This prevents "context poisoning" and keeps the AI aligned with the overall system architecture.
 

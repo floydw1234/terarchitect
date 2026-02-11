@@ -4,8 +4,8 @@ WSGI entry point for gunicorn
 import os
 import sys
 
-# Add the app directory to the path
-sys.path.insert(0, '/app')
+# Add the backend directory to the path (for local run and Docker)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import the models first to ensure modules are registered
 from models.db import db

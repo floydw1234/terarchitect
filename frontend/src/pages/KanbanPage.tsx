@@ -34,9 +34,12 @@ import {
   updateNote,
   deleteNote,
   updateKanban,
+  getTicketLogs,
+  cancelTicketExecution,
   type Ticket,
   type KanbanColumn,
   type Note,
+  type ExecutionLogEntry,
 } from '../utils/api';
 
 /** Graph node/edge shape from API (minimal for dropdowns). */
@@ -86,6 +89,9 @@ const KanbanPage: React.FC = () => {
   const [editNoteEdgeId, setEditNoteEdgeId] = useState('');
   const [editColumnsOpen, setEditColumnsOpen] = useState(false);
   const [editColumnTitles, setEditColumnTitles] = useState<{ id: string; title: string; order: number }[]>([]);
+  const [executionLogs, setExecutionLogs] = useState<ExecutionLogEntry[]>([]);
+  const [logsExpanded, setLogsExpanded] = useState(false);
+  const [cancelRunning, setCancelRunning] = useState(false);
 
   useEffect(() => {
     if (projectId) {
@@ -154,6 +160,36 @@ const KanbanPage: React.FC = () => {
     setEditColumnId(ticket.column_id);
     setEditNodeIds(ticket.associated_node_ids ?? []);
     setEditEdgeIds(ticket.associated_edge_ids ?? []);
+    setExecutionLogs([]);
+    setLogsExpanded(false);
+  };
+
+  const handleShowLogs = async () => {
+    if (!projectId || !editTicket || logsExpanded) return;
+    setLogsExpanded(true);
+    try {
+      const logs = await getTicketLogs(projectId, editTicket.id);
+      setExecutionLogs(logs);
+    } catch {
+      setExecutionLogs([]);
+    }
+  };
+
+  const handleCancelExecution = async () => {
+    if (!projectId || !editTicket) return;
+    setCancelRunning(true);
+    try {
+      await cancelTicketExecution(projectId, editTicket.id);
+      const logs = await getTicketLogs(projectId, editTicket.id).catch(() => []);
+      if (Array.isArray(logs)) {
+        setExecutionLogs(logs);
+        setLogsExpanded(true);
+      }
+    } catch (error) {
+      console.error('Failed to cancel execution:', error);
+    } finally {
+      setCancelRunning(false);
+    }
   };
 
   const handleSaveTicket = async () => {
@@ -420,12 +456,73 @@ const KanbanPage: React.FC = () => {
       </Paper>
 
       {/* Ticket edit dialog */}
-      <Dialog open={!!editTicket} onClose={() => setEditTicket(null)} maxWidth="sm" fullWidth>
+      <Dialog open={!!editTicket} onClose={() => setEditTicket(null)} maxWidth="md" fullWidth>
         {editTicket && (
           <>
             <DialogTitle>Edit ticket</DialogTitle>
             <DialogContent>
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
+                {/* Execution logs - visible at top when agent runs */}
+                <Box sx={{ mb: 2, p: 2, borderRadius: 1, bgcolor: 'background.default' }}>
+                  <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                    Execution logs
+                  </Typography>
+                  <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={handleShowLogs}
+                      disabled={!projectId}
+                    >
+                      {logsExpanded ? 'Refresh' : 'View'} execution logs
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="error"
+                      onClick={handleCancelExecution}
+                      disabled={!projectId || cancelRunning}
+                    >
+                      {cancelRunning ? 'Stopping…' : 'Stop agent'}
+                    </Button>
+                  </Box>
+                  {logsExpanded && (
+                    <Box sx={{ mt: 2, maxHeight: 200, overflow: 'auto' }}>
+                      {executionLogs.length === 0 ? (
+                        <Typography variant="body2" color="text.secondary">
+                          No logs yet. Move ticket to In Progress to trigger the agent.
+                        </Typography>
+                      ) : (
+                        executionLogs.map((log) => (
+                          <Paper key={log.id} sx={{ p: 1.5, mb: 1 }}>
+                            <Typography variant="caption" color="text.secondary">
+                              {log.step} • {log.created_at}
+                            </Typography>
+                            {log.summary && (
+                              <Typography variant="body2" sx={{ mt: 0.5 }}>{log.summary}</Typography>
+                            )}
+                            {log.raw_output && (
+                              <Typography
+                                component="pre"
+                                variant="caption"
+                                sx={{
+                                  mt: 1,
+                                  whiteSpace: 'pre-wrap',
+                                  wordBreak: 'break-word',
+                                  maxHeight: 100,
+                                  overflow: 'auto',
+                                  fontSize: '0.7rem',
+                                }}
+                              >
+                                {log.raw_output}
+                              </Typography>
+                            )}
+                          </Paper>
+                        ))
+                      )}
+                    </Box>
+                  )}
+                </Box>
                 <TextField
                   label="Title"
                   value={editTitle}

@@ -218,7 +218,16 @@ const GraphEditorPage: React.FC = () => {
   const handleSaveGraph = async () => {
     if (!projectId) return;
     try {
-      await updateGraph(projectId, { nodes, edges });
+      const cleanedNodes = nodes.map((n) => ({
+        ...n,
+        data: {
+          ...n.data,
+          tech: n.data.tech.filter(Boolean),
+          ports: n.data.ports.filter(Boolean),
+          security: n.data.security.filter(Boolean),
+        },
+      }));
+      await updateGraph(projectId, { nodes: cleanedNodes, edges });
       alert('Graph saved successfully!');
     } catch (error) {
       console.error('Failed to save graph:', error);
@@ -412,7 +421,7 @@ const GraphEditorPage: React.FC = () => {
                   value={node.data.tech.join(', ')}
                   onChange={(e) =>
                     handleUpdateNode(editingNodeId, {
-                      tech: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
+                      tech: e.target.value.split(',').map((s) => s.trim()),
                     })
                   }
                   placeholder="e.g. FastAPI, PostgreSQL"
@@ -424,7 +433,7 @@ const GraphEditorPage: React.FC = () => {
                   value={node.data.ports.join(', ')}
                   onChange={(e) =>
                     handleUpdateNode(editingNodeId, {
-                      ports: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
+                      ports: e.target.value.split(',').map((s) => s.trim()),
                     })
                   }
                   placeholder="e.g. 8000, 5432"
@@ -436,7 +445,7 @@ const GraphEditorPage: React.FC = () => {
                   value={node.data.security.join(', ')}
                   onChange={(e) =>
                     handleUpdateNode(editingNodeId, {
-                      security: e.target.value.split(',').map((s) => s.trim()).filter(Boolean),
+                      security: e.target.value.split(',').map((s) => s.trim()),
                     })
                   }
                   placeholder="e.g. TLS, auth"

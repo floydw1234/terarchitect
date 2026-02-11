@@ -3,6 +3,12 @@ Terarchitect Backend - Flask Application
 """
 import re
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load .env from backend directory
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from flask import Flask, jsonify
 from flask_cors import CORS
@@ -23,12 +29,13 @@ def create_app():
         }
     })
 
-    # Load configuration (SQLALCHEMY_DATABASE_URI from env for tests)
+    # Load configuration - DATABASE_URL for local run, SQLALCHEMY_DATABASE_URI overrides
+    db_uri = os.environ.get("SQLALCHEMY_DATABASE_URI") or os.environ.get(
+        "DATABASE_URL",
+        "postgresql://terarchitect:terarchitect@localhost:5432/terarchitect",
+    )
     app.config.update(
-        SQLALCHEMY_DATABASE_URI=os.environ.get(
-            "SQLALCHEMY_DATABASE_URI",
-            "postgresql://terarchitect:terarchitect@postgres:5432/terarchitect",
-        ),
+        SQLALCHEMY_DATABASE_URI=db_uri,
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
         VLLM_URL="http://host.docker.internal:8000",
         VLLM_PROXY_URL="http://host.docker.internal:8080",

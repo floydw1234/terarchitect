@@ -103,6 +103,7 @@ class ExecutionLog(db.Model):
     session_id = db.Column(db.String(255))
     step = db.Column(db.String(100))
     summary = db.Column(db.Text)
+    raw_output = db.Column(db.Text)  # Full Claude Code output for debugging
     input_tokens = db.Column(db.Integer)
     output_tokens = db.Column(db.Integer)
     success = db.Column(db.Boolean, default=True)
