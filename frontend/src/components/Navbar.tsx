@@ -8,7 +8,7 @@ const Navbar: React.FC<NavbarProps> = () => {
   const location = useLocation();
 
   return (
-    <AppBar position="static" sx={{ backgroundColor: '#1a1a2e' }}>
+    <AppBar position="static" elevation={0}>
       <Toolbar>
         <Typography
           variant="h6"
@@ -16,9 +16,10 @@ const Navbar: React.FC<NavbarProps> = () => {
           to="/"
           sx={{
             flex: 1,
-            color: '#e0e0e0',
+            color: 'text.primary',
             textDecoration: 'none',
-            fontWeight: 'bold',
+            fontWeight: 700,
+            letterSpacing: '-0.02em',
           }}
         >
           Terarchitect

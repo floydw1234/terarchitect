@@ -62,7 +62,7 @@ const ProjectsPage: React.FC = () => {
       </Typography>
 
       {/* Create Project Form */}
-      <Paper sx={{ p: 3, mb: 4, backgroundColor: '#1a1a2e' }}>
+      <Paper sx={{ p: 3, mb: 4 }}>
         <Typography variant="h6" sx={{ mb: 2 }}>
           Create New Project
         </Typography>
@@ -108,7 +108,7 @@ const ProjectsPage: React.FC = () => {
 
       {/* Projects Grid */}
       {projects.length === 0 ? (
-        <Paper sx={{ p: 4, textAlign: 'center', backgroundColor: '#1a1a2e' }}>
+        <Paper sx={{ p: 4, textAlign: 'center' }}>
           <Typography color="textSecondary">
             No projects yet. Create one to get started!
           </Typography>
@@ -121,8 +121,8 @@ const ProjectsPage: React.FC = () => {
                 <CardContent>
                   <Typography variant="h6" component={Link} to={`/projects/${project.id}`} sx={{
                     textDecoration: 'none',
-                    color: '#6366f1',
-                    fontWeight: 'bold',
+                    color: 'primary.main',
+                    fontWeight: 600,
                   }}>
                     {project.name}
                   </Typography>

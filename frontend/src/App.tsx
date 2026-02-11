@@ -11,19 +11,74 @@ const theme = createTheme({
   palette: {
     mode: 'dark',
     primary: {
-      main: '#6366f1',
+      main: '#22d3ee',
+      light: '#67e8f9',
+      dark: '#06b6d4',
     },
     background: {
-      default: '#16162a',
-      paper: '#1a1a2e',
+      default: '#0f172a',
+      paper: '#1e293b',
     },
+    text: {
+      primary: '#f8fafc',
+      secondary: '#94a3b8',
+    },
+  },
+  typography: {
+    fontFamily: '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  },
+  shape: {
+    borderRadius: 12,
   },
   components: {
     MuiCard: {
       styleOverrides: {
         root: {
-          backgroundColor: '#1a1a2e',
-          borderRadius: 8,
+          backgroundColor: '#1e293b',
+          borderRadius: 12,
+          border: '1px solid rgba(148, 163, 184, 0.08)',
+        },
+      },
+    },
+    MuiPaper: {
+      styleOverrides: {
+        root: {
+          backgroundColor: '#1e293b',
+          borderRadius: 12,
+          border: '1px solid rgba(148, 163, 184, 0.08)',
+        },
+      },
+    },
+    MuiButton: {
+      styleOverrides: {
+        root: {
+          textTransform: 'none',
+        },
+      },
+    },
+    MuiAppBar: {
+      styleOverrides: {
+        root: {
+          backgroundColor: '#0f172a',
+          borderBottom: '1px solid rgba(148, 163, 184, 0.12)',
+        },
+      },
+    },
+    MuiDialog: {
+      styleOverrides: {
+        paper: {
+          backgroundColor: '#1e293b',
+          border: '1px solid rgba(148, 163, 184, 0.12)',
+        },
+      },
+    },
+    MuiTextField: {
+      styleOverrides: {
+        root: {
+          '& .MuiOutlinedInput-root': {
+            '& fieldset': { borderColor: 'rgba(148, 163, 184, 0.2)' },
+            '&:hover fieldset': { borderColor: 'rgba(148, 163, 184, 0.4)' },
+          },
         },
       },
     },

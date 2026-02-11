@@ -98,7 +98,7 @@ const ProjectPage: React.FC = () => {
 
       <Grid container spacing={3}>
         <Grid item xs={12}>
-          <Paper sx={{ p: 3, backgroundColor: '#1a1a2e' }}>
+          <Paper sx={{ p: 3 }}>
             {project.description && (
               <Typography variant="body1" sx={{ mb: 2 }}>
                 {project.description}

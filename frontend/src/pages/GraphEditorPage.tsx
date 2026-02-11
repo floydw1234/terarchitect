@@ -264,7 +264,6 @@ const GraphEditorPage: React.FC = () => {
           flex: 1,
           minHeight: 400,
           overflow: 'hidden',
-          backgroundColor: '#1a1a2e',
           display: 'flex',
           flexDirection: 'column',
         }}
@@ -299,7 +298,7 @@ const GraphEditorPage: React.FC = () => {
                 orient="auto"
                 markerUnits="strokeWidth"
               >
-                <path d="M0,0 L0,6 L9,3 z" fill="#6366f1" />
+                <path d="M0,0 L0,6 L9,3 z" fill="#22d3ee" />
               </marker>
             </defs>
             {edges.map((e) => {
@@ -325,7 +324,7 @@ const GraphEditorPage: React.FC = () => {
                     y1={sy}
                     x2={tx}
                     y2={ty}
-                    stroke="#6366f1"
+                    stroke="#22d3ee"
                     strokeWidth={2}
                     markerEnd="url(#arrow)"
                   />
@@ -356,9 +355,9 @@ const GraphEditorPage: React.FC = () => {
                   width: NODE_R * 2,
                   height: NODE_R * 2,
                   borderRadius: '50%',
-                  bgcolor: selected ? '#818cf8' : '#6366f1',
+                  bgcolor: selected ? 'primary.light' : 'primary.main',
                   border: '2px solid',
-                  borderColor: selected ? '#a5b4fc' : '#818cf8',
+                  borderColor: selected ? 'primary.light' : 'primary.dark',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -372,7 +371,7 @@ const GraphEditorPage: React.FC = () => {
                   variant="caption"
                   component="span"
                   sx={{
-                    color: '#e0e0e0',
+                    color: '#0f172a',
                     textAlign: 'center',
                     px: 0.5,
                     overflow: 'hidden',
@@ -392,7 +391,6 @@ const GraphEditorPage: React.FC = () => {
       <Dialog
         open={editingNodeId !== null}
         onClose={() => setEditingNodeId(null)}
-        PaperProps={{ sx: { backgroundColor: '#1a1a2e' } }}
       >
         <DialogTitle>Edit node</DialogTitle>
         <DialogContent>
@@ -456,7 +454,6 @@ const GraphEditorPage: React.FC = () => {
       <Dialog
         open={editingEdgeId !== null}
         onClose={() => setEditingEdgeId(null)}
-        PaperProps={{ sx: { backgroundColor: '#1a1a2e' } }}
       >
         <DialogTitle>Edit edge</DialogTitle>
         <DialogContent>
