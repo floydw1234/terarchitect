@@ -1,7 +1,7 @@
 /**
  * API Utility for Terarchitect Frontend
  */
-export const API_URL = 'http://localhost:5000';
+export const API_URL = 'http://localhost:5010';
 
 export interface Project {
   id: string;

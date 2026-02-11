@@ -8,8 +8,8 @@ services:
       POSTGRES_PASSWORD: terarchitect
       POSTGRES_DB: terarchitect
     volumes:
-      # Named volume for persistence
-      - postgres_data:/var/lib/postgresql/data
+      # Bind mount for persistence (survives docker-compose down -v)
+      - ./data/postgres:/var/lib/postgresql/data
       # Auto-run migrations on first start
       - ./migrations:/docker-entrypoint-initdb.d:ro
     ports:
@@ -29,6 +29,7 @@ services:
       dockerfile: Dockerfile.backend
     container_name: terarchitect-backend
     environment:
+      - PYTHONPATH=/app
       - DATABASE_URL=postgresql://terarchitect:terarchitect@postgres:5432/terarchitect
       - VLLM_URL=http://host.docker.internal:8000
       - VLLM_PROXY_URL=http://host.docker.internal:8080
@@ -38,7 +39,7 @@ services:
       - ./backend:/app
       - /app/__pycache__
     ports:
-      - "5000:5000"
+      - "5010:5010"
     depends_on:
       postgres:
         condition: service_healthy
@@ -52,7 +53,7 @@ services:
       dockerfile: Dockerfile.frontend
     container_name: terarchitect-frontend
     environment:
-      - REACT_APP_API_URL=http://localhost:5000
+      - REACT_APP_API_URL=http://localhost:5010
     volumes:
       - ./frontend:/app
       - /app/node_modules
@@ -63,6 +64,3 @@ services:
       - backend
     restart: unless-stopped
 
-# Named volumes for persistent data
-volumes:
-  postgres_data:

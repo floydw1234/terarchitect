@@ -30,4 +30,4 @@ npm start
 ```
 
 ## Environment Variables
-- `REACT_APP_API_URL` - Backend API URL (default: http://localhost:5000)
+- `REACT_APP_API_URL` - Backend API URL (default: http://localhost:5010)

@@ -1,6 +1,7 @@
 """
 Terarchitect Backend - Flask Application
 """
+import re
 import os
 
 from flask import Flask, jsonify
@@ -10,10 +11,13 @@ from models.db import db
 def create_app():
     app = Flask(__name__)
 
-    # Configure CORS
+    # Configure CORS - allow localhost on any port for development
     CORS(app, resources={
         r"/api/*": {
-            "origins": ["http://localhost:3000", "http://127.0.0.1:3000"],
+            "origins": [
+                re.compile(r"http://localhost:\d+"),
+                re.compile(r"http://127\.0\.0\.1:\d+"),
+            ],
             "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
             "allow_headers": ["Content-Type"]
         }
@@ -51,4 +55,4 @@ def create_app():
 
 if __name__ == "__main__":
     app = create_app()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5010, debug=True)

@@ -21,4 +21,4 @@ until pg_isready -h "$host" -p "$port" -U terarchitect; do
 done
 
 echo "PostgreSQL is up - starting Flask..."
-exec flask run --host=0.0.0.0 --port=5000
+exec flask run --host=0.0.0.0 --port=5010
