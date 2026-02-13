@@ -1,0 +1,117 @@
+# HippoRAG integration with Middle Agent memory
+
+## Overview
+
+Use project memory (HippoRAG, via backend memory API) so the middle agent behaves like a senior developer: recalls similar past work, reuses prompts that fixed issues before, and records what was done, learned, and overcome. Memory is per project, shared across all agents and tickets.
+
+**Memory is for the middle agent only.** Retrieved memories are never injected into Claude Code’s context or prompts. The middle agent receives memory as explicit input, decides if it’s useful, and can act on it (e.g. when crafting the next prompt for Claude). Claude only ever sees what the middle agent puts into the prompt we send it.
+
+---
+
+## Where memory is stored
+
+- **Backend:** `utils/memory.py` talks to `hipporag_minimal` (bundled in `backend/hipporag_minimal/`). One HippoRAG instance per project, keyed by `project_id`.
+- **On disk:** Per project, under `MEMORY_SAVE_DIR` (env). For project P, path is `MEMORY_SAVE_DIR/<project_id>/`. HippoRAG keeps graph (pickle), chunk/entity/fact embeddings (parquet) there.
+- **API:** `POST /api/projects/<project_id>/memory/index`, `.../memory/retrieve`, `.../memory/delete`. Used by the middle-agent flow (or any future consumer).
+
+---
+
+## Guarding against concurrent writes
+
+- **Per-project lock:** In `utils/memory.py`, each project has a single `threading.Lock`. Every `index`, `retrieve`, and `delete` for that project acquires the lock, does the work, then releases. So two agents on the same project never run index/retrieve/delete at the same time for that project.
+- **Different projects:** No shared lock across projects. Project A and Project B can run memory ops in parallel.
+- **No distributed lock:** If you later run multiple backend processes, you’d need an external lock (e.g. file or Redis) to avoid two processes writing the same project’s HippoRAG files. Single process = current design is enough.
+
+---
+
+## When to read (retrieve)
+
+Memory is **input to the middle agent only**. Format it clearly so the agent knows it is memory and can choose whether to use it. Do **not** put memory text into the prompts or context sent to Claude Code.
+
+**Format when sending to the middle agent:** e.g.  
+`Memories invoked: <retrieved passages, one per line or clearly separated>`  
+(The agent already receives the full conversation—prompts it sent to Claude and Claude’s responses—in its existing user message.)
+
+The middle agent’s system prompt should state that it has access to project memory, that “Memories invoked” is recall from past sessions (what we did, learned, overcame), and that it may use that memory to decide the next prompt or completion—but memory is for the agent’s reasoning, not to be pasted into Claude as if it were Claude’s own output.
+
+1. **At ticket start** (before the agent plans or talks to Claude)
+   - Query: derived from ticket (e.g. title + short description).
+   - Use: pass to the middle agent as explicit memory in the user message: “Memories invoked: …” with the retrieved passages. Agent uses this when building the initial plan and curating context for Claude; it does not get sent to Claude Code.
+
+2. **During the session** — retrieve every turn (valuable: agent always has fresh recall).
+   - **Query:** Use both (a) the prompt the middle agent last sent to Claude and (b) Claude’s latest response. Combining “what we asked” and “what Claude did” gives retrieval a better signal (e.g. “we asked to fix X, Claude responded with error Y”) so we can surface similar past situations.
+   - **Use:** Pass “Memories invoked: …” to the middle agent (same as at start). The agent already sees the full conversation (its prompts + Claude’s responses) in the existing user message; memory is extra recall it can act on.
+   - **We do not store memory each turn.** Indexing happens only at ticket completion (see “When to write”).
+
+---
+
+## Linking memories to the ticket
+
+HippoRAG (and the memory API) stores plain text chunks only—no separate metadata field. **Link memories to the ticket by including the ticket title and description in the text we index.**
+
+- **When writing at completion:** Prepend the ticket title and description to the single doc we index. Format: `Ticket: [title]. [description]. [agent summary]`. The existing agent `summary` field can briefly cover what we did, learned, or overcame; no extra fields or parsing.
+- **Why:** (1) Retrieval by current ticket title/description will surface memories from the same or related tickets. (2) The middle agent sees which ticket a memory came from (by title/description, the way a developer would). (3) If we later support delete-on-revert, we can delete by exact doc string; store the exact string we indexed (e.g. in execution log or a small table) so we can pass it to memory/delete when a ticket is reverted.
+- **Convention:** Use a stable prefix like `Ticket: <title>. <description or summary>.` so semantic search ties the memory to the ticket’s theme. No ticket ID—title and description are what we remember.
+
+---
+
+## When to write (index)
+
+**Only at ticket completion** (when the middle agent marks the task complete). We do not store memories each turn—only this single summary at the end.
+
+- **Content to index:** One short doc per completion. **Linked to the ticket** by prefixing with title and description (see “Linking memories to the ticket” above). Use the agent’s existing `summary` field: `"Ticket: <title>. <description>. <summary>"`. The agent already returns a brief summary when marking complete; no extra fields or parsing required.
+- **Source:** Use the **existing** agent completion payload: when the agent marks complete it already returns `{"complete": true, "summary": "..."}`. Use that single `summary` as the content to index (prefixed with ticket title and description). No change to agent response shape required.
+- **Who writes:** In `middle_agent/agent.py`, when `agent_response["complete"]` is True, call memory index with one doc string (title + description + summary), then call `_finalize`. Use `utils.memory.index` from the same process (agent runs with Flask app context); get `base_save_dir` from `current_app.config.get("MEMORY_SAVE_DIR")` and HippoRAG kwargs from env (see “Formats” below).
+
+---
+
+## Formats (all existing or trivial)
+
+- **Memory retrieve (in-process):** `utils.memory.retrieve(project_id, queries, base_save_dir, num_to_retrieve=5, **kwargs)` → returns `list[dict]` with `{"question", "docs", "doc_scores"}` per element. Flatten: collect all `docs` (list of strings) from each result into one list; format as `"Memories invoked:\n" + "\n".join(docs)` (or empty string if none).
+- **Memory index (in-process):** `utils.memory.index(project_id, docs, base_save_dir, **kwargs)`. `docs` is a list of strings. One doc per completion: `f"Ticket: {ticket.title}. {ticket.description or ''}. {agent_response['summary']}"`.
+- **HippoRAG kwargs:** Same as routes (from env). Add `get_hipporag_kwargs()` in `utils/memory.py` that returns `llm_model_name`, `embedding_model_name`, and optional `llm_base_url` / `embedding_base_url` from env; routes and agent both use it so config lives in one place.
+- **Agent input:** Extend the existing `_agent_assess` user message with an optional block: if non-empty, prepend `"Memories invoked:\n" + passages + "\n\n"` to the message. No new parsing; the agent already gets one user message string. Agent response stays unchanged: JSON with `complete`, `summary`, `next_prompt`.
+
+---
+
+## Task list (current code, no heavy prerequisites)
+
+- [ ] **Config / readiness**  
+  - `MEMORY_SAVE_DIR` is already read by memory routes. When implementing agent-side memory: inside `process_ticket` (which runs with Flask `app_context`), read `base_save_dir = current_app.config.get("MEMORY_SAVE_DIR")`. If unset, skip all memory calls (no retrieve, no index); ticket runs as today. No new env vars required for “no memory” path.
+
+- [ ] **Shared HippoRAG kwargs**  
+  - In `utils/memory.py`, add `get_hipporag_kwargs()` that returns the same dict the routes use (from `os.environ`: `MEMORY_LLM_MODEL`, `MEMORY_EMBEDDING_MODEL`, optional `MEMORY_LLM_BASE_URL`, `MEMORY_EMBEDDING_BASE_URL`). Use it in both `api/routes.py` and in the agent when calling `retrieve`/`index`.
+
+- [ ] **Retrieve at ticket start**  
+  - In `process_ticket`, after `_load_context(ticket)` and after resolving `project_path`, if `base_save_dir` is set: call `utils.memory.retrieve(ticket.project_id, queries=[f"{ticket.title}. {ticket.description or ''}"], base_save_dir, num_to_retrieve=5, **get_hipporag_kwargs())`. Flatten `results` to one list of passage strings; set `memories_str = "Memories invoked:\n" + "\n".join(passages)` (or `""` if no passages). Pass `memories_str` into the first and every subsequent `_agent_assess` (see next item).
+  - Initialize `last_prompt = task_instruction` right after turn 0 prompt creation so the first per-turn retrieve can combine the prompt that produced Claude’s latest response.
+  - On retrieve error, log and continue with `memories_str = ""` (do not block ticket execution).
+
+- [ ] **Retrieve during the session and pass into agent**  
+  - **Every turn**, before each `_agent_assess`: if `base_save_dir` set, build a query from **both** the prompt the middle agent last sent to Claude and Claude’s latest response (e.g. `f"{last_prompt_snippet}\n{conversation_history[-1][:500]}"`). Track `last_prompt` in the loop: after each `_agent_assess` you have `next_prompt`; after sending it to Claude and appending the response to `conversation_history`, set `last_prompt = next_prompt` for the next iteration. Call retrieve with `queries=[that_combined_snippet]`, flatten to passages, set `memories_str` as above. Do not index/store memory here—only at completion.  
+  - Add an optional parameter to `_agent_assess`: `memories: str = ""`. When building the user message, if `memories` is non-empty, prepend `memories + "\n\n"` to the existing user message.  
+  - If per-turn retrieve fails, log and continue with empty memories for that turn.
+  - In `AGENT_SYSTEM_PROMPT`, add one short sentence: you have access to project memory; when you see “Memories invoked:”, it’s recall from past sessions—use it only for your own reasoning, do not paste it into the prompt for Claude.
+
+- [ ] **Write at completion**  
+  - In `process_ticket`, when `agent_response.get("complete")` is True, **before** calling `_finalize`: if `base_save_dir` set, build one doc string `doc = f"Ticket: {ticket.title}. {ticket.description or ''}. {agent_response.get('summary', '')}"`, call `utils.memory.index(ticket.project_id, [doc], base_save_dir, **get_hipporag_kwargs())`. On exception, log and continue; then call `_finalize(ticket, session_id)` as today. No change to agent response shape; use existing `summary` field.
+
+- [ ] **Optional: delete on revert**  
+  - Only if the product supports “revert ticket”: store the exact doc string(s) indexed for that ticket (e.g. in ExecutionLog or a small table) when indexing, then call `utils.memory.delete(project_id, docs, base_save_dir, **kwargs)` with those strings when the ticket is reverted.
+
+- [ ] **Tests**  
+  - Add or extend tests: ticket flow with memory (mock or real): retrieve at start, retrieve each turn, index on complete. Optionally test per-project locking (two concurrent requests same project).
+
+---
+
+## Summary
+
+| When           | Action   | Content / Query | Who sees it |
+|----------------|----------|------------------|-------------|
+| Ticket start   | Retrieve | Task-related (title, description, “similar work”) | Middle agent only (e.g. “Memories invoked: …”) |
+| Each turn      | Retrieve (no store) | Last prompt to Claude + Claude’s response (combined query) | Middle agent only (“Memories invoked: …”; agent already sees full conversation) |
+| Ticket complete| Index    | One doc: ticket title + description + existing agent `summary` | Stored for future retrievals |
+
+- **Memories are linked to the ticket** by including the ticket title and description (or short summary) in the text we index; retrieval by ticket title/description then surfaces memories from that ticket or related ones.
+- **Memory is never sent to Claude Code.** The middle agent sees the full conversation (its prompts + Claude’s responses) and “Memories invoked: …”; it uses memory only for its own reasoning (e.g. what to put in the next prompt for Claude).
+- Storage: per project under `MEMORY_SAVE_DIR/<project_id>/`. Concurrency: one lock per project in `utils/memory.py`; all index/retrieve/delete for that project are serialized.

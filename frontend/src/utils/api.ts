@@ -31,6 +31,8 @@ export interface Ticket {
   status: string;
   created_at?: string;
   updated_at?: string;
+  pr_url?: string | null;
+  pr_number?: number | null;
 }
 
 async function checkResponse<T = unknown>(response: Response): Promise<T> {
@@ -86,9 +88,11 @@ export async function updateProject(projectId: string, data: {
   return checkResponse<Project>(response);
 }
 
-export async function deleteProject(projectId: string) {
+export async function deleteProject(projectId: string, confirmName: string) {
   const response = await fetch(`${API_URL}/api/projects/${projectId}`, {
     method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirm_name: confirmName }),
   });
   return checkResponse(response);
 }
@@ -205,8 +209,8 @@ export async function cancelTicketExecution(projectId: string, ticketId: string)
 export interface Note {
   id: string;
   project_id: string;
-  node_id?: string;
-  edge_id?: string;
+  node_ids: string[];
+  edge_ids: string[];
   title?: string;
   content?: string;
   created_at?: string;
@@ -220,8 +224,8 @@ export async function getNotes(projectId: string): Promise<Note[]> {
 export async function createNote(projectId: string, data: {
   title: string;
   content: string;
-  node_id?: string;
-  edge_id?: string;
+  node_ids?: string[];
+  edge_ids?: string[];
 }): Promise<Note> {
   const response = await fetch(`${API_URL}/api/projects/${projectId}/notes`, {
     method: 'POST',
@@ -234,8 +238,8 @@ export async function createNote(projectId: string, data: {
 export async function updateNote(projectId: string, noteId: string, data: {
   title?: string;
   content?: string;
-  node_id?: string;
-  edge_id?: string;
+  node_ids?: string[];
+  edge_ids?: string[];
 }): Promise<Note> {
   const response = await fetch(`${API_URL}/api/projects/${projectId}/notes/${noteId}`, {
     method: 'PATCH',

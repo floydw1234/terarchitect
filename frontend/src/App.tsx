@@ -36,7 +36,8 @@ const theme = createTheme({
         root: {
           backgroundColor: '#1e293b',
           borderRadius: 12,
-          border: '1px solid rgba(148, 163, 184, 0.08)',
+          border: '1px solid rgba(148, 163, 184, 0.35)',
+          boxShadow: 'none',
         },
       },
     },
@@ -45,7 +46,8 @@ const theme = createTheme({
         root: {
           backgroundColor: '#1e293b',
           borderRadius: 12,
-          border: '1px solid rgba(148, 163, 184, 0.08)',
+          border: '1px solid rgba(148, 163, 184, 0.35)',
+          boxShadow: 'none',
         },
       },
     },

@@ -32,13 +32,22 @@ def create_app():
     # Load configuration - DATABASE_URL for local run, SQLALCHEMY_DATABASE_URI overrides
     db_uri = os.environ.get("SQLALCHEMY_DATABASE_URI") or os.environ.get(
         "DATABASE_URL",
-        "postgresql://terarchitect:terarchitect@localhost:5432/terarchitect",
+        "postgresql://terarchitect:terarchitect@localhost:5433/terarchitect",
     )
+    memory_save_dir = os.environ.get("MEMORY_SAVE_DIR")
+    if memory_save_dir:
+        memory_save_dir = os.path.abspath(memory_save_dir)
+
     app.config.update(
         SQLALCHEMY_DATABASE_URI=db_uri,
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
+        SQLALCHEMY_ENGINE_OPTIONS={
+            "pool_pre_ping": True,
+            "pool_recycle": 300,
+        },
         VLLM_URL="http://host.docker.internal:8000",
         VLLM_PROXY_URL="http://host.docker.internal:8080",
+        MEMORY_SAVE_DIR=memory_save_dir,
     )
 
     # Initialize database
@@ -50,7 +59,18 @@ def create_app():
 
     # Register blueprints
     from api import api_bp
+    from api.embedding_openai import embedding_bp
+    from api.routes import _run_agent_and_poll_loop
     app.register_blueprint(api_bp, url_prefix="/api")
+    app.register_blueprint(embedding_bp)
+
+    # Single background thread: every 10s run PR comment poll then at most one agent job.
+    # Keep this single-threaded to avoid duplicate agent runs.
+    import threading
+    runner = threading.Thread(
+        target=_run_agent_and_poll_loop, args=(app,), kwargs={"queue_poll_seconds": 10, "pr_poll_seconds": 600}, daemon=True
+    )
+    runner.start()
 
     # Health check endpoint
     @app.route("/health")
@@ -62,4 +82,5 @@ def create_app():
 
 if __name__ == "__main__":
     app = create_app()
-    app.run(host="0.0.0.0", port=5010, debug=True)
+    # Disable reloader so debug mode does not spawn a second process/thread set.
+    app.run(host="0.0.0.0", port=5010, debug=True, use_reloader=False)

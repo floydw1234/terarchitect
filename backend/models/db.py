@@ -14,7 +14,7 @@ class Project(db.Model):
     id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
     name = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text)
-    project_path = db.Column(db.Text)  # Local file path where Claude Code runs
+    project_path = db.Column(db.Text)  # Local file path where OpenCode runs
     github_url = db.Column(db.Text)    # GitHub repository URL for PR creation
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
@@ -26,7 +26,8 @@ class Project(db.Model):
     execution_logs = db.relationship("ExecutionLog", backref="project", cascade="all, delete-orphan")
     prs = db.relationship("PR", backref="project", cascade="all, delete-orphan")
     settings = db.relationship("Setting", backref="project", cascade="all, delete-orphan")
-    rag_embeddings = db.relationship("RAGEmbedding", backref="project", cascade="all, delete-orphan")
+    # No cascade, noload: embedding column is pgvector (OID 16397); ORM must never SELECT it (unknown to ARRAY(Float)).
+    rag_embeddings = db.relationship("RAGEmbedding", backref="project", cascade="save-update", lazy="noload")
 
 
 class Graph(db.Model):
@@ -103,7 +104,7 @@ class ExecutionLog(db.Model):
     session_id = db.Column(db.String(255))
     step = db.Column(db.String(100))
     summary = db.Column(db.Text)
-    raw_output = db.Column(db.Text)  # Full Claude Code output for debugging
+    raw_output = db.Column(db.Text)  # Full worker output for debugging
     input_tokens = db.Column(db.Integer)
     output_tokens = db.Column(db.Integer)
     success = db.Column(db.Boolean, default=True)
@@ -120,6 +121,26 @@ class PR(db.Model):
     pr_url = db.Column(db.Text)
     commit_hash = db.Column(db.String(255))
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
+
+
+class PRReviewComment(db.Model):
+    """Tracks GitHub PR comments and whether we've addressed (replied to) them."""
+
+    __tablename__ = "pr_review_comments"
+
+    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
+    project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
+    ticket_id = db.Column(db.UUID, db.ForeignKey("tickets.id"), nullable=True)
+    pr_number = db.Column(db.Integer, nullable=False)
+    github_comment_id = db.Column(db.BigInteger, nullable=False)
+    author_login = db.Column(db.String(255))
+    body = db.Column(db.Text)
+    comment_created_at = db.Column(db.TIMESTAMP)
+    addressed_at = db.Column(db.TIMESTAMP)
+    created_at = db.Column(db.TIMESTAMP, default=db.func.now())
+    updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
+
+    __table_args__ = (db.UniqueConstraint("project_id", "pr_number", "github_comment_id", name="_pr_review_comment_uniq"),)
 
 
 class Setting(db.Model):

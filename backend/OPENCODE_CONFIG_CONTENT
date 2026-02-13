@@ -1,0 +1,2 @@
+{
+  "$schema": "https://opencode.ai/config.json","model": "terarchitect-proxy/Qwen/Qwen3-Coder-Next-FP8", "provider": {"terarchitect-proxy": {"npm": "@ai-sdk/openai-compatible", "name": "Terarchitect Proxy", "options": {"baseURL": "http://localhost:8080/v1", "apiKey": "dummy"}, "models": {"Qwen/Qwen3-Coder-Next-FP8": {"name": "Qwen/Qwen3-Coder-Next-FP8", "tool_call": true}}}}}

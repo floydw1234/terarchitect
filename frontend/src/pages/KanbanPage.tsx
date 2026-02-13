@@ -55,8 +55,24 @@ interface GraphEdgeOption {
 const DEFAULT_COLUMNS: KanbanColumn[] = [
   { id: 'backlog', title: 'Backlog', order: 0 },
   { id: 'in_progress', title: 'In Progress', order: 1 },
-  { id: 'done', title: 'Done', order: 2 },
+  { id: 'in_review', title: 'In Review', order: 2 },
+  { id: 'done', title: 'Done', order: 3 },
 ];
+
+const COLUMN_TITLE_BY_ID: Record<string, string> = {
+  backlog: 'Backlog',
+  in_progress: 'In Progress',
+  in_review: 'In Review',
+  done: 'Done',
+};
+
+/** Canonical order so In Review is always left of Done (Backlog → In Progress → In Review → Done). */
+const CANONICAL_COLUMN_ORDER: Record<string, number> = {
+  backlog: 0,
+  in_progress: 1,
+  in_review: 2,
+  done: 3,
+};
 
 const KanbanPage: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
@@ -64,8 +80,14 @@ const KanbanPage: React.FC = () => {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [loading, setLoading] = useState(true);
+  const [createTicketOpen, setCreateTicketOpen] = useState(false);
   const [newTicketTitle, setNewTicketTitle] = useState('');
   const [newTicketDescription, setNewTicketDescription] = useState('');
+  const [newTicketPriority, setNewTicketPriority] = useState<string>('medium');
+  const [newTicketStatus, setNewTicketStatus] = useState<string>('todo');
+  const [newTicketColumnId, setNewTicketColumnId] = useState('backlog');
+  const [newTicketNodeIds, setNewTicketNodeIds] = useState<string[]>([]);
+  const [newTicketEdgeIds, setNewTicketEdgeIds] = useState<string[]>([]);
   const [addTicketLoading, setAddTicketLoading] = useState(false);
   const [addTicketError, setAddTicketError] = useState<string | null>(null);
   const [editTicket, setEditTicket] = useState<Ticket | null>(null);
@@ -80,13 +102,16 @@ const KanbanPage: React.FC = () => {
   const [graphEdges, setGraphEdges] = useState<GraphEdgeOption[]>([]);
   const [newNoteTitle, setNewNoteTitle] = useState('');
   const [newNoteContent, setNewNoteContent] = useState('');
+  const [newNoteNodeIds, setNewNoteNodeIds] = useState<string[]>([]);
+  const [newNoteEdgeIds, setNewNoteEdgeIds] = useState<string[]>([]);
+  const [createNoteOpen, setCreateNoteOpen] = useState(false);
   const [addNoteLoading, setAddNoteLoading] = useState(false);
   const [addNoteError, setAddNoteError] = useState<string | null>(null);
   const [editNote, setEditNote] = useState<Note | null>(null);
   const [editNoteTitle, setEditNoteTitle] = useState('');
   const [editNoteContent, setEditNoteContent] = useState('');
-  const [editNoteNodeId, setEditNoteNodeId] = useState('');
-  const [editNoteEdgeId, setEditNoteEdgeId] = useState('');
+  const [editNoteNodeIds, setEditNoteNodeIds] = useState<string[]>([]);
+  const [editNoteEdgeIds, setEditNoteEdgeIds] = useState<string[]>([]);
   const [editColumnsOpen, setEditColumnsOpen] = useState(false);
   const [editColumnTitles, setEditColumnTitles] = useState<{ id: string; title: string; order: number }[]>([]);
   const [executionLogs, setExecutionLogs] = useState<ExecutionLogEntry[]>([]);
@@ -108,13 +133,37 @@ const KanbanPage: React.FC = () => {
         getNotes(projectId),
         getGraph(projectId).catch(() => ({ nodes: [], edges: [] })),
       ]);
-      setColumns(
+      const apiColumns =
         kanbanRes.columns && kanbanRes.columns.length > 0
           ? kanbanRes.columns
-          : DEFAULT_COLUMNS
+          : DEFAULT_COLUMNS;
+      const ticketColumnIds = [...new Set((ticketsRes as Ticket[]).map((t) => t.column_id))];
+      const columnIds = new Set(apiColumns.map((c) => c.id));
+      const nextColumns = [...apiColumns];
+      for (const id of ticketColumnIds) {
+        if (!columnIds.has(id)) {
+          columnIds.add(id);
+          nextColumns.push({
+            id,
+            title: COLUMN_TITLE_BY_ID[id] ?? id.replace(/_/g, ' '),
+            order: nextColumns.length,
+          });
+        }
+      }
+      nextColumns.sort(
+        (a, b) =>
+          (CANONICAL_COLUMN_ORDER[a.id] ?? a.order ?? 999) -
+          (CANONICAL_COLUMN_ORDER[b.id] ?? b.order ?? 999)
       );
+      setColumns(nextColumns);
       setTickets(ticketsRes);
-      setNotes(notesRes);
+      setNotes(
+        (notesRes as Note[]).map((n) => ({
+          ...n,
+          node_ids: Array.isArray(n.node_ids) ? n.node_ids : [],
+          edge_ids: Array.isArray(n.edge_ids) ? n.edge_ids : [],
+        }))
+      );
       const nodes = Array.isArray(graphRes.nodes) ? graphRes.nodes as Array<{ id?: string; data?: { label?: string } }> : [];
       const edges = Array.isArray(graphRes.edges) ? graphRes.edges as Array<{ id?: string; source?: string; target?: string; data?: { label?: string } }> : [];
       setGraphNodes(nodes.map((n) => ({ id: n.id ?? '', label: (n.data?.label ?? n.id) || 'Unnamed' })));
@@ -135,20 +184,40 @@ const KanbanPage: React.FC = () => {
     setAddTicketLoading(true);
     try {
       const data = await createTicket(projectId, {
-        column_id: 'backlog',
+        column_id: newTicketColumnId || 'backlog',
         title: newTicketTitle.trim(),
         description: newTicketDescription.trim() || undefined,
-        priority: 'medium',
-        status: 'todo',
+        priority: newTicketPriority,
+        status: newTicketStatus,
+        associated_node_ids: newTicketNodeIds,
+        associated_edge_ids: newTicketEdgeIds,
       });
       setTickets((prev) => [...prev, data]);
       setNewTicketTitle('');
       setNewTicketDescription('');
+      setNewTicketPriority('medium');
+      setNewTicketStatus('todo');
+      setNewTicketColumnId(columns.find((c) => c.id === 'backlog')?.id || columns[0]?.id || 'backlog');
+      setNewTicketNodeIds([]);
+      setNewTicketEdgeIds([]);
+      setCreateTicketOpen(false);
     } catch (error) {
       setAddTicketError(error instanceof Error ? error.message : 'Failed to add ticket');
     } finally {
       setAddTicketLoading(false);
     }
+  };
+
+  const openCreateTicket = () => {
+    setNewTicketTitle('');
+    setNewTicketDescription('');
+    setNewTicketPriority('medium');
+    setNewTicketStatus('todo');
+    setNewTicketColumnId(columns.find((c) => c.id === 'backlog')?.id || columns[0]?.id || 'backlog');
+    setNewTicketNodeIds([]);
+    setNewTicketEdgeIds([]);
+    setAddTicketError(null);
+    setCreateTicketOpen(true);
   };
 
   const openEditTicket = (ticket: Ticket) => {
@@ -240,10 +309,15 @@ const KanbanPage: React.FC = () => {
       const data = await createNote(projectId, {
         title: newNoteTitle.trim(),
         content: newNoteContent.trim() || '',
+        node_ids: newNoteNodeIds,
+        edge_ids: newNoteEdgeIds,
       });
       setNotes((prev) => [...prev, data]);
       setNewNoteTitle('');
       setNewNoteContent('');
+      setNewNoteNodeIds([]);
+      setNewNoteEdgeIds([]);
+      setCreateNoteOpen(false);
     } catch (error) {
       setAddNoteError(error instanceof Error ? error.message : 'Failed to add note');
     } finally {
@@ -251,12 +325,21 @@ const KanbanPage: React.FC = () => {
     }
   };
 
+  const openCreateNote = () => {
+    setNewNoteTitle('');
+    setNewNoteContent('');
+    setNewNoteNodeIds([]);
+    setNewNoteEdgeIds([]);
+    setAddNoteError(null);
+    setCreateNoteOpen(true);
+  };
+
   const openEditNote = (note: Note) => {
     setEditNote(note);
     setEditNoteTitle(note.title ?? '');
     setEditNoteContent(note.content ?? '');
-    setEditNoteNodeId(note.node_id ?? '');
-    setEditNoteEdgeId(note.edge_id ?? '');
+    setEditNoteNodeIds(Array.isArray(note.node_ids) ? note.node_ids : []);
+    setEditNoteEdgeIds(Array.isArray(note.edge_ids) ? note.edge_ids : []);
   };
 
   const handleSaveNote = async () => {
@@ -265,10 +348,15 @@ const KanbanPage: React.FC = () => {
       const updated = await updateNote(projectId, editNote.id, {
         title: editNoteTitle.trim() || undefined,
         content: editNoteContent.trim() || undefined,
-        node_id: editNoteNodeId.trim() || undefined,
-        edge_id: editNoteEdgeId.trim() || undefined,
+        node_ids: editNoteNodeIds,
+        edge_ids: editNoteEdgeIds,
       });
-      setNotes((prev) => prev.map((n) => (n.id === editNote.id ? updated : n)));
+      const normalized = {
+        ...updated,
+        node_ids: Array.isArray(updated.node_ids) ? updated.node_ids : [],
+        edge_ids: Array.isArray(updated.edge_ids) ? updated.edge_ids : [],
+      };
+      setNotes((prev) => prev.map((n) => (n.id === editNote.id ? normalized : n)));
       setEditNote(null);
     } catch (error) {
       console.error('Failed to update note:', error);
@@ -325,6 +413,9 @@ const KanbanPage: React.FC = () => {
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3, flexWrap: 'wrap', gap: 2 }}>
         <Typography variant="h4">Kanban Board</Typography>
         <Box sx={{ display: 'flex', gap: 1 }}>
+          <Button variant="contained" size="small" onClick={openCreateTicket}>
+            Create ticket
+          </Button>
           <Button variant="outlined" size="small" onClick={openEditColumns}>
             Edit columns
           </Button>
@@ -334,61 +425,23 @@ const KanbanPage: React.FC = () => {
         </Box>
       </Box>
 
-      {/* Add ticket form */}
-      <Paper sx={{ p: 2, mb: 3 }}>
-        <Typography variant="h6" sx={{ mb: 2 }}>
-          New ticket
-        </Typography>
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, maxWidth: 500 }}>
-          <TextField
-            label="Title"
-            value={newTicketTitle}
-            onChange={(e) => setNewTicketTitle(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleAddTicket()}
-            placeholder="What needs to be done?"
-            required
-            fullWidth
-            size="small"
-          />
-          <TextField
-            label="Description (optional)"
-            value={newTicketDescription}
-            onChange={(e) => setNewTicketDescription(e.target.value)}
-            placeholder="More details..."
-            multiline
-            minRows={2}
-            fullWidth
-            size="small"
-          />
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            <Button
-              variant="contained"
-              color="primary"
-              onClick={handleAddTicket}
-              disabled={!newTicketTitle.trim() || addTicketLoading}
-            >
-              {addTicketLoading ? 'Adding…' : 'Add ticket'}
-            </Button>
-          </Box>
-        </Box>
-        <Collapse in={!!addTicketError}>
-          {addTicketError && (
-            <Alert severity="error" sx={{ mt: 2 }} onClose={() => setAddTicketError(null)}>
-              {addTicketError}
-            </Alert>
-          )}
-        </Collapse>
-      </Paper>
-
       {/* Board */}
       <Paper sx={{ p: 2, mb: 3 }}>
-        <Box sx={{ display: 'flex', gap: 3 }}>
+        <Box sx={{ display: 'flex', gap: 3, alignItems: 'stretch' }}>
           {columns.map((column) => (
-            <Box key={column.id} sx={{ flex: 1, minWidth: 250 }}>
+            <Box key={column.id} sx={{ flex: 1, minWidth: 250, display: 'flex', flexDirection: 'column' }}>
               <Typography variant="h6" sx={{ mb: 2, fontWeight: 'bold' }}>
                 {column.title}
               </Typography>
-              <Paper sx={{ minHeight: 400, p: 2, backgroundColor: 'background.default' }}>
+              <Paper
+                sx={{
+                  minHeight: 400,
+                  maxHeight: '70vh',
+                  overflowY: 'auto',
+                  p: 2,
+                  backgroundColor: 'background.default',
+                }}
+              >
                 {tickets
                   .filter((ticket) => ticket.column_id === column.id)
                   .map((ticket) => (
@@ -417,6 +470,13 @@ const KanbanPage: React.FC = () => {
                         <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
                           Priority: {ticket.priority}
                         </Typography>
+                        {ticket.pr_url && (
+                          <Typography variant="caption" sx={{ mt: 1, display: 'block' }}>
+                            <a href={ticket.pr_url} target="_blank" rel="noopener noreferrer">
+                              Open PR{ticket.pr_number ? ` #${ticket.pr_number}` : ''}
+                            </a>
+                          </Typography>
+                        )}
                       </CardContent>
                       <CardActions sx={{ justifyContent: 'space-between', pt: 0 }}>
                         <Box>
@@ -454,6 +514,128 @@ const KanbanPage: React.FC = () => {
           ))}
         </Box>
       </Paper>
+
+      {/* Ticket create dialog */}
+      <Dialog open={createTicketOpen} onClose={() => setCreateTicketOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>Create ticket</DialogTitle>
+        <DialogContent>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
+            <TextField
+              label="Title"
+              value={newTicketTitle}
+              onChange={(e) => setNewTicketTitle(e.target.value)}
+              fullWidth
+              size="small"
+            />
+            <TextField
+              label="Description"
+              value={newTicketDescription}
+              onChange={(e) => setNewTicketDescription(e.target.value)}
+              multiline
+              minRows={3}
+              fullWidth
+              size="small"
+            />
+            <FormControl size="small" fullWidth>
+              <InputLabel>Priority</InputLabel>
+              <Select
+                value={newTicketPriority}
+                label="Priority"
+                onChange={(e) => setNewTicketPriority(e.target.value)}
+              >
+                <MenuItem value="low">Low</MenuItem>
+                <MenuItem value="medium">Medium</MenuItem>
+                <MenuItem value="high">High</MenuItem>
+              </Select>
+            </FormControl>
+            <FormControl size="small" fullWidth>
+              <InputLabel>Column</InputLabel>
+              <Select
+                value={newTicketColumnId}
+                label="Column"
+                onChange={(e) => setNewTicketColumnId(e.target.value)}
+              >
+                {columns.map((col) => (
+                  <MenuItem key={col.id} value={col.id}>
+                    {col.title}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <FormControl size="small" fullWidth>
+              <InputLabel>Status</InputLabel>
+              <Select
+                value={newTicketStatus}
+                label="Status"
+                onChange={(e) => setNewTicketStatus(e.target.value)}
+              >
+                <MenuItem value="todo">Todo</MenuItem>
+                <MenuItem value="in_progress">In progress</MenuItem>
+                <MenuItem value="done">Done</MenuItem>
+              </Select>
+            </FormControl>
+            <FormControl size="small" fullWidth>
+              <InputLabel>Nodes</InputLabel>
+              <Select
+                multiple
+                value={newTicketNodeIds}
+                label="Nodes"
+                onChange={(e) => setNewTicketNodeIds(typeof e.target.value === 'string' ? [] : e.target.value)}
+                renderValue={(selected) =>
+                  (selected as string[])
+                    .map((id) => graphNodes.find((n) => n.id === id)?.label ?? id)
+                    .join(', ') || 'None'
+                }
+              >
+                {graphNodes.map((n) => (
+                  <MenuItem key={n.id} value={n.id}>
+                    {n.label}
+                  </MenuItem>
+                ))}
+                {graphNodes.length === 0 && (
+                  <MenuItem disabled>No nodes in graph yet</MenuItem>
+                )}
+              </Select>
+            </FormControl>
+            <FormControl size="small" fullWidth>
+              <InputLabel>Edges</InputLabel>
+              <Select
+                multiple
+                value={newTicketEdgeIds}
+                label="Edges"
+                onChange={(e) => setNewTicketEdgeIds(typeof e.target.value === 'string' ? [] : e.target.value)}
+                renderValue={(selected) =>
+                  (selected as string[])
+                    .map((id) => graphEdges.find((edge) => edge.id === id)?.label ?? id)
+                    .join(', ') || 'None'
+                }
+              >
+                {graphEdges.map((edge) => (
+                  <MenuItem key={edge.id} value={edge.id}>
+                    {edge.label}
+                  </MenuItem>
+                ))}
+                {graphEdges.length === 0 && (
+                  <MenuItem disabled>No edges in graph yet</MenuItem>
+                )}
+              </Select>
+            </FormControl>
+            <Collapse in={!!addTicketError}>
+              {addTicketError && (
+                <Alert severity="error" onClose={() => setAddTicketError(null)}>
+                  {addTicketError}
+                </Alert>
+              )}
+            </Collapse>
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCreateTicketOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={handleAddTicket} disabled={!newTicketTitle.trim() || addTicketLoading}>
+            {addTicketLoading ? 'Creating…' : 'Create'}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Ticket edit dialog */}
       <Dialog open={!!editTicket} onClose={() => setEditTicket(null)} maxWidth="md" fullWidth>
@@ -637,43 +819,14 @@ const KanbanPage: React.FC = () => {
 
       {/* Notes section */}
       <Paper sx={{ p: 2 }}>
-        <Typography variant="h6" sx={{ mb: 2 }}>
-          Notes
-        </Typography>
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, maxWidth: 500, mb: 3 }}>
-          <TextField
-            label="Note title"
-            value={newNoteTitle}
-            onChange={(e) => setNewNoteTitle(e.target.value)}
-            placeholder="Title"
-            fullWidth
-            size="small"
-          />
-          <TextField
-            label="Content"
-            value={newNoteContent}
-            onChange={(e) => setNewNoteContent(e.target.value)}
-            placeholder="Write a note..."
-            multiline
-            minRows={3}
-            fullWidth
-            size="small"
-          />
-          <Button
-            variant="outlined"
-            onClick={handleAddNote}
-            disabled={!newNoteTitle.trim() || addNoteLoading}
-          >
-            {addNoteLoading ? 'Adding…' : 'Add note'}
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2, gap: 2, flexWrap: 'wrap' }}>
+          <Typography variant="h6">
+            Notes
+          </Typography>
+          <Button variant="outlined" size="small" onClick={openCreateNote}>
+            Create note
           </Button>
         </Box>
-        <Collapse in={!!addNoteError}>
-          {addNoteError && (
-            <Alert severity="error" sx={{ mb: 2 }} onClose={() => setAddNoteError(null)}>
-              {addNoteError}
-            </Alert>
-          )}
-        </Collapse>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
           {notes.length === 0 ? (
             <Typography variant="body2" color="text.secondary">
@@ -706,6 +859,102 @@ const KanbanPage: React.FC = () => {
         </Box>
       </Paper>
 
+      {/* Note create dialog */}
+      <Dialog open={createNoteOpen} onClose={() => setCreateNoteOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Create note</DialogTitle>
+        <DialogContent>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
+            <TextField
+              label="Title"
+              value={newNoteTitle}
+              onChange={(e) => setNewNoteTitle(e.target.value)}
+              fullWidth
+              size="small"
+            />
+            <TextField
+              label="Content"
+              value={newNoteContent}
+              onChange={(e) => setNewNoteContent(e.target.value)}
+              multiline
+              minRows={3}
+              fullWidth
+              size="small"
+            />
+            <FormControl size="small" fullWidth>
+              <InputLabel>Nodes</InputLabel>
+              <Select
+                multiple
+                value={newNoteNodeIds}
+                label="Nodes"
+                onChange={(e) =>
+                  setNewNoteNodeIds(
+                    typeof e.target.value === 'string' ? e.target.value.split(',') : e.target.value
+                  )
+                }
+                renderValue={(selected) =>
+                  (selected as string[])
+                    .map((id) => graphNodes.find((n) => n.id === id)?.label ?? id)
+                    .join(', ') || 'None'
+                }
+              >
+                {graphNodes.map((n) => (
+                  <MenuItem key={n.id} value={n.id}>
+                    {n.label}
+                  </MenuItem>
+                ))}
+                {graphNodes.length === 0 && (
+                  <MenuItem disabled>No nodes in graph yet</MenuItem>
+                )}
+              </Select>
+            </FormControl>
+            <FormControl size="small" fullWidth>
+              <InputLabel>Edges</InputLabel>
+              <Select
+                multiple
+                value={newNoteEdgeIds}
+                label="Edges"
+                onChange={(e) =>
+                  setNewNoteEdgeIds(
+                    typeof e.target.value === 'string' ? e.target.value.split(',') : e.target.value
+                  )
+                }
+                renderValue={(selected) =>
+                  (selected as string[])
+                    .map((id) => graphEdges.find((e) => e.id === id)?.label ?? id)
+                    .join(', ') || 'None'
+                }
+              >
+                {graphEdges.map((edge) => (
+                  <MenuItem key={edge.id} value={edge.id}>
+                    {edge.label}
+                  </MenuItem>
+                ))}
+                {graphEdges.length === 0 && (
+                  <MenuItem disabled>No edges in graph yet</MenuItem>
+                )}
+              </Select>
+            </FormControl>
+            <Collapse in={!!addNoteError}>
+              {addNoteError && (
+                <Alert severity="error" onClose={() => setAddNoteError(null)}>
+                  {addNoteError}
+                </Alert>
+              )}
+            </Collapse>
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCreateNoteOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={handleAddNote}
+            disabled={!newNoteTitle.trim() || addNoteLoading}
+          >
+            {addNoteLoading ? 'Creating…' : 'Create'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Note edit dialog */}
       <Dialog open={!!editNote} onClose={() => setEditNote(null)} maxWidth="sm" fullWidth>
         {editNote && (
@@ -729,22 +978,60 @@ const KanbanPage: React.FC = () => {
                   fullWidth
                   size="small"
                 />
-                <TextField
-                  label="Node ID"
-                  value={editNoteNodeId}
-                  onChange={(e) => setEditNoteNodeId(e.target.value)}
-                  placeholder="Link to graph node"
-                  fullWidth
-                  size="small"
-                />
-                <TextField
-                  label="Edge ID"
-                  value={editNoteEdgeId}
-                  onChange={(e) => setEditNoteEdgeId(e.target.value)}
-                  placeholder="Link to graph edge"
-                  fullWidth
-                  size="small"
-                />
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Nodes</InputLabel>
+                  <Select
+                    multiple
+                    value={editNoteNodeIds}
+                    label="Nodes"
+                    onChange={(e) =>
+                      setEditNoteNodeIds(
+                        typeof e.target.value === 'string' ? e.target.value.split(',') : e.target.value
+                      )
+                    }
+                    renderValue={(selected) =>
+                      (selected as string[])
+                        .map((id) => graphNodes.find((n) => n.id === id)?.label ?? id)
+                        .join(', ') || 'None'
+                    }
+                  >
+                    {graphNodes.map((n) => (
+                      <MenuItem key={n.id} value={n.id}>
+                        {n.label}
+                      </MenuItem>
+                    ))}
+                    {graphNodes.length === 0 && (
+                      <MenuItem disabled>No nodes in graph yet</MenuItem>
+                    )}
+                  </Select>
+                </FormControl>
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Edges</InputLabel>
+                  <Select
+                    multiple
+                    value={editNoteEdgeIds}
+                    label="Edges"
+                    onChange={(e) =>
+                      setEditNoteEdgeIds(
+                        typeof e.target.value === 'string' ? e.target.value.split(',') : e.target.value
+                      )
+                    }
+                    renderValue={(selected) =>
+                      (selected as string[])
+                        .map((id) => graphEdges.find((e) => e.id === id)?.label ?? id)
+                        .join(', ') || 'None'
+                    }
+                  >
+                    {graphEdges.map((edge) => (
+                      <MenuItem key={edge.id} value={edge.id}>
+                        {edge.label}
+                      </MenuItem>
+                    ))}
+                    {graphEdges.length === 0 && (
+                      <MenuItem disabled>No edges in graph yet</MenuItem>
+                    )}
+                  </Select>
+                </FormControl>
               </Box>
             </DialogContent>
             <DialogActions>
