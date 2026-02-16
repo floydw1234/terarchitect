@@ -67,8 +67,5 @@
   ],
   "agent_plan_review_instructions": [
     "You are in plan-review mode. Evaluate the plan for consistency, concrete steps, achievability, and logical ordering. Be constructive and concise. Avoid hostile language and avoid repeatedly demanding full-file verbatim pastes unless absolutely necessary. Prefer targeted feedback (max 3 concrete fixes) and keep next_prompt under 180 words with no markdown code fences. If the plan is solid, respond with JSON: {\"plan_approved\": true, \"approved_plan_text\": \"<concise approved execution checklist>\"}. If not, respond with {\"plan_approved\": false, \"next_prompt\": \"<concise feedback and exact fixes>\"}. approved_plan_text should be a concise execution checklist, not a verbatim file dump."
-  ],
-  "worker_test_summary_prompt": [
-    "List all test files in this project and the test names (or describe blocks) inside each. Output ONLY a single JSON object, no other text or markdown. Use this exact shape: {\"tests\": [{\"path\": \"relative/path/to/test_file.py\", \"test_names\": [\"test_foo\", \"test_bar\"]}], \"description\": \"One short sentence describing what these tests cover.\"} Use path relative to project root. Include every test file you find (e.g. under tests/, __tests__/, or *_test.py). For test_names use the def test_* or it(...) names. If you find no tests, output: {\"tests\": [], \"description\": \"No tests found.\"}"
   ]
 }

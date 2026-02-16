@@ -101,13 +101,6 @@ def get_worker_plan_prompt_prefix(task_plan_path: Optional[str] = None) -> str:
     return raw
 
 
-def get_worker_test_summary_prompt() -> str:
-    return _get_optional_prompt(
-        "worker_test_summary_prompt",
-        'List all test files in this project and the test names inside each. Output ONLY a single JSON object: {"tests": [{"path": "relative/path/to/file.py", "test_names": ["test_foo"]}], "description": "Short sentence."} If no tests: {"tests": [], "description": "No tests found."}',
-    )
-
-
 def get_agent_plan_review_instructions() -> str:
     return _get_optional_prompt(
         "agent_plan_review_instructions",
@@ -859,16 +852,13 @@ class MiddleAgent:
                     flow_label=None,
                 )
 
-            self._debug_log("Running worker to produce test summary for PR comment")
-            test_summary = self._run_test_summary_worker(session_id, project_path)
             self._debug_log("Finalizing: commit, push, PR")
-            # Step 4: Finalize (commit, push, PR, post test summary comment, move to In Review)
+            # Step 4: Finalize (commit, push, PR, move to In Review)
             self._finalize(
                 ticket,
                 session_id,
                 project_path=project_path,
                 completion_summary=completion_summary,
-                test_summary=test_summary,
             )
         finally:
             _active_sessions.pop(ticket.id, None)
@@ -1333,57 +1323,6 @@ class MiddleAgent:
                 "return_code": -1,
             }
 
-    def _run_test_summary_worker(
-        self, session_id: str, project_path: Optional[str]
-    ) -> Optional[Dict[str, Any]]:
-        """Run worker once to get a JSON summary of tests. Returns {\"tests\": [{\"path\", \"test_names\"}], \"description\": str} or None."""
-        prompt = get_worker_test_summary_prompt()
-        response = self._send_to_worker(prompt, session_id, project_path, resume=True)
-        raw = (response.get("output") or "").strip()
-        if not raw or response.get("return_code") != 0:
-            return None
-        # Extract JSON: try ```json ... ``` then first { ... } with balanced braces
-        json_str = None
-        m = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", raw)
-        if m:
-            json_str = m.group(1)
-        if not json_str:
-            start = raw.find("{")
-            if start >= 0:
-                depth = 0
-                for i in range(start, len(raw)):
-                    if raw[i] == "{":
-                        depth += 1
-                    elif raw[i] == "}":
-                        depth -= 1
-                        if depth == 0:
-                            json_str = raw[start : i + 1]
-                            break
-        if not json_str:
-            return None
-        try:
-            data = json.loads(json_str)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(data, dict):
-            return None
-        tests = data.get("tests")
-        description = data.get("description")
-        if not isinstance(tests, list):
-            return None
-        out_tests: List[Dict[str, Any]] = []
-        for t in tests:
-            if not isinstance(t, dict):
-                continue
-            path = (t.get("path") or "").strip()
-            names = t.get("test_names")
-            if isinstance(names, list):
-                names = [str(n).strip() for n in names if n]
-            else:
-                names = []
-            out_tests.append({"path": path or "(unknown)", "test_names": names})
-        return {"tests": out_tests, "description": str(description or "").strip() or "Tests in this PR."}
-
     def _summarize_director_messages(self, messages: List[Dict[str, str]]) -> str:
         """Call the agent API to summarize a chunk of Director conversation. Returns summary text."""
         formatted = "\n\n".join(
@@ -1834,8 +1773,6 @@ Write a clear, descriptive paragraph for the PR description explaining what was 
             self._debug_log(f"PR description generation failed: {e}")
             return None
 
-    TERARCHITECT_TESTS_COMMENT_MARKER = "<!-- terarchitect-tests"
-
     def _finalize(
         self,
         ticket: Ticket,
@@ -1845,9 +1782,8 @@ Write a clear, descriptive paragraph for the PR description explaining what was 
         review_mode: bool = False,
         pr_number_for_comment: Optional[int] = None,
         pr_comment_body: Optional[str] = None,
-        test_summary: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Commit, push. If review_mode: post pr_comment_body (direct reply to reviewer) as PR comment. Else: create PR, optionally post test-summary comment, move ticket to In Review."""
+        """Commit, push. If review_mode: post pr_comment_body (direct reply to reviewer) as PR comment. Else: create PR, move ticket to In Review."""
         self._log(
             ticket.project_id,
             ticket.id,
@@ -1939,22 +1875,6 @@ Write a clear, descriptive paragraph for the PR description explaining what was 
                                 pr_number = int(m.group(1))
                         except (ValueError, AttributeError):
                             pass
-                    # Post test summary as a PR comment so the UI can show it in the Tests section
-                    if pr_number is not None and test_summary and isinstance(test_summary, dict):
-                        try:
-                            comment_body = self.TERARCHITECT_TESTS_COMMENT_MARKER + "\n" + json.dumps(test_summary) + "\n-->"
-                            if len(comment_body) > 60000:
-                                comment_body = comment_body[:59997] + "\n...-->"
-                            subprocess.run(
-                                ["gh", "pr", "comment", str(pr_number), "--body", comment_body],
-                                cwd=project_path,
-                                capture_output=True,
-                                text=True,
-                                timeout=30,
-                                env=gh_env,
-                            )
-                        except Exception as e:
-                            self._debug_log(f"Failed to post test-summary comment: {e}")
             except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
                 self._debug_log(f"Finalize git/PR error: {e}")
         if not review_mode:

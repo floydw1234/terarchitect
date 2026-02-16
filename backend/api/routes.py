@@ -508,6 +508,26 @@ def ticket_review(project_id, ticket_id):
                     msg = msg.split("\n")[0]
                 commits.append({"sha": sha, "message": msg.strip()})
 
+        # Test files: only those changed/added in this PR (from GitHub PR files API)
+        r_files = subprocess.run(
+            ["gh", "api", f"repos/{slug}/pulls/{pr_row.pr_number}/files"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=_env_for_gh_user(),
+        )
+        if r_files.returncode == 0 and r_files.stdout:
+            files_data = json.loads(r_files.stdout)
+            files_list = files_data if isinstance(files_data, list) else []
+            for f in files_list:
+                path = (f.get("filename") or "").strip()
+                if not _is_test_file(path):
+                    continue
+                patch = f.get("patch") or ""
+                names = _extract_test_names_from_patch(patch)
+                test_files.append({"path": path, "test_names": names})
+        test_files.sort(key=lambda x: (x["path"].replace("\\", "/").lower(), x["path"]))
+
         comments = []
         r_comments = subprocess.run(
             ["gh", "api", f"repos/{slug}/issues/{pr_row.pr_number}/comments"],
@@ -522,43 +542,8 @@ def ticket_review(project_id, ticket_id):
             for c in list_comments:
                 author = (c.get("user") or {}).get("login") or "unknown"
                 body = (c.get("body") or "").strip()
-                if _TERARCHITECT_TESTS_MARKER in body:
-                    continue  # Skip machine-generated test summary comment; shown in Tests section
                 created_at = c.get("created_at")
                 comments.append({"author": author, "body": body, "created_at": created_at})
-
-        # Prefer test summary from agent-posted PR comment (terarchitect-tests)
-        parsed_tests, parsed_desc = _parse_test_summary_from_comments(comments)
-        if parsed_tests is not None:
-            test_files = parsed_tests
-            tests_description = parsed_desc or ""
-        else:
-            r_files = subprocess.run(
-                ["gh", "api", f"repos/{slug}/pulls/{pr_row.pr_number}/files"],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                env=_env_for_gh_user(),
-            )
-            if r_files.returncode == 0 and r_files.stdout:
-                files_data = json.loads(r_files.stdout)
-                files_list = files_data if isinstance(files_data, list) else []
-                for f in files_list:
-                    path = (f.get("filename") or "").strip()
-                    if not _is_test_file(path):
-                        continue
-                    patch = f.get("patch") or ""
-                    names = _extract_test_names_from_patch(patch)
-                    test_files.append({"path": path, "test_names": names})
-
-            if project.project_path:
-                pr_paths = {tf["path"].replace("\\", "/") for tf in test_files}
-                for tf in _discover_test_files_from_path(project.project_path):
-                    norm = tf["path"].replace("\\", "/")
-                    if norm not in pr_paths:
-                        pr_paths.add(norm)
-                        test_files.append({"path": tf["path"], "test_names": tf["test_names"]})
-            test_files.sort(key=lambda x: (x["path"].replace("\\", "/").lower(), x["path"]))
     except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError) as e:
         current_app.logger.warning("Review fetch failed: %s", e)
         return jsonify({"error": "Failed to fetch PR from GitHub", "detail": str(e)}), 502
@@ -987,46 +972,6 @@ def memory_delete(project_id):
     return jsonify({"message": "Deleted", "count": len(docs)})
 
 
-# Marker for PR comment containing test summary (JSON). Must match agent.MiddleAgent.TERARCHITECT_TESTS_COMMENT_MARKER.
-_TERARCHITECT_TESTS_MARKER = "<!-- terarchitect-tests"
-
-
-def _parse_test_summary_from_comments(comments_list):
-    """From list of {body, ...}, find a comment containing terarchitect-tests marker and return (test_files, description) or (None, None)."""
-    for c in comments_list:
-        body = (c.get("body") or "").strip()
-        if _TERARCHITECT_TESTS_MARKER not in body:
-            continue
-        start = body.find(_TERARCHITECT_TESTS_MARKER)
-        payload_start = body.find("\n", start) + 1 if start >= 0 else -1
-        end = body.find("-->", payload_start) if payload_start > 0 else -1
-        if payload_start <= 0 or end < 0:
-            continue
-        json_str = body[payload_start:end].strip()
-        try:
-            data = json.loads(json_str)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(data, dict) or "tests" not in data:
-            continue
-        tests = data.get("tests")
-        if not isinstance(tests, list):
-            continue
-        out = []
-        for t in tests:
-            if not isinstance(t, dict):
-                continue
-            path = (t.get("path") or "").strip() or "(unknown)"
-            names = t.get("test_names")
-            if isinstance(names, list):
-                names = [str(n).strip() for n in names if n]
-            else:
-                names = []
-            out.append({"path": path, "test_names": names})
-        return (out, (data.get("description") or "").strip())
-    return (None, None)
-
-
 def _is_test_file(path):
     """True if path looks like a test file (by convention). Excludes __init__.py (package marker)."""
     if not path:
@@ -1078,52 +1023,6 @@ def _extract_test_names_from_patch(patch):
         if name and name not in seen:
             seen.add(name)
             out.append(name)
-    return out
-
-
-def _extract_test_names_from_content(content):
-    """From file content, extract Python def test_* names. Returns list of unique strings."""
-    if not content:
-        return []
-    seen = set()
-    out = []
-    for m in re.finditer(r"^\s*def\s+(test_\w+)\s*\(", content, re.MULTILINE):
-        name = m.group(1).strip()
-        name = name.replace("_", " ").strip()
-        if name and name not in seen:
-            seen.add(name)
-            out.append(name)
-    return out
-
-
-def _discover_test_files_from_path(project_path, max_files=200):
-    """Walk project_path and return list of {path (relative), test_names} for files that _is_test_file accepts."""
-    if not project_path or not os.path.isdir(project_path):
-        return []
-    out = []
-    try:
-        for root, _dirs, files in os.walk(project_path):
-            if len(out) >= max_files:
-                break
-            rel_root = os.path.relpath(root, project_path)
-            if rel_root == ".":
-                rel_root = ""
-            for f in files:
-                if len(out) >= max_files:
-                    break
-                rel = os.path.join(rel_root, f).replace("\\", "/")
-                if not _is_test_file(rel):
-                    continue
-                abspath = os.path.join(root, f)
-                try:
-                    with open(abspath, "r", encoding="utf-8", errors="replace") as fp:
-                        content = fp.read()
-                except Exception:
-                    content = ""
-                names = _extract_test_names_from_content(content)
-                out.append({"path": rel, "test_names": names})
-    except Exception:
-        pass
     return out
 
 
