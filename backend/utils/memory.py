@@ -26,30 +26,63 @@ _cache: Dict[str, tuple] = {}  # project_id -> (HippoRAG instance, threading.Loc
 _cache_lock = threading.Lock()
 
 
-def get_hipporag_kwargs() -> Dict[str, str]:
-    """Build HippoRAG constructor kwargs from environment variables."""
+def get_hipporag_kwargs() -> Dict[str, Any]:
+    """Build HippoRAG constructor kwargs from app settings and environment. Memory defaults to Agent LLM URL and model when not set.
+    Includes _memory_api_key (popped before passing to HippoRAG) for cache key and env when creating instance."""
+    try:
+        from utils.app_settings import get_setting_or_env
+    except ImportError:
+        get_setting_or_env = lambda k, d=None: os.environ.get(k, d)
+    # Memory LLM: default to Agent's URL and model when not set. OpenAI client expects base_url to include /v1.
+    llm_url = (get_setting_or_env("MEMORY_LLM_BASE_URL") or get_setting_or_env("VLLM_URL") or "").strip().rstrip("/")
+    if llm_url and not llm_url.endswith("/v1"):
+        llm_url = f"{llm_url}/v1"
+    llm_model = get_setting_or_env("MEMORY_LLM_MODEL") or get_setting_or_env("AGENT_MODEL") or "gpt-4o-mini"
+    emb_model = get_setting_or_env("MEMORY_EMBEDDING_MODEL", "text-embedding-mpnet") or "text-embedding-mpnet"
+    emb_url = (get_setting_or_env("MEMORY_EMBEDDING_BASE_URL") or get_setting_or_env("EMBEDDING_SERVICE_URL") or "").strip().rstrip("/")
+    memory_api_key = (
+        get_setting_or_env("MEMORY_LLM_API_KEY")
+        or get_setting_or_env("AGENT_API_KEY")
+        or get_setting_or_env("openai_api_key")
+        or ""
+    ).strip() or ""
     out = {
-        "llm_model_name": os.environ.get("MEMORY_LLM_MODEL", "gpt-4o-mini"),
-        "embedding_model_name": os.environ.get("MEMORY_EMBEDDING_MODEL", "text-embedding-mpnet"),
+        "llm_model_name": llm_model,
+        "embedding_model_name": emb_model,
+        "_memory_api_key": memory_api_key,
     }
-    if os.environ.get("MEMORY_LLM_BASE_URL"):
-        out["llm_base_url"] = os.environ.get("MEMORY_LLM_BASE_URL")
-    if os.environ.get("MEMORY_EMBEDDING_BASE_URL"):
-        out["embedding_base_url"] = os.environ.get("MEMORY_EMBEDDING_BASE_URL")
+    if llm_url:
+        out["llm_base_url"] = llm_url
+    if emb_url:
+        out["embedding_base_url"] = emb_url
     return out
 
 
 def _get_instance(project_id: UUID, base_save_dir: str, **hipporag_kwargs) -> tuple:
     """Get or create (HippoRAG, Lock) for this project. Caller must hold lock when using."""
-    key = str(project_id)
+    memory_api_key = hipporag_kwargs.pop("_memory_api_key", "") or ""
+    cache_key = (str(project_id), memory_api_key)
     with _cache_lock:
-        if key not in _cache:
+        if cache_key not in _cache:
             HippoRAG = _get_hipporag()
-            save_dir = os.path.join(base_save_dir, key)
+            save_dir = os.path.join(base_save_dir, str(project_id))
             os.makedirs(save_dir, exist_ok=True)
-            instance = HippoRAG(save_dir=save_dir, **hipporag_kwargs)
-            _cache[key] = (instance, threading.Lock())
-        return _cache[key]
+            old_key = os.environ.get("OPENAI_API_KEY")
+            if memory_api_key:
+                os.environ["OPENAI_API_KEY"] = memory_api_key
+            else:
+                os.environ.setdefault("OPENAI_API_KEY", "sk-")
+            try:
+                instance = HippoRAG(save_dir=save_dir, **hipporag_kwargs)
+            finally:
+                if memory_api_key and old_key is not None:
+                    os.environ["OPENAI_API_KEY"] = old_key
+                elif memory_api_key:
+                    os.environ.pop("OPENAI_API_KEY", None)
+                elif not old_key:
+                    os.environ.pop("OPENAI_API_KEY", None)
+            _cache[cache_key] = (instance, threading.Lock())
+        return _cache[cache_key]
 
 
 def index(project_id: UUID, docs: List[str], base_save_dir: str, **hipporag_kwargs) -> None:
@@ -90,10 +123,11 @@ def delete(project_id: UUID, docs: List[str], base_save_dir: str, **hipporag_kwa
 def remove_project_memory(project_id: UUID, base_save_dir: str) -> None:
     """Remove all stored memory for a project (directory and cache). Call when deleting a project."""
     import shutil
-    key = str(project_id)
+    pid = str(project_id)
     with _cache_lock:
-        if key in _cache:
-            del _cache[key]
-    save_dir = os.path.join(base_save_dir, key)
+        for cache_key in list(_cache.keys()):
+            if cache_key[0] == pid:
+                del _cache[cache_key]
+    save_dir = os.path.join(base_save_dir, pid)
     if os.path.isdir(save_dir):
         shutil.rmtree(save_dir)

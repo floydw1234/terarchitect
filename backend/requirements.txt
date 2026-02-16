@@ -19,5 +19,7 @@ pydantic>=2.0
 packaging
 # Token counting for Director context window (agent conversation history)
 tiktoken>=0.5.0
+# Encrypt app settings (tokens/keys) at rest
+cryptography>=42.0.0
 # Test runner
 pytest>=7.0.0

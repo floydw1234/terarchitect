@@ -156,6 +156,18 @@ class Setting(db.Model):
     __table_args__ = (db.UniqueConstraint("project_id", "key", name="_project_setting_key"),)
 
 
+class AppSetting(db.Model):
+    """App-level key/value for tokens and API keys. Values stored encrypted when TERARCHITECT_SECRET_KEY is set."""
+
+    __tablename__ = "app_settings"
+
+    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
+    key = db.Column(db.String(255), nullable=False, unique=True)
+    value = db.Column(db.Text, nullable=False)  # encrypted or plaintext
+    created_at = db.Column(db.TIMESTAMP, default=db.func.now())
+    updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
+
+
 class RAGEmbedding(db.Model):
     __tablename__ = "rag_embeddings"
 

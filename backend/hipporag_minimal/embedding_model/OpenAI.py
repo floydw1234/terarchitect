@@ -1,6 +1,7 @@
 from copy import deepcopy
 from typing import List, Optional
 
+import httpx
 import numpy as np
 from tqdm import tqdm
 from openai import OpenAI
@@ -29,8 +30,14 @@ class OpenAIEmbeddingModel(BaseEmbeddingModel):
             f"Initializing {self.__class__.__name__}'s embedding model with params: {self.embedding_config.model_init_params}")
 
         if self.global_config.azure_embedding_endpoint is None:
+            # Pass explicit http_client to avoid openai library passing 'proxies' to httpx.Client (incompatible with httpx 0.28+).
+            http_client = httpx.Client(
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+                timeout=httpx.Timeout(60.0, read=60.0),
+            )
             self.client = OpenAI(
-                base_url=self.global_config.embedding_base_url
+                base_url=self.global_config.embedding_base_url,
+                http_client=http_client,
             )
         else:
             self.client = AzureOpenAI(api_version=self.global_config.azure_embedding_endpoint.split('api-version=')[1],

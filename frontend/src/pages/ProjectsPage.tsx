@@ -11,6 +11,10 @@ import {
   DialogContent,
   DialogActions,
   Stack,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
 } from '@mui/material';
 import { Link } from 'react-router-dom';
 import { getProjects, createProject, deleteProject, type Project } from '../utils/api';
@@ -22,6 +26,7 @@ const ProjectsPage: React.FC = () => {
   const [description, setDescription] = useState('');
   const [projectPath, setProjectPath] = useState('');
   const [githubUrl, setGithubUrl] = useState('');
+  const [projectType, setProjectType] = useState<'new' | 'existing'>('new');
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [deleteConfirmName, setDeleteConfirmName] = useState('');
@@ -51,12 +56,14 @@ const ProjectsPage: React.FC = () => {
         description,
         project_path: projectPath || undefined,
         github_url: githubUrl || undefined,
+        is_existing_repo: projectType === 'existing',
       });
 
       setName('');
       setDescription('');
       setProjectPath('');
       setGithubUrl('');
+      setProjectType('new');
       setCreateOpen(false);
       setProjects((prev) => [...prev, data]);
     } catch (error) {
@@ -187,6 +194,13 @@ const ProjectsPage: React.FC = () => {
                     >
                       Kanban
                     </Button>
+                    <Button
+                      component={Link}
+                      to={`/projects/${project.id}/review`}
+                      size="small"
+                    >
+                      Review
+                    </Button>
                   </Box>
                   <Button
                     size="small"
@@ -211,6 +225,22 @@ const ProjectsPage: React.FC = () => {
         <DialogTitle>Create project</DialogTitle>
         <DialogContent>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
+            <FormControl size="small" fullWidth>
+              <InputLabel>Project type</InputLabel>
+              <Select
+                value={projectType}
+                label="Project type"
+                onChange={(e) => setProjectType(e.target.value as 'new' | 'existing')}
+              >
+                <MenuItem value="new">New project</MenuItem>
+                <MenuItem value="existing">Existing project</MenuItem>
+              </Select>
+              {projectType === 'existing' && (
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+                  No &quot;Project setup&quot; ticket will be added (repo already has structure).
+                </Typography>
+              )}
+            </FormControl>
             <TextField
               label="Project Name"
               value={name}

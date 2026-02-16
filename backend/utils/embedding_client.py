@@ -9,12 +9,21 @@ import requests
 
 
 def _base_url() -> str:
-    return os.environ.get("EMBEDDING_SERVICE_URL", "http://localhost:9009").rstrip("/")
+    try:
+        from utils.app_settings import get_setting_or_env
+        url = get_setting_or_env("EMBEDDING_SERVICE_URL", "http://localhost:9009")
+    except Exception:
+        url = os.environ.get("EMBEDDING_SERVICE_URL", "http://localhost:9009")
+    return (url or "http://localhost:9009").rstrip("/")
 
 
 def _headers() -> dict:
     headers = {"Content-Type": "application/json"}
-    key = os.environ.get("EMBEDDING_API_KEY")
+    try:
+        from utils.app_settings import get_setting_or_env
+        key = get_setting_or_env("EMBEDDING_API_KEY")
+    except Exception:
+        key = os.environ.get("EMBEDDING_API_KEY")
     if key:
         headers["X-API-Key"] = key
     return headers

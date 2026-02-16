@@ -28,18 +28,16 @@ flask run --host=0.0.0.0 --port=5010
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL (default: `postgresql://terarchitect:terarchitect@localhost:5433/terarchitect`, port 5433 to avoid conflict with other Postgres on 5432) |
-| `VLLM_URL` | vLLM server (default: http://localhost:8000) |
-| `VLLM_PROXY_URL` | Proxy URL used by worker/provider defaults (default: http://localhost:8080) |
-| `AGENT_API_URL` | OpenAI-compatible API for agent (default: `{VLLM_URL}/v1/chat/completions`) |
+| `VLLM_URL` | vLLM server for Agent/Director (default: http://localhost:8000). Agent API is `{VLLM_URL}/v1/chat/completions`. |
 | `AGENT_MODEL` | Model name for agent API |
 | `AGENT_API_KEY` | API key (optional for vLLM) |
-| `OPENCODE_CMD` | Worker CLI command (default: `opencode`) |
-| `OPENCODE_PROVIDER_ID` | Provider id used in generated OpenCode config (default: `terarchitect-proxy`) |
-| `OPENCODE_BASE_URL` | OpenCode provider base URL (default: `{VLLM_PROXY_URL}/v1`) |
-| `OPENCODE_MODEL` | OpenCode model string; defaults to `{OPENCODE_PROVIDER_ID}/{AGENT_MODEL}` |
-| `OPENCODE_API_KEY` | API key for OpenCode OpenAI-compatible provider (default: `dummy`) |
+| `WORKER_TYPE` | Worker type: `opencode`, `aider`, `claude_code`, `gemini`, `codex` (default: `opencode`; only opencode implemented) |
+| `WORKER_LLM_URL` | Worker LLM API base URL (default: http://localhost:8080/v1) |
+| `WORKER_MODEL` | Worker model string; leave unset to use Agent model |
+| `WORKER_API_KEY` | API key for worker OpenAI-compatible provider (default: `dummy`) |
+| `WORKER_TIMEOUT_SEC` | Worker run timeout in seconds (default: `3600`) |
 | `MIDDLE_AGENT_DEBUG` | Set to `1` to log agent activity |
-| `MEMORY_SAVE_DIR` | Directory for HippoRAG project memory (optional; if unset, memory routes return 503) |
+| `MEMORY_SAVE_DIR` | Directory for HippoRAG project memory (default: `/tmp/terarchitect`; not configurable via UI) |
 | `MEMORY_LLM_MODEL` | LLM for HippoRAG OpenIE (default: `gpt-4o-mini`) |
 | `MEMORY_EMBEDDING_MODEL` | Embedding model (default: `text-embedding-mpnet` for minimal HippoRAG) |
 | `MEMORY_LLM_BASE_URL` | Optional LLM base URL (e.g. vLLM) |

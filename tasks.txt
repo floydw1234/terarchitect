@@ -1,0 +1,62 @@
+# Planning stage for ticket execution (agent.py)
+
+## Desired flow (replace current "one prompt then loop")
+
+1. Research
+   - Ask the agent to familiarize themself with the current state of the code, and the relevant ticket/graph context
+   - Tell worker to do online research about the change to get current best practices for the task.
+
+2. Plan
+   - Tell worker to create a task_plan.md file with a detailed plan of steps for execution.
+
+3. Plan-review loop
+   - Ask worker for a detailed overview of the plan.
+   - Agent judges the plan: consistency, gaps, achievability, logical/concrete task ordering.
+   - Agent loops with feedback until it decides the plan is solid (then exit this phase).
+   - Final step saves the plan text in a variable that will be kept in the agent context for the execution loop
+
+4. Execution loop (existing behavior)
+   - Clear agent context except for the main context it needs from the ticket, and the plan. The plan will be
+   guaranteed to be in the context of the agent, outside of the main conversation summarization that triggers when context is summarized
+   for the agent.
+   - Agent tells worker to follow the plan.
+   - Agent decides when the worker is done executing the plan (existing _agent_assess loop).
+   - Agent decides if the executed plan satisfies the ticket
+   - Then finalize as today (commit, push, PR, move to In Review).
+
+PR comment/review flow (process_ticket_review): leave as-is.
+
+
+Notes: worker context will not be reset ever during this flow, the agent context will be reset after the plan, before execution
+
+---
+
+## Implementation tasks
+
+1. Phase state
+   - Add explicit phase in process_ticket: e.g. "research" | "planning" | "plan_review" | "execution".
+   - Use phase to decide which prompt to send and how to interpret agent response (plan_approved vs complete).
+   - Research phase: ensure agent receives/uses current code state and ticket/graph context when directing the worker (familiarization is part of context loading / first prompt).
+
+2. Plan-approved and plan storage
+   - In plan-review phase, "done" = plan approved (not ticket implemented). Add plan_approved: true in agent JSON (or reuse complete: true for that phase) to exit plan-review and enter execution.
+   - When plan is approved: save the plan text (e.g. from task_plan.md or worker’s overview) in a variable. This variable is passed into the execution phase and must always be included in agent context—never summarized away when compacting director messages.
+
+3. Agent context reset before execution
+   - When transitioning from plan-review to execution: clear director conversation history (planning-phase turns).
+   - Keep and always inject: (a) main ticket/project context, (b) the saved plan text. Treat the plan as a reserved slot in the agent context that is excluded from _compact_director_messages / summarization so the agent always has the plan in every execution turn.
+
+4. Worker context (no reset)
+   - Same OpenCode session for the entire flow (research → plan → plan_review → execution). Do not start a new worker session when entering execution; prompt_history and conversation_history for the worker continue. Only the agent (director) side is reset.
+
+5. Execution-phase completion
+   - Agent assesses: (1) is the plan fully executed? (2) does the result satisfy the ticket? Can be a single _agent_assess with complete = true only when both are true; if plan done but ticket not satisfied, agent sends next_prompt to address gaps.
+
+6. Research capability
+   - Confirm OpenCode/worker has web search (or equivalent); if not, make research step optional or best-effort.
+
+7. Prompts
+   - Research: initial prompt(s) so agent has code/ticket/graph context, then direct worker to do online research for best practices.
+   - Planning: direct worker to create task_plan.md; optionally a dedicated "give me a detailed overview of the plan" prompt for the plan-review loop.
+   - Plan-review phase: agent system (or phase-specific) instructions—what to check (consistency, gaps, achievability, ordering) and when to set plan_approved. Final step captures plan text for the variable.
+   - Execution phase: agent system/user content must always include the saved plan. Prompts to worker should say to follow the plan (and that it is already approved).

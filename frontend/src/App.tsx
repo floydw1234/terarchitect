@@ -6,6 +6,9 @@ import ProjectsPage from './pages/ProjectsPage';
 import ProjectPage from './pages/ProjectPage';
 import GraphEditorPage from './pages/GraphEditorPage';
 import KanbanPage from './pages/KanbanPage';
+import ReviewPage from './pages/ReviewPage';
+import ReviewDetailPage from './pages/ReviewDetailPage';
+import SettingsPage from './pages/SettingsPage';
 
 const theme = createTheme({
   palette: {
@@ -101,6 +104,9 @@ function App() {
               <Route path="/projects/:projectId" element={<ProjectPage />} />
               <Route path="/projects/:projectId/graph" element={<GraphEditorPage />} />
               <Route path="/projects/:projectId/kanban" element={<KanbanPage />} />
+              <Route path="/projects/:projectId/review" element={<ReviewPage />} />
+              <Route path="/projects/:projectId/review/:ticketId" element={<ReviewDetailPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
             </Routes>
           </Box>
         </Box>

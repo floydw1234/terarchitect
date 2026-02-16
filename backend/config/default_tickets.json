@@ -1,0 +1,10 @@
+[
+  {
+    "title": "Project setup",
+    "description": "STRUCTURE AND CONFIG ONLY — DO NOT WRITE ANY APPLICATION CODE. No implementations, no logic, no functions, no routes, no components. This ticket is only: create directories, create/update .gitignore, and at most empty or minimal config files (e.g. package.json with just name and version). If in doubt, do less.\n\nSet up the project from the architecture graph:\n\n1. Inspect the full graph (context.graph_relevant_to_current_ticket or context.graph): for each node use data.label, data.tech, type, and data.description to determine what technologies and components exist.\n\n2. Create a folder structure that matches the graph: one directory (or logical area) per node/component, named by node label or type (e.g. backend/, frontend/, db/ or per-service folders). Structure should reflect how components are connected in the graph.\n\n3. Build a .gitignore from the technologies listed in the graph:\n- Python (FastAPI, etc.): __pycache__/, *.pyc, *.pyo, .venv/, venv/, *.egg-info/\n- Node/React/JS: node_modules/, dist/, build/, .next/, npm-debug.log*\n- Go: vendor/ (if not committed)\n- Docker: .env (if secrets), *.log\n- General: .env, .env.local, *.log, .DS_Store, IDE folders\nInclude only the sections relevant to the tech stack present in the graph.\n\n4. Optionally add only empty or near-empty config files if needed (e.g. package.json with {\"name\": \"...\", \"version\": \"1.0.0\"} and nothing else; or empty __init__.py). Do not add any application code, handlers, components, or logic.",
+    "priority": "medium",
+    "status": "todo",
+    "associated_node_ids": ["*"],
+    "associated_edge_ids": ["*"]
+  }
+]

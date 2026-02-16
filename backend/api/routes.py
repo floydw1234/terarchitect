@@ -3,6 +3,7 @@ API Routes for Terarchitect
 """
 import json
 import os
+import re
 import queue
 import subprocess
 import threading
@@ -12,11 +13,19 @@ from uuid import UUID, uuid5, NAMESPACE_DNS
 from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy import text, nullslast
 
-from models.db import db, Project, Graph, KanbanBoard, Ticket, Note, Setting, RAGEmbedding, ExecutionLog, PR, PRReviewComment
+from models.db import db, Project, Graph, KanbanBoard, Ticket, Note, Setting, AppSetting, RAGEmbedding, ExecutionLog, PR, PRReviewComment
 from utils.embedding_client import embed_single
 from utils.rag import upsert_embedding, delete_embeddings_for_source
+from utils.app_settings import get_all_for_api, set_value, delete_key, ALLOWED_KEYS, SENSITIVE_KEYS, get_gh_env_for_user, get_gh_env_for_agent
+from utils.app_settings_crypto import is_encryption_available
 
 api_bp = Blueprint("api", __name__)
+
+
+def _env_for_gh_user():
+    """Env for gh CLI in UI context (PR comment, approve, merge, poll). Uses stored user token if set."""
+    return {**os.environ, **get_gh_env_for_user()}
+
 
 # Single agent queue: one worker runs jobs (ticket or review) one after another so only one agent touches the repo at a time.
 _agent_queue = queue.Queue()
@@ -75,6 +84,32 @@ def projects():
         db.session.add(graph)
         db.session.add(kanban_board)
         db.session.commit()
+
+        # Create default "Project setup" ticket(s) from config only for new projects (not existing repos)
+        is_existing_repo = data.get("is_existing_repo") is True
+        if not is_existing_repo:
+            _config_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config")
+            _default_tickets_path = os.path.join(_config_dir, "default_tickets.json")
+            if os.path.isfile(_default_tickets_path):
+                try:
+                    with open(_default_tickets_path, encoding="utf-8") as f:
+                        default_tickets = json.load(f)
+                    if isinstance(default_tickets, list):
+                        for t in default_tickets:
+                            ticket = Ticket(
+                                project_id=project.id,
+                                column_id="backlog",
+                                title=t.get("title", "Untitled"),
+                                description=t.get("description"),
+                                associated_node_ids=t.get("associated_node_ids", []),
+                                associated_edge_ids=t.get("associated_edge_ids", []),
+                                priority=t.get("priority", "medium"),
+                                status=t.get("status", "todo"),
+                            )
+                            db.session.add(ticket)
+                        db.session.commit()
+                except (json.JSONDecodeError, OSError) as e:
+                    current_app.logger.warning("Could not create default tickets: %s", e)
 
         return jsonify({
             "id": str(project.id),
@@ -363,6 +398,12 @@ def ticket_detail(project_id, ticket_id):
         moved_to_in_progress = (
             data.get("column_id") == "in_progress" and ticket.column_id != "in_progress"
         )
+        if moved_to_in_progress:
+            graph = Graph.query.filter_by(project_id=project_id).first()
+            if not graph or not graph.nodes or len(graph.nodes) == 0:
+                return jsonify({
+                    "error": "Add at least one node to the graph before moving a ticket to In Progress.",
+                }), 400
         if "column_id" in data:
             ticket.column_id = data["column_id"]
         if "title" in data:
@@ -411,6 +452,267 @@ def ticket_logs(project_id, ticket_id):
     } for log in logs])
 
 
+@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/review", methods=["GET"])
+def ticket_review(project_id, ticket_id):
+    """Get PR summary and commits from GitHub for quick review. 404 if ticket has no PR."""
+    ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
+    project = Project.query.get_or_404(project_id)
+    pr_row = PR.query.filter_by(ticket_id=ticket.id).first()
+    if not pr_row or not pr_row.pr_number or not pr_row.pr_url:
+        return jsonify({"error": "No PR for this ticket"}), 404
+    slug = _repo_slug_from_github_url(project.github_url)
+    if not slug:
+        return jsonify({"error": "Project has no valid GitHub URL"}), 404
+
+    summary = ""
+    commits = []
+    test_files = []
+    tests_description = ""
+    pr_state = "unknown"
+    merged = False
+    try:
+        r_pr = subprocess.run(
+            ["gh", "api", f"repos/{slug}/pulls/{pr_row.pr_number}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=_env_for_gh_user(),
+        )
+        if r_pr.returncode == 0 and r_pr.stdout:
+            pr_data = json.loads(r_pr.stdout)
+            pr_state = pr_data.get("state") or "unknown"
+            merged = bool(pr_data.get("merged"))
+            body = (pr_data.get("body") or "").strip()
+            if "## What was accomplished" in body:
+                part = body.split("## What was accomplished")[-1].strip()
+                if "---" in part:
+                    part = part.split("---")[0].strip()
+                summary = part.strip()
+            else:
+                summary = body or "No description."
+
+        r_commits = subprocess.run(
+            ["gh", "api", f"repos/{slug}/pulls/{pr_row.pr_number}/commits"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=_env_for_gh_user(),
+        )
+        if r_commits.returncode == 0 and r_commits.stdout:
+            raw = json.loads(r_commits.stdout)
+            list_commits = raw if isinstance(raw, list) else []
+            for c in list_commits:
+                sha = (c.get("sha") or "")[:7]
+                msg = (c.get("commit") or {}).get("message") or ""
+                if msg and "\n" in msg:
+                    msg = msg.split("\n")[0]
+                commits.append({"sha": sha, "message": msg.strip()})
+
+        comments = []
+        r_comments = subprocess.run(
+            ["gh", "api", f"repos/{slug}/issues/{pr_row.pr_number}/comments"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=_env_for_gh_user(),
+        )
+        if r_comments.returncode == 0 and r_comments.stdout:
+            raw_comments = json.loads(r_comments.stdout)
+            list_comments = raw_comments if isinstance(raw_comments, list) else []
+            for c in list_comments:
+                author = (c.get("user") or {}).get("login") or "unknown"
+                body = (c.get("body") or "").strip()
+                if _TERARCHITECT_TESTS_MARKER in body:
+                    continue  # Skip machine-generated test summary comment; shown in Tests section
+                created_at = c.get("created_at")
+                comments.append({"author": author, "body": body, "created_at": created_at})
+
+        # Prefer test summary from agent-posted PR comment (terarchitect-tests)
+        parsed_tests, parsed_desc = _parse_test_summary_from_comments(comments)
+        if parsed_tests is not None:
+            test_files = parsed_tests
+            tests_description = parsed_desc or ""
+        else:
+            r_files = subprocess.run(
+                ["gh", "api", f"repos/{slug}/pulls/{pr_row.pr_number}/files"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env=_env_for_gh_user(),
+            )
+            if r_files.returncode == 0 and r_files.stdout:
+                files_data = json.loads(r_files.stdout)
+                files_list = files_data if isinstance(files_data, list) else []
+                for f in files_list:
+                    path = (f.get("filename") or "").strip()
+                    if not _is_test_file(path):
+                        continue
+                    patch = f.get("patch") or ""
+                    names = _extract_test_names_from_patch(patch)
+                    test_files.append({"path": path, "test_names": names})
+
+            if project.project_path:
+                pr_paths = {tf["path"].replace("\\", "/") for tf in test_files}
+                for tf in _discover_test_files_from_path(project.project_path):
+                    norm = tf["path"].replace("\\", "/")
+                    if norm not in pr_paths:
+                        pr_paths.add(norm)
+                        test_files.append({"path": tf["path"], "test_names": tf["test_names"]})
+            test_files.sort(key=lambda x: (x["path"].replace("\\", "/").lower(), x["path"]))
+    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError) as e:
+        current_app.logger.warning("Review fetch failed: %s", e)
+        return jsonify({"error": "Failed to fetch PR from GitHub", "detail": str(e)}), 502
+
+    return jsonify({
+        "summary": summary,
+        "commits": commits,
+        "test_files": test_files,
+        "tests_description": tests_description,
+        "comments": comments,
+        "pr_url": pr_row.pr_url,
+        "pr_number": pr_row.pr_number,
+        "pr_state": pr_state,
+        "merged": merged,
+    })
+
+
+@api_bp.route("/projects/<uuid:project_id>/review", methods=["GET"])
+def project_review_list(project_id):
+    """List up to 20 most recent tickets that have a PR, pending first. With PR status from GitHub."""
+    project = Project.query.get_or_404(project_id)
+    slug = _repo_slug_from_github_url(project.github_url)
+    prs = list(
+        db.session.query(PR, Ticket)
+        .join(Ticket, Ticket.id == PR.ticket_id)
+        .filter(PR.project_id == project_id)
+        .filter(PR.pr_number.isnot(None))
+        .order_by(PR.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    out = []
+    for pr_row, ticket in prs:
+        pr_state = "unknown"
+        merged = False
+        if slug:
+            try:
+                r = subprocess.run(
+                    ["gh", "api", f"repos/{slug}/pulls/{pr_row.pr_number}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    env=_env_for_gh_user(),
+                )
+                if r.returncode == 0 and r.stdout:
+                    data = json.loads(r.stdout)
+                    pr_state = data.get("state") or "unknown"
+                    merged = bool(data.get("merged"))
+            except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
+                pass
+        created = pr_row.created_at
+        ts = created.timestamp() if created else 0
+        out.append({
+            "id": str(ticket.id),
+            "title": ticket.title,
+            "pr_url": pr_row.pr_url,
+            "pr_number": pr_row.pr_number,
+            "pr_state": pr_state,
+            "merged": merged,
+            "_sort_ts": ts,
+        })
+    # Exclude closed PRs that were not merged (e.g. abandoned or closed without merge)
+    out = [x for x in out if not (x["pr_state"] == "closed" and not x["merged"])]
+    # Pending (open) first, then by most recent
+    out.sort(key=lambda x: (x["merged"], -x["_sort_ts"]))
+    for item in out:
+        del item["_sort_ts"]
+    return jsonify(out[:20])
+
+
+def _get_ticket_pr_slug(project_id, ticket_id):
+    """Return (pr_row, slug) for ticket's PR, or (None, None). 404 if ticket/project missing."""
+    ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
+    project = Project.query.get_or_404(project_id)
+    pr_row = PR.query.filter_by(ticket_id=ticket.id).first()
+    if not pr_row or not pr_row.pr_number:
+        return None, None
+    slug = _repo_slug_from_github_url(project.github_url)
+    return pr_row, slug
+
+
+@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/review/comment", methods=["POST"])
+def ticket_review_comment(project_id, ticket_id):
+    """Post a comment on the ticket's PR. Body: { \"body\": \"...\" }."""
+    pr_row, slug = _get_ticket_pr_slug(project_id, ticket_id)
+    if not pr_row or not slug:
+        return jsonify({"error": "No PR for this ticket"}), 404
+    data = request.json or {}
+    body = (data.get("body") or "").strip()
+    if not body:
+        return jsonify({"error": "body is required"}), 400
+    if len(body) > 60000:
+        body = body[:59997] + "..."
+    try:
+        r = subprocess.run(
+            ["gh", "pr", "comment", str(pr_row.pr_number), "--body", body, "-R", slug],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=_env_for_gh_user(),
+        )
+        if r.returncode != 0:
+            return jsonify({"error": "Failed to post comment", "detail": (r.stderr or "").strip()}), 502
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        return jsonify({"error": "Failed to post comment", "detail": str(e)}), 502
+    return jsonify({"message": "Comment posted"})
+
+
+@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/review/approve", methods=["POST"])
+def ticket_review_approve(project_id, ticket_id):
+    """Approve the ticket's PR. Body: optional { \"body\": \"...\" }."""
+    pr_row, slug = _get_ticket_pr_slug(project_id, ticket_id)
+    if not pr_row or not slug:
+        return jsonify({"error": "No PR for this ticket"}), 404
+    data = request.json or {}
+    body = (data.get("body") or "").strip()
+    try:
+        args = ["gh", "pr", "review", str(pr_row.pr_number), "--approve", "-R", slug]
+        if body:
+            args.extend(["--body", body[:60000]])
+        r = subprocess.run(args, capture_output=True, text=True, timeout=30, env=_env_for_gh_user())
+        if r.returncode != 0:
+            return jsonify({"error": "Failed to approve", "detail": (r.stderr or "").strip()}), 502
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        return jsonify({"error": "Failed to approve", "detail": str(e)}), 502
+    return jsonify({"message": "PR approved"})
+
+
+@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/review/merge", methods=["POST"])
+def ticket_review_merge(project_id, ticket_id):
+    """Merge the ticket's PR. Body: optional { \"merge_method\": \"merge\"|\"squash\"|\"rebase\" }."""
+    pr_row, slug = _get_ticket_pr_slug(project_id, ticket_id)
+    if not pr_row or not slug:
+        return jsonify({"error": "No PR for this ticket"}), 404
+    data = request.json or {}
+    method = (data.get("merge_method") or "merge").strip().lower()
+    if method not in ("merge", "squash", "rebase"):
+        method = "merge"
+    try:
+        flag = "--merge" if method == "merge" else "--squash" if method == "squash" else "--rebase"
+        r = subprocess.run(
+            ["gh", "pr", "merge", str(pr_row.pr_number), flag, "-R", slug],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=_env_for_gh_user(),
+        )
+        if r.returncode != 0:
+            return jsonify({"error": "Failed to merge", "detail": (r.stderr or "").strip()}), 502
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        return jsonify({"error": "Failed to merge", "detail": str(e)}), 502
+    return jsonify({"message": "PR merged"})
+
+
 @api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/cancel", methods=["POST"])
 def cancel_ticket_execution_api(project_id, ticket_id):
     """Request cancellation of the Middle Agent execution for a ticket."""
@@ -425,6 +727,53 @@ def cancel_ticket_execution_api(project_id, ticket_id):
     if cancelled:
         return jsonify({"message": "Cancellation requested"}), 200
     return jsonify({"message": "No active execution for this ticket"}), 202
+
+
+@api_bp.route("/settings", methods=["GET"])
+def app_settings_get():
+    """Return all app settings: sensitive keys as bool (is set), plain keys as value or null."""
+    return jsonify(get_all_for_api())
+
+
+@api_bp.route("/settings", methods=["PUT"])
+def app_settings_put():
+    """Update app settings. Body: any of ALLOWED_KEYS. Omit = no change, empty string = clear. Sensitive keys require TERARCHITECT_SECRET_KEY."""
+    import sys
+    try:
+        data = request.json or {}
+        print("[DEBUG] settings PUT keys in body:", list(data.keys()), file=sys.stderr, flush=True)
+        for key in ALLOWED_KEYS:
+            if key not in data:
+                continue
+            val = data[key]
+            print(f"[DEBUG] processing key={key!r} val type={type(val).__name__} len={len(str(val)) if val else 0}", file=sys.stderr, flush=True)
+            if val is None or (isinstance(val, str) and not val.strip()):
+                delete_key(key)
+                print(f"[DEBUG] deleted key {key}", file=sys.stderr, flush=True)
+            else:
+                plain = val if isinstance(val, str) else str(val)
+                if key in SENSITIVE_KEYS and not is_encryption_available():
+                    print("[DEBUG] 503: encryption not available for sensitive key", file=sys.stderr, flush=True)
+                    return jsonify({
+                        "error": (
+                            "TERARCHITECT_SECRET_KEY must be a 64-character hex string in .env to store secrets. "
+                            "Generate one with: python3 -c \"import secrets; print(secrets.token_hex(32))\""
+                        )
+                    }), 503
+                ok = set_value(key, plain)
+                print(f"[DEBUG] set_value({key!r}) -> {ok}", file=sys.stderr, flush=True)
+                if not ok:
+                    return jsonify({"error": f"Failed to save {key}"}), 500
+        print("[DEBUG] calling get_all_for_api()", file=sys.stderr, flush=True)
+        out = get_all_for_api()
+        print("[DEBUG] settings PUT success", file=sys.stderr, flush=True)
+        return jsonify(out)
+    except Exception as e:
+        print(f"[DEBUG] settings PUT exception: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        current_app.logger.exception("Settings PUT failed: %s", e)
+        return jsonify({"error": str(e)}), 500
 
 
 @api_bp.route("/projects/<uuid:project_id>/notes", methods=["GET", "POST"])
@@ -638,6 +987,146 @@ def memory_delete(project_id):
     return jsonify({"message": "Deleted", "count": len(docs)})
 
 
+# Marker for PR comment containing test summary (JSON). Must match agent.MiddleAgent.TERARCHITECT_TESTS_COMMENT_MARKER.
+_TERARCHITECT_TESTS_MARKER = "<!-- terarchitect-tests"
+
+
+def _parse_test_summary_from_comments(comments_list):
+    """From list of {body, ...}, find a comment containing terarchitect-tests marker and return (test_files, description) or (None, None)."""
+    for c in comments_list:
+        body = (c.get("body") or "").strip()
+        if _TERARCHITECT_TESTS_MARKER not in body:
+            continue
+        start = body.find(_TERARCHITECT_TESTS_MARKER)
+        payload_start = body.find("\n", start) + 1 if start >= 0 else -1
+        end = body.find("-->", payload_start) if payload_start > 0 else -1
+        if payload_start <= 0 or end < 0:
+            continue
+        json_str = body[payload_start:end].strip()
+        try:
+            data = json.loads(json_str)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict) or "tests" not in data:
+            continue
+        tests = data.get("tests")
+        if not isinstance(tests, list):
+            continue
+        out = []
+        for t in tests:
+            if not isinstance(t, dict):
+                continue
+            path = (t.get("path") or "").strip() or "(unknown)"
+            names = t.get("test_names")
+            if isinstance(names, list):
+                names = [str(n).strip() for n in names if n]
+            else:
+                names = []
+            out.append({"path": path, "test_names": names})
+        return (out, (data.get("description") or "").strip())
+    return (None, None)
+
+
+def _is_test_file(path):
+    """True if path looks like a test file (by convention). Excludes __init__.py (package marker)."""
+    if not path:
+        return False
+    path_norm = path.replace("\\", "/")
+    path_lower = path_norm.lower()
+    base = path_norm.split("/")[-1] if "/" in path_norm else path_norm
+    base_lower = base.lower()
+    if base_lower == "__init__.py":
+        return False
+    return (
+        "__tests__" in path_lower
+        or "/tests/" in path_lower
+        or path_lower.endswith("_test.py")
+        or (base_lower.startswith("test_") and base_lower.endswith(".py"))
+        or path_lower.endswith("_test.go")
+        or path_lower.endswith("_test.js")
+        or ".test." in path_lower
+        or ".spec." in path_lower
+        or path_lower.endswith(".test.js")
+        or path_lower.endswith(".test.jsx")
+        or path_lower.endswith(".test.ts")
+        or path_lower.endswith(".test.tsx")
+        or path_lower.endswith(".spec.js")
+        or path_lower.endswith(".spec.jsx")
+    )
+
+
+def _extract_test_names_from_patch(patch):
+    """From a unified diff patch, extract test/spec names from added lines. Returns list of unique strings."""
+    if not patch:
+        return []
+    seen = set()
+    out = []
+    # Match it('...'), it("..."), test('...'), test("..."), describe('...')
+    for m in re.finditer(
+        r"""(?:it|test|describe)\s*\(\s*['"`]([^'"`]+)['"`]""",
+        patch,
+        re.IGNORECASE,
+    ):
+        name = m.group(1).strip()
+        if name and name not in seen and len(name) < 200:
+            seen.add(name)
+            out.append(name)
+    # Match def test_something(
+    for m in re.finditer(r"^\+\s*def\s+(test_\w+)\s*\(", patch, re.MULTILINE):
+        name = m.group(1).strip()
+        name = name.replace("_", " ").strip()
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def _extract_test_names_from_content(content):
+    """From file content, extract Python def test_* names. Returns list of unique strings."""
+    if not content:
+        return []
+    seen = set()
+    out = []
+    for m in re.finditer(r"^\s*def\s+(test_\w+)\s*\(", content, re.MULTILINE):
+        name = m.group(1).strip()
+        name = name.replace("_", " ").strip()
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def _discover_test_files_from_path(project_path, max_files=200):
+    """Walk project_path and return list of {path (relative), test_names} for files that _is_test_file accepts."""
+    if not project_path or not os.path.isdir(project_path):
+        return []
+    out = []
+    try:
+        for root, _dirs, files in os.walk(project_path):
+            if len(out) >= max_files:
+                break
+            rel_root = os.path.relpath(root, project_path)
+            if rel_root == ".":
+                rel_root = ""
+            for f in files:
+                if len(out) >= max_files:
+                    break
+                rel = os.path.join(rel_root, f).replace("\\", "/")
+                if not _is_test_file(rel):
+                    continue
+                abspath = os.path.join(root, f)
+                try:
+                    with open(abspath, "r", encoding="utf-8", errors="replace") as fp:
+                        content = fp.read()
+                except Exception:
+                    content = ""
+                names = _extract_test_names_from_content(content)
+                out.append({"path": rel, "test_names": names})
+    except Exception:
+        pass
+    return out
+
+
 def _repo_slug_from_github_url(url):
     """Extract owner/repo from https://github.com/owner/repo or similar. Returns None if not parseable."""
     if not url or not isinstance(url, str):
@@ -683,20 +1172,21 @@ def _mark_pr_comment_addressed(project_id, pr_number, github_comment_id):
 
 
 def _gh_current_login():
-    """Return the login of the bot/gh user whose comments we must ignore. Used to avoid replying to our own PR comments."""
+    """Return the login of the agent's GitHub user (same token used for PRs and PR comments). We ignore comments from this user to avoid replying to ourselves."""
     try:
+        env = {**os.environ, **get_gh_env_for_agent()}
         r = subprocess.run(
             ["gh", "api", "user", "-q", ".login"],
             capture_output=True,
             text=True,
             timeout=5,
+            env=env,
         )
         if r.returncode == 0 and r.stdout:
             return r.stdout.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
-    # Fallback when gh is not in path or not authenticated in this process (e.g. different user).
-    return (os.environ.get("PR_BOT_GITHUB_LOGIN", "").strip() or None)
+    return None
 
 
 def _poll_pr_review_comments():
@@ -728,6 +1218,7 @@ def _poll_pr_review_comments():
                 capture_output=True,
                 text=True,
                 timeout=15,
+                env=_env_for_gh_user(),
             )
             if r_pr.returncode == 0 and r_pr.stdout:
                 pr_data = json.loads(r_pr.stdout)
@@ -754,6 +1245,7 @@ def _poll_pr_review_comments():
                 capture_output=True,
                 text=True,
                 timeout=15,
+                env=_env_for_gh_user(),
             )
             if r_reviews.returncode == 0 and r_reviews.stdout:
                 reviews = json.loads(r_reviews.stdout) if r_reviews.stdout else []
@@ -789,6 +1281,7 @@ def _poll_pr_review_comments():
                     capture_output=True,
                     text=True,
                     timeout=30,
+                    env=_env_for_gh_user(),
                 )
             except (subprocess.TimeoutExpired, FileNotFoundError) as e:
                 current_app.logger.warning("PR poll gh api failed %s: %s", endpoint, e)

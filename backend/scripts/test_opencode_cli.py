@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+ #!/usr/bin/env python3
 """
 Quick test: run OpenCode CLI with a simple prompt and print where output goes.
 Usage: from backend dir, run: python scripts/test_opencode_cli.py

@@ -60,6 +60,8 @@ export async function createProject(data: {
   description?: string;
   project_path?: string;
   github_url?: string;
+  /** If true, project is from an existing repo; default "Project setup" ticket is not created. */
+  is_existing_repo?: boolean;
 }): Promise<Project> {
   const response = await fetch(`${API_URL}/api/projects`, {
     method: 'POST',
@@ -254,4 +256,96 @@ export async function deleteNote(projectId: string, noteId: string): Promise<voi
     method: 'DELETE',
   });
   await checkResponse(response);
+}
+
+export interface ReviewCommit {
+  sha: string;
+  message: string;
+}
+
+export interface ReviewTestFile {
+  path: string;
+  test_names: string[];
+}
+
+export interface ReviewComment {
+  author: string;
+  body: string;
+  created_at: string | null;
+}
+
+export interface ReviewResponse {
+  summary: string;
+  commits: ReviewCommit[];
+  test_files: ReviewTestFile[];
+  tests_description?: string;
+  comments: ReviewComment[];
+  pr_url: string;
+  pr_number: number;
+  pr_state: string;
+  merged: boolean;
+}
+
+export async function getReview(projectId: string, ticketId: string): Promise<ReviewResponse> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/tickets/${ticketId}/review`);
+  return checkResponse<ReviewResponse>(response);
+}
+
+export interface ReviewListEntry {
+  id: string;
+  title: string;
+  pr_url: string | null;
+  pr_number: number | null;
+  pr_state: string;
+  merged: boolean;
+}
+
+export async function getReviewList(projectId: string): Promise<ReviewListEntry[]> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/review`);
+  return checkResponse<ReviewListEntry[]>(response);
+}
+
+export async function postReviewComment(projectId: string, ticketId: string, body: string): Promise<void> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/tickets/${ticketId}/review/comment`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body }),
+  });
+  await checkResponse(response);
+}
+
+export async function approveReview(projectId: string, ticketId: string, body?: string): Promise<void> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/tickets/${ticketId}/review/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body != null ? { body } : {}),
+  });
+  await checkResponse(response);
+}
+
+export async function mergeReview(projectId: string, ticketId: string, mergeMethod?: 'merge' | 'squash' | 'rebase'): Promise<void> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/tickets/${ticketId}/review/merge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(mergeMethod ? { merge_method: mergeMethod } : {}),
+  });
+  await checkResponse(response);
+}
+
+/** App settings: sensitive keys are boolean (is set), plain keys are string | null. */
+export type AppSettingsResponse = Record<string, boolean | string | null>;
+
+export async function getSettings(): Promise<AppSettingsResponse> {
+  const response = await fetch(`${API_URL}/api/settings`);
+  return checkResponse<AppSettingsResponse>(response);
+}
+
+/** Body: include only keys to update. Empty string = clear that key. */
+export async function updateSettings(data: Record<string, string>): Promise<AppSettingsResponse> {
+  const response = await fetch(`${API_URL}/api/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return checkResponse<AppSettingsResponse>(response);
 }

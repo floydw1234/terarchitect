@@ -1,0 +1,283 @@
+import React, { useState, useEffect } from 'react';
+import {
+  Box,
+  Typography,
+  Button,
+  Paper,
+  TextField,
+  Stack,
+  Alert,
+  CircularProgress,
+  Divider,
+  InputAdornment,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+} from '@mui/material';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import { getSettings, updateSettings, type AppSettingsResponse } from '../utils/api';
+
+const WORKER_TYPE_OPTIONS = ['opencode', 'aider', 'claude_code', 'gemini', 'codex'] as const;
+
+/** keys: when set, this field reads/writes multiple settings (e.g. one "LLM base URL" for both Director and Worker). */
+type FieldMeta = { key: string; label: string; hint: string; sensitive: boolean; options?: readonly string[]; keys?: string[] };
+
+const FIELDS: FieldMeta[] = [
+  { key: 'github_user_token', label: 'GitHub user token', hint: 'UI: PR comments, approve, merge, poll. Classic PAT with repo scope.', sensitive: true },
+  { key: 'github_agent_token', label: 'GitHub agent token', hint: 'Agent: push branches, create PRs, and reply to PR comments.', sensitive: true },
+  // Agent (Director): own URL, model, key
+  { key: 'VLLM_URL', label: 'LLM URL', hint: 'Base URL for the Agent/Director (e.g. http://localhost:8000).', sensitive: false },
+  { key: 'AGENT_MODEL', label: 'Model', hint: 'Leave blank for Qwen/Qwen3-Coder-Next-FP8.', sensitive: false },
+  { key: 'AGENT_API_KEY', label: 'API key', hint: 'Optional API key for the Agent LLM.', sensitive: true },
+  { key: 'MIDDLE_AGENT_DEBUG', label: 'Debug', hint: '1 = verbose logs; 0 = quiet.', sensitive: false },
+  // Worker: own URL, model, key
+  { key: 'WORKER_TYPE', label: 'Worker', hint: 'Only opencode is implemented today.', sensitive: false, options: WORKER_TYPE_OPTIONS },
+  { key: 'WORKER_LLM_URL', label: 'LLM URL', hint: 'Leave blank for http://localhost:8080/v1.', sensitive: false },
+  { key: 'WORKER_MODEL', label: 'Model', hint: 'Leave blank to use the same model as the Agent (above).', sensitive: false },
+  { key: 'WORKER_API_KEY', label: 'API key', hint: 'Optional API key for the Worker LLM.', sensitive: true },
+  { key: 'WORKER_TIMEOUT_SEC', label: 'Timeout (seconds)', hint: 'Per-request timeout (default 3600).', sensitive: false },
+  // Memory: LLM + embedding (HippoRAG)
+  { key: 'MEMORY_LLM_BASE_URL', label: 'LLM URL', hint: 'Leave blank to use the Agent URL (above).', sensitive: false },
+  { key: 'MEMORY_LLM_MODEL', label: 'LLM model', hint: 'Leave blank to use the Agent model (above).', sensitive: false },
+  { key: 'MEMORY_LLM_API_KEY', label: 'LLM API key', hint: 'Optional. Leave blank to use Agent API key or env.', sensitive: true },
+  { key: 'EMBEDDING_SERVICE_URL', label: 'Embedding URL', hint: 'URL for embedding service. Default http://localhost:9009.', sensitive: false, keys: ['EMBEDDING_SERVICE_URL', 'MEMORY_EMBEDDING_BASE_URL'] },
+  { key: 'MEMORY_EMBEDDING_MODEL', label: 'Embedding model', hint: 'Model for embedding (memory and app).', sensitive: false },
+  { key: 'EMBEDDING_API_KEY', label: 'Embedding API key', hint: 'Embedding service X-API-Key if required.', sensitive: true },
+  { key: 'openai_api_key', label: 'OpenAI API key', hint: 'For OpenAI-compatible embedding/LLM calls. Required for memory.', sensitive: true },
+  { key: 'anthropic_api_key', label: 'Anthropic API key', hint: 'For Claude-based workers (not needed for opencode).', sensitive: true },
+];
+
+/** sectionKey "memory_filter" = hide anthropic when worker is opencode. description = optional subtitle. */
+const SECTIONS: { title: string; keys: string[]; sectionKey?: string; description?: string }[] = [
+  { title: 'GitHub', keys: ['github_user_token', 'github_agent_token'] },
+  { title: 'Agent', keys: ['VLLM_URL', 'AGENT_MODEL', 'AGENT_API_KEY', 'MIDDLE_AGENT_DEBUG'] },
+  { title: 'Worker', keys: ['WORKER_TYPE', 'WORKER_LLM_URL', 'WORKER_MODEL', 'WORKER_API_KEY', 'WORKER_TIMEOUT_SEC'] },
+  { title: 'Memory', keys: ['MEMORY_LLM_BASE_URL', 'MEMORY_LLM_MODEL', 'MEMORY_LLM_API_KEY', 'EMBEDDING_SERVICE_URL', 'MEMORY_EMBEDDING_MODEL', 'EMBEDDING_API_KEY', 'openai_api_key', 'anthropic_api_key'], sectionKey: 'memory_filter', description: 'HippoRAG: LLM and embedding for the memory system. Leave URL/model blank to use Agent settings.' },
+];
+
+const keyToMeta: Record<string, FieldMeta> = Object.fromEntries(FIELDS.map((f) => [f.key, f]));
+
+const SettingsPage: React.FC = () => {
+  const [status, setStatus] = useState<AppSettingsResponse | null>(null);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const load = async () => {
+    setLoading(true);
+    setMessage(null);
+    try {
+      const data = await getSettings();
+      setStatus(data);
+      setValues({});
+    } catch (e) {
+      setMessage({ type: 'error', text: e instanceof Error ? e.message : 'Failed to load settings' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setMessage(null);
+    try {
+      const next = await updateSettings(values);
+      setStatus(next);
+      setValues({});
+      setMessage({ type: 'success', text: 'Settings saved.' });
+    } catch (e) {
+      setMessage({ type: 'error', text: e instanceof Error ? e.message : 'Failed to save settings' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const hasChanges = Object.keys(values).length > 0;
+
+  const effectiveWorker = (): string => {
+    const v = values['WORKER_TYPE'];
+    if (v && typeof v === 'string') return v;
+    const s = status?.['WORKER_TYPE'];
+    if (s && typeof s === 'string') return s;
+    return 'opencode';
+  };
+
+  const primaryKey = (meta: FieldMeta) => meta.keys?.[0] ?? meta.key;
+
+  const displayValue = (key: string): string => {
+    const meta = keyToMeta[key];
+    const pk = meta ? primaryKey(meta) : key;
+    if (values[pk] !== undefined) return values[pk];
+    if (meta?.sensitive) return '';
+    if (meta?.keys) {
+      const v = meta.keys.map((k) => status?.[k]).find((v) => v != null && (typeof v !== 'string' || v.trim() !== ''));
+      if (v === undefined || v === null) return '';
+      return typeof v === 'string' ? v : '';
+    }
+    const v = status?.[key];
+    if (v === null || v === undefined) return '';
+    return typeof v === 'string' ? v : '';
+  };
+
+  /** True if a value exists in the DB. For composite fields, true if any of the keys is set. */
+  const isSet = (key: string): boolean => {
+    const meta = keyToMeta[key];
+    const keys = meta?.keys ?? [key];
+    for (const k of keys) {
+      const v = status?.[k];
+      if (v === undefined || v === null) continue;
+      if (typeof v === 'boolean') { if (v) return true; continue; }
+      if (String(v).trim().length > 0) return true;
+    }
+    return false;
+  };
+
+  const handleFieldChange = (key: string, value: string) => {
+    const meta = keyToMeta[key];
+    const pk = primaryKey(meta);
+    if (meta?.keys) {
+      const updates: Record<string, string> = {};
+      meta.keys.forEach((k) => { updates[k] = value; });
+      setValues((prev) => ({ ...prev, ...updates }));
+    } else {
+      setValues((prev) => ({ ...prev, [pk]: value }));
+    }
+  };
+
+
+  if (loading) {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  return (
+    <Box sx={{ maxWidth: 720, mx: 'auto' }}>
+      <Typography variant="h5" sx={{ mb: 2 }}>
+        Settings
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        Secrets are encrypted at rest. Leave a field blank to keep the current value; enter a new value to update, or
+        clear and save to remove. URLs and paths are stored plain.
+      </Typography>
+
+      {message && (
+        <Alert severity={message.type} onClose={() => setMessage(null)} sx={{ mb: 2 }}>
+          {message.text}
+        </Alert>
+      )}
+
+      <Paper sx={{ p: 3 }}>
+        {SECTIONS.map((section) => {
+          const keys =
+            section.sectionKey === 'memory_filter' && effectiveWorker() === 'opencode'
+              ? section.keys.filter((k) => k !== 'anthropic_api_key')
+              : section.keys;
+          return (
+          <Box key={section.title} sx={{ mb: 3 }}>
+            <Typography variant="subtitle1" fontWeight={600} sx={{ mb: 0.5 }}>
+              {section.title}
+            </Typography>
+            {section.description && (
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                {section.description}
+              </Typography>
+            )}
+            <Stack spacing={2} sx={{ mt: section.description ? 0 : 1 }}>
+              {keys.map((key) => {
+                const meta = keyToMeta[key];
+                if (!meta) return null;
+                const sensitive = meta.sensitive;
+                const set = isSet(key);
+                const options = meta.options;
+                const value = displayValue(key);
+                const pk = primaryKey(meta);
+
+                if (options) {
+                  return (
+                    <Box key={key}>
+                      <FormControl fullWidth size="small">
+                        <InputLabel id={`settings-${key}`}>{meta.label}</InputLabel>
+                        <Select
+                          labelId={`settings-${key}`}
+                          label={meta.label}
+                          value={value || ''}
+                          onChange={(e) => handleFieldChange(key, e.target.value)}
+                        >
+                          <MenuItem value="">Use default (opencode)</MenuItem>
+                          {options.map((opt) => (
+                            <MenuItem key={opt} value={opt}>
+                              {opt}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+                          {meta.hint}
+                        </Typography>
+                      </FormControl>
+                    </Box>
+                  );
+                }
+
+                return (
+                  <Box key={key}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      type={sensitive ? 'password' : 'text'}
+                      label={meta.label}
+                      placeholder={sensitive ? (set ? '••••••••' : 'Not set') : 'Leave blank for default'}
+                      value={value}
+                      onChange={(e) => handleFieldChange(key, e.target.value)}
+                      helperText={meta.hint}
+                      autoComplete="off"
+                      InputProps={
+                        sensitive && set && values[pk] === undefined
+                          ? {
+                              endAdornment: (
+                                <InputAdornment position="end">
+                                  <CheckCircleIcon color="success" fontSize="small" titleAccess="Value is set" />
+                                </InputAdornment>
+                              ),
+                            }
+                          : undefined
+                      }
+                    />
+                    {sensitive && set && values[pk] === undefined && (
+                      <Typography variant="caption" color="success.main" sx={{ mt: 0.5, display: 'block' }}>
+                        ✓ Set
+                      </Typography>
+                    )}
+                  </Box>
+                );
+              })}
+            </Stack>
+            <Divider sx={{ mt: 2 }} />
+          </Box>
+          );
+        })}
+
+        <Box sx={{ mt: 3, display: 'flex', gap: 2 }}>
+          <Button variant="contained" onClick={handleSave} disabled={saving || !hasChanges}>
+            {saving ? 'Saving…' : 'Save'}
+          </Button>
+          {hasChanges && (
+            <Button onClick={() => setValues({})} disabled={saving}>
+              Reset
+            </Button>
+          )}
+        </Box>
+      </Paper>
+    </Box>
+  );
+};
+
+export default SettingsPage;

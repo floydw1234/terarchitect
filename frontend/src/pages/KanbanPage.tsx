@@ -20,6 +20,9 @@ import {
   MenuItem,
   Alert,
   Collapse,
+  Checkbox,
+  FormControlLabel,
+  Tooltip,
 } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import {
@@ -88,6 +91,7 @@ const KanbanPage: React.FC = () => {
   const [newTicketColumnId, setNewTicketColumnId] = useState('backlog');
   const [newTicketNodeIds, setNewTicketNodeIds] = useState<string[]>([]);
   const [newTicketEdgeIds, setNewTicketEdgeIds] = useState<string[]>([]);
+  const [newTicketAllNodesAndEdges, setNewTicketAllNodesAndEdges] = useState(false);
   const [addTicketLoading, setAddTicketLoading] = useState(false);
   const [addTicketError, setAddTicketError] = useState<string | null>(null);
   const [editTicket, setEditTicket] = useState<Ticket | null>(null);
@@ -98,6 +102,7 @@ const KanbanPage: React.FC = () => {
   const [editColumnId, setEditColumnId] = useState('');
   const [editNodeIds, setEditNodeIds] = useState<string[]>([]);
   const [editEdgeIds, setEditEdgeIds] = useState<string[]>([]);
+  const [editAllNodesAndEdges, setEditAllNodesAndEdges] = useState(false);
   const [graphNodes, setGraphNodes] = useState<GraphNodeOption[]>([]);
   const [graphEdges, setGraphEdges] = useState<GraphEdgeOption[]>([]);
   const [newNoteTitle, setNewNoteTitle] = useState('');
@@ -166,11 +171,21 @@ const KanbanPage: React.FC = () => {
       );
       const nodes = Array.isArray(graphRes.nodes) ? graphRes.nodes as Array<{ id?: string; data?: { label?: string } }> : [];
       const edges = Array.isArray(graphRes.edges) ? graphRes.edges as Array<{ id?: string; source?: string; target?: string; data?: { label?: string } }> : [];
-      setGraphNodes(nodes.map((n) => ({ id: n.id ?? '', label: (n.data?.label ?? n.id) || 'Unnamed' })));
-      setGraphEdges(edges.map((e) => ({
-        id: e.id ?? '',
-        label: e.data?.label ?? (e.source && e.target ? `${e.source} → ${e.target}` : e.id ?? 'Unnamed'),
-      })));
+      const nodeLabelById: Record<string, string> = {};
+      nodes.forEach((n) => {
+        const id = n.id ?? '';
+        nodeLabelById[id] = (n.data?.label ?? n.id) || 'Unnamed';
+      });
+      setGraphNodes(nodes.map((n) => ({ id: n.id ?? '', label: nodeLabelById[n.id ?? ''] ?? 'Unnamed' })));
+      setGraphEdges(edges.map((e) => {
+        const sourceLabel = e.source ? (nodeLabelById[e.source] ?? e.source) : '';
+        const targetLabel = e.target ? (nodeLabelById[e.target] ?? e.target) : '';
+        const fallback = sourceLabel && targetLabel ? `${sourceLabel} → ${targetLabel}` : (e.id ?? 'Unnamed');
+        return {
+          id: e.id ?? '',
+          label: (e.data?.label?.trim() || '') || fallback,
+        };
+      }));
     } catch (error) {
       console.error('Failed to fetch kanban:', error);
     } finally {
@@ -189,8 +204,8 @@ const KanbanPage: React.FC = () => {
         description: newTicketDescription.trim() || undefined,
         priority: newTicketPriority,
         status: newTicketStatus,
-        associated_node_ids: newTicketNodeIds,
-        associated_edge_ids: newTicketEdgeIds,
+        associated_node_ids: newTicketAllNodesAndEdges ? ['*'] : newTicketNodeIds,
+        associated_edge_ids: newTicketAllNodesAndEdges ? ['*'] : newTicketEdgeIds,
       });
       setTickets((prev) => [...prev, data]);
       setNewTicketTitle('');
@@ -200,6 +215,7 @@ const KanbanPage: React.FC = () => {
       setNewTicketColumnId(columns.find((c) => c.id === 'backlog')?.id || columns[0]?.id || 'backlog');
       setNewTicketNodeIds([]);
       setNewTicketEdgeIds([]);
+      setNewTicketAllNodesAndEdges(false);
       setCreateTicketOpen(false);
     } catch (error) {
       setAddTicketError(error instanceof Error ? error.message : 'Failed to add ticket');
@@ -216,6 +232,7 @@ const KanbanPage: React.FC = () => {
     setNewTicketColumnId(columns.find((c) => c.id === 'backlog')?.id || columns[0]?.id || 'backlog');
     setNewTicketNodeIds([]);
     setNewTicketEdgeIds([]);
+    setNewTicketAllNodesAndEdges(false);
     setAddTicketError(null);
     setCreateTicketOpen(true);
   };
@@ -227,8 +244,12 @@ const KanbanPage: React.FC = () => {
     setEditPriority(ticket.priority);
     setEditStatus(ticket.status);
     setEditColumnId(ticket.column_id);
-    setEditNodeIds(ticket.associated_node_ids ?? []);
-    setEditEdgeIds(ticket.associated_edge_ids ?? []);
+    const nodeIds = ticket.associated_node_ids ?? [];
+    const edgeIds = ticket.associated_edge_ids ?? [];
+    const isAll = nodeIds.length === 1 && nodeIds[0] === '*';
+    setEditAllNodesAndEdges(isAll);
+    setEditNodeIds(isAll ? [] : nodeIds);
+    setEditEdgeIds(isAll ? [] : edgeIds);
     setExecutionLogs([]);
     setLogsExpanded(false);
   };
@@ -270,8 +291,8 @@ const KanbanPage: React.FC = () => {
         priority: editPriority,
         status: editStatus,
         column_id: editColumnId,
-        associated_node_ids: editNodeIds,
-        associated_edge_ids: editEdgeIds,
+        associated_node_ids: editAllNodesAndEdges ? ['*'] : editNodeIds,
+        associated_edge_ids: editAllNodesAndEdges ? ['*'] : editEdgeIds,
       });
       setTickets((prev) => prev.map((t) => (t.id === editTicket.id ? updated : t)));
       setEditTicket(null);
@@ -471,8 +492,16 @@ const KanbanPage: React.FC = () => {
                           Priority: {ticket.priority}
                         </Typography>
                         {ticket.pr_url && (
-                          <Typography variant="caption" sx={{ mt: 1, display: 'block' }}>
-                            <a href={ticket.pr_url} target="_blank" rel="noopener noreferrer">
+                          <Typography variant="caption" sx={{ mt: 1, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                            <Link
+                              to={`/projects/${projectId}/review/${ticket.id}`}
+                              onClick={(e) => e.stopPropagation()}
+                              style={{ color: 'inherit' }}
+                            >
+                              Review
+                            </Link>
+                            <span>·</span>
+                            <a href={ticket.pr_url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
                               Open PR{ticket.pr_number ? ` #${ticket.pr_number}` : ''}
                             </a>
                           </Typography>
@@ -482,18 +511,30 @@ const KanbanPage: React.FC = () => {
                         <Box>
                           {columns
                             .filter((col) => col.id !== column.id)
-                            .map((col) => (
-                              <Button
-                                key={col.id}
-                                size="small"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleMoveTicket(ticket.id, col.id);
-                                }}
-                              >
-                                → {col.title}
-                              </Button>
-                            ))}
+                            .map((col) => {
+                              const isInProgress = col.id === 'in_progress';
+                              const disableInProgress = isInProgress && graphNodes.length === 0;
+                              const btn = (
+                                <Button
+                                  key={col.id}
+                                  size="small"
+                                  disabled={disableInProgress}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleMoveTicket(ticket.id, col.id);
+                                  }}
+                                >
+                                  → {col.title}
+                                </Button>
+                              );
+                              return disableInProgress ? (
+                                <Tooltip key={col.id} title="Add at least one node to the graph first">
+                                  <span>{btn}</span>
+                                </Tooltip>
+                              ) : (
+                                btn
+                              );
+                            })}
                         </Box>
                         <IconButton
                           size="small"
@@ -574,7 +615,16 @@ const KanbanPage: React.FC = () => {
                 <MenuItem value="done">Done</MenuItem>
               </Select>
             </FormControl>
-            <FormControl size="small" fullWidth>
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={newTicketAllNodesAndEdges}
+                  onChange={(e) => setNewTicketAllNodesAndEdges(e.target.checked)}
+                />
+              }
+              label="All nodes and edges (full graph context)"
+            />
+            <FormControl size="small" fullWidth disabled={newTicketAllNodesAndEdges}>
               <InputLabel>Nodes</InputLabel>
               <Select
                 multiple
@@ -582,9 +632,11 @@ const KanbanPage: React.FC = () => {
                 label="Nodes"
                 onChange={(e) => setNewTicketNodeIds(typeof e.target.value === 'string' ? [] : e.target.value)}
                 renderValue={(selected) =>
-                  (selected as string[])
-                    .map((id) => graphNodes.find((n) => n.id === id)?.label ?? id)
-                    .join(', ') || 'None'
+                  newTicketAllNodesAndEdges
+                    ? 'All'
+                    : (selected as string[])
+                        .map((id) => graphNodes.find((n) => n.id === id)?.label ?? id)
+                        .join(', ') || 'None'
                 }
               >
                 {graphNodes.map((n) => (
@@ -597,7 +649,7 @@ const KanbanPage: React.FC = () => {
                 )}
               </Select>
             </FormControl>
-            <FormControl size="small" fullWidth>
+            <FormControl size="small" fullWidth disabled={newTicketAllNodesAndEdges}>
               <InputLabel>Edges</InputLabel>
               <Select
                 multiple
@@ -605,9 +657,11 @@ const KanbanPage: React.FC = () => {
                 label="Edges"
                 onChange={(e) => setNewTicketEdgeIds(typeof e.target.value === 'string' ? [] : e.target.value)}
                 renderValue={(selected) =>
-                  (selected as string[])
-                    .map((id) => graphEdges.find((edge) => edge.id === id)?.label ?? id)
-                    .join(', ') || 'None'
+                  newTicketAllNodesAndEdges
+                    ? 'All'
+                    : (selected as string[])
+                        .map((id) => graphEdges.find((edge) => edge.id === id)?.label ?? id)
+                        .join(', ') || 'None'
                 }
               >
                 {graphEdges.map((edge) => (
@@ -759,7 +813,16 @@ const KanbanPage: React.FC = () => {
                     <MenuItem value="done">Done</MenuItem>
                   </Select>
                 </FormControl>
-                <FormControl size="small" fullWidth>
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={editAllNodesAndEdges}
+                      onChange={(e) => setEditAllNodesAndEdges(e.target.checked)}
+                    />
+                  }
+                  label="All nodes and edges (full graph context)"
+                />
+                <FormControl size="small" fullWidth disabled={editAllNodesAndEdges}>
                   <InputLabel>Nodes</InputLabel>
                   <Select
                     multiple
@@ -767,9 +830,11 @@ const KanbanPage: React.FC = () => {
                     label="Nodes"
                     onChange={(e) => setEditNodeIds(typeof e.target.value === 'string' ? [] : e.target.value)}
                     renderValue={(selected) =>
-                      (selected as string[])
-                        .map((id) => graphNodes.find((n) => n.id === id)?.label ?? id)
-                        .join(', ') || 'None'
+                      editAllNodesAndEdges
+                        ? 'All'
+                        : (selected as string[])
+                            .map((id) => graphNodes.find((n) => n.id === id)?.label ?? id)
+                            .join(', ') || 'None'
                     }
                   >
                     {graphNodes.map((n) => (
@@ -782,7 +847,7 @@ const KanbanPage: React.FC = () => {
                     )}
                   </Select>
                 </FormControl>
-                <FormControl size="small" fullWidth>
+                <FormControl size="small" fullWidth disabled={editAllNodesAndEdges}>
                   <InputLabel>Edges</InputLabel>
                   <Select
                     multiple
@@ -790,9 +855,11 @@ const KanbanPage: React.FC = () => {
                     label="Edges"
                     onChange={(e) => setEditEdgeIds(typeof e.target.value === 'string' ? [] : e.target.value)}
                     renderValue={(selected) =>
-                      (selected as string[])
-                        .map((id) => graphEdges.find((e) => e.id === id)?.label ?? id)
-                        .join(', ') || 'None'
+                      editAllNodesAndEdges
+                        ? 'All'
+                        : (selected as string[])
+                            .map((id) => graphEdges.find((e) => e.id === id)?.label ?? id)
+                            .join(', ') || 'None'
                     }
                   >
                     {graphEdges.map((e) => (

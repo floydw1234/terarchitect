@@ -34,9 +34,8 @@ def create_app():
         "DATABASE_URL",
         "postgresql://terarchitect:terarchitect@localhost:5433/terarchitect",
     )
-    memory_save_dir = os.environ.get("MEMORY_SAVE_DIR")
-    if memory_save_dir:
-        memory_save_dir = os.path.abspath(memory_save_dir)
+    memory_save_dir = os.environ.get("MEMORY_SAVE_DIR", "/tmp/terarchitect")
+    memory_save_dir = os.path.abspath(memory_save_dir)
 
     app.config.update(
         SQLALCHEMY_DATABASE_URI=db_uri,
@@ -46,14 +45,10 @@ def create_app():
             "pool_recycle": 300,
         },
         VLLM_URL="http://host.docker.internal:8000",
-        VLLM_PROXY_URL="http://host.docker.internal:8080",
         MEMORY_SAVE_DIR=memory_save_dir,
     )
 
-    # Initialize database
     db.init_app(app)
-
-    # Create tables
     with app.app_context():
         db.create_all()
 

@@ -215,6 +215,22 @@ const ProjectPage: React.FC = () => {
             </Box>
           </Paper>
         </Grid>
+
+        <Grid item xs={12} sm={6}>
+          <Paper component={Link} to={`/projects/${projectId}/review`} sx={toolCardSx}>
+            <Box>
+              <Typography variant="h6" sx={{ mb: 1 }}>
+                Review
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                PR summary and commits for quick review
+              </Typography>
+            </Box>
+            <Box sx={{ mt: 3 }}>
+              <Button size="small" variant="text">Open</Button>
+            </Box>
+          </Paper>
+        </Grid>
       </Grid>
 
       <Dialog open={deleteOpen} onClose={() => !deleteSubmitting && setDeleteOpen(false)} maxWidth="sm" fullWidth>

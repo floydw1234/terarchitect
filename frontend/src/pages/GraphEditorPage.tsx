@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Box, Typography, Button, Paper, TextField, Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material';
+import { Box, Typography, Button, Paper, TextField, Dialog, DialogTitle, DialogContent, DialogActions, FormControl, InputLabel, Select, MenuItem } from '@mui/material';
 import { getGraph, updateGraph } from '../utils/api';
 
 interface NodeData {
   label: string;
+  description: string;
   tech: string[];
   ports: string[];
   security: string[];
@@ -37,6 +38,7 @@ function normalizeNode(n: Partial<GraphNode>): GraphNode {
     position: n.position ?? { x: 0, y: 0 },
     data: {
       label: data.label ?? 'Service',
+      description: typeof data.description === 'string' ? data.description : '',
       tech: Array.isArray(data.tech) ? data.tech : [],
       ports: Array.isArray(data.ports) ? data.ports : [],
       security: Array.isArray(data.security) ? data.security : [],
@@ -54,6 +56,8 @@ function normalizeEdge(e: Partial<GraphEdge>): GraphEdge {
 }
 
 const NODE_R = 36;
+
+const NODE_TYPES = ['service', 'database', 'cache', 'queue', 'api', 'worker', 'view', 'frontend'] as const;
 
 function getNodePos(node: GraphNode) {
   return node.position;
@@ -164,7 +168,7 @@ const GraphEditorPage: React.FC = () => {
         id,
         type: 'service',
         position: { x: 150 + Math.random() * 200, y: 150 + Math.random() * 200 },
-        data: { label: 'New Service', tech: [], ports: [], security: [] },
+        data: { label: 'New Service', description: '', tech: [], ports: [], security: [] },
       },
     ]);
   };
@@ -199,11 +203,15 @@ const GraphEditorPage: React.FC = () => {
     setEditingNodeId(nodeId);
   };
 
-  const handleUpdateNode = (nodeId: string, updates: Partial<NodeData>) => {
+  const handleUpdateNode = (nodeId: string, updates: Partial<NodeData> & { type?: string }) => {
     setNodes((prev) =>
-      prev.map((n) =>
-        n.id === nodeId ? { ...n, data: { ...n.data, ...updates } } : n
-      )
+      prev.map((n) => {
+        if (n.id !== nodeId) return n;
+        const { type: typeUpdate, ...dataUpdates } = updates as Partial<NodeData> & { type?: string };
+        const next = { ...n, data: { ...n.data, ...dataUpdates } };
+        if (typeUpdate !== undefined) next.type = typeUpdate;
+        return next;
+      })
     );
   };
 
@@ -408,12 +416,36 @@ const GraphEditorPage: React.FC = () => {
             if (!node) return null;
             return (
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1, minWidth: 340 }}>
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Type</InputLabel>
+                  <Select
+                    label="Type"
+                    value={NODE_TYPES.includes(node.type as any) ? node.type : 'service'}
+                    onChange={(e) => handleUpdateNode(editingNodeId, { type: e.target.value })}
+                  >
+                    {NODE_TYPES.map((t) => (
+                      <MenuItem key={t} value={t}>
+                        {t}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
                 <TextField
                   size="small"
                   label="Label"
                   value={node.data.label}
                   onChange={(e) => handleUpdateNode(editingNodeId, { label: e.target.value })}
                   fullWidth
+                />
+                <TextField
+                  size="small"
+                  label="Functionality description"
+                  value={node.data.description ?? ''}
+                  onChange={(e) => handleUpdateNode(editingNodeId, { description: e.target.value })}
+                  placeholder="What this node does in the system"
+                  fullWidth
+                  multiline
+                  minRows={2}
                 />
                 <TextField
                   size="small"
