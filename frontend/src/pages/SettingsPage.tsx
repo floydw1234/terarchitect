@@ -37,6 +37,10 @@ const FIELDS: FieldMeta[] = [
   { key: 'WORKER_MODEL', label: 'Model', hint: 'Leave blank to use the same model as the Agent (above).', sensitive: false },
   { key: 'WORKER_API_KEY', label: 'API key', hint: 'Optional API key for the Worker LLM.', sensitive: true },
   { key: 'WORKER_TIMEOUT_SEC', label: 'Timeout (seconds)', hint: 'Per-request timeout (default 3600).', sensitive: false },
+  // Frontend LLM: UI-powered LLM features (graph-derived helpers, suggestions, etc.)
+  { key: 'FRONTEND_LLM_URL', label: 'Frontend LLM URL', hint: 'Base URL for frontend-driven LLM features (e.g. http://localhost:8000).', sensitive: false },
+  { key: 'FRONTEND_LLM_MODEL', label: 'Frontend LLM model', hint: 'Model used by backend endpoints serving frontend LLM features.', sensitive: false },
+  { key: 'FRONTEND_LLM_API_KEY', label: 'Frontend LLM API key', hint: 'Optional API key for frontend-driven LLM requests.', sensitive: true },
   // Memory: LLM + embedding (HippoRAG)
   { key: 'MEMORY_LLM_BASE_URL', label: 'LLM URL', hint: 'Leave blank to use the Agent URL (above).', sensitive: false },
   { key: 'MEMORY_LLM_MODEL', label: 'LLM model', hint: 'Leave blank to use the Agent model (above).', sensitive: false },
@@ -53,6 +57,7 @@ const SECTIONS: { title: string; keys: string[]; sectionKey?: string; descriptio
   { title: 'GitHub', keys: ['github_user_token', 'github_agent_token'] },
   { title: 'Agent', keys: ['VLLM_URL', 'AGENT_MODEL', 'AGENT_API_KEY', 'MIDDLE_AGENT_DEBUG'] },
   { title: 'Worker', keys: ['WORKER_TYPE', 'WORKER_LLM_URL', 'WORKER_MODEL', 'WORKER_API_KEY', 'WORKER_TIMEOUT_SEC'] },
+  { title: 'Frontend LLM', keys: ['FRONTEND_LLM_URL', 'FRONTEND_LLM_MODEL', 'FRONTEND_LLM_API_KEY'], description: 'Used by backend endpoints that power frontend AI features (for example, Docker image suggestions from graph technologies).' },
   { title: 'Memory', keys: ['MEMORY_LLM_BASE_URL', 'MEMORY_LLM_MODEL', 'MEMORY_LLM_API_KEY', 'EMBEDDING_SERVICE_URL', 'MEMORY_EMBEDDING_MODEL', 'EMBEDDING_API_KEY', 'openai_api_key', 'anthropic_api_key'], sectionKey: 'memory_filter', description: 'HippoRAG: LLM and embedding for the memory system. Leave URL/model blank to use Agent settings.' },
 ];
 

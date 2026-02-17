@@ -235,8 +235,14 @@ const GraphEditorPage: React.FC = () => {
           security: n.data.security.filter(Boolean),
         },
       }));
-      await updateGraph(projectId, { nodes: cleanedNodes, edges });
-      alert('Graph saved successfully!');
+      const res = await updateGraph(projectId, { nodes: cleanedNodes, edges });
+      if (res?.docker_image_suggestions_error) {
+        alert(`Graph saved, but Docker image suggestions failed: ${res.docker_image_suggestions_error}`);
+      } else if (Array.isArray(res?.docker_image_options) && res.docker_image_options.length > 0) {
+        alert(`Graph saved successfully! Generated ${res.docker_image_options.length} Docker image suggestions for this project.`);
+      } else {
+        alert('Graph saved successfully!');
+      }
     } catch (error) {
       console.error('Failed to save graph:', error);
       alert('Failed to save graph');

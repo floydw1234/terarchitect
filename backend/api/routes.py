@@ -1,6 +1,7 @@
 """
 API Routes for Terarchitect
 """
+import base64
 import json
 import os
 import re
@@ -10,13 +11,23 @@ import threading
 import time
 from uuid import UUID, uuid5, NAMESPACE_DNS
 
+import requests
 from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy import text, nullslast
 
 from models.db import db, Project, Graph, KanbanBoard, Ticket, Note, Setting, AppSetting, RAGEmbedding, ExecutionLog, PR, PRReviewComment
 from utils.embedding_client import embed_single
 from utils.rag import upsert_embedding, delete_embeddings_for_source
-from utils.app_settings import get_all_for_api, set_value, delete_key, ALLOWED_KEYS, SENSITIVE_KEYS, get_gh_env_for_user, get_gh_env_for_agent
+from utils.app_settings import (
+    get_all_for_api,
+    set_value,
+    delete_key,
+    ALLOWED_KEYS,
+    SENSITIVE_KEYS,
+    get_gh_env_for_user,
+    get_gh_env_for_agent,
+    get_setting_or_env,
+)
 from utils.app_settings_crypto import is_encryption_available
 
 api_bp = Blueprint("api", __name__)
@@ -35,6 +46,22 @@ _agent_queue_lock = threading.Lock()
 # Hard execution mutex: only one agent run may execute at a time in this process.
 _agent_run_lock = threading.Lock()
 
+PROJECT_SETTING_DOCKER_IMAGE = "docker_image"
+PROJECT_SETTING_DOCKER_IMAGE_OPTIONS = "docker_image_options"
+PROJECT_SETTING_DOCKERFILE = "dockerfile"
+DEFAULT_DOCKER_IMAGE_SUGGESTIONS = [
+    "python:3.12-slim",
+    "python:3.11-slim",
+    "node:20-slim",
+    "node:22-slim",
+    "eclipse-temurin:17-jdk",
+    "eclipse-temurin:21-jdk",
+    "golang:1.22",
+    "rust:1.76-slim",
+    "mcr.microsoft.com/dotnet/sdk:8.0",
+    "buildpack-deps:bookworm",
+]
+
 
 def _agent_job_key(kind, args):
     """Unique key for a queued or in-progress job. ticket -> ticket:id, review -> review:ticket_id:pr#."""
@@ -46,20 +73,233 @@ def _agent_job_key(kind, args):
     return None
 
 
+def _get_project_setting(project_id, key, default=None):
+    row = Setting.query.filter_by(project_id=project_id, key=key).first()
+    if not row:
+        return default
+    return row.value if row.value is not None else default
+
+
+def _set_project_setting(project_id, key, value):
+    row = Setting.query.filter_by(project_id=project_id, key=key).first()
+    if value is None:
+        if row:
+            db.session.delete(row)
+        return
+    if row:
+        row.value = value
+    else:
+        db.session.add(Setting(project_id=project_id, key=key, value=value))
+
+
+def _project_docker_config(project_id):
+    docker_image = _get_project_setting(project_id, PROJECT_SETTING_DOCKER_IMAGE)
+    if not isinstance(docker_image, str):
+        docker_image = None
+    else:
+        docker_image = docker_image.strip() or None
+    docker_image_options = _get_project_setting(project_id, PROJECT_SETTING_DOCKER_IMAGE_OPTIONS, [])
+    if not isinstance(docker_image_options, list):
+        docker_image_options = []
+    docker_image_options = [str(v).strip() for v in docker_image_options if str(v).strip()]
+    return docker_image, docker_image_options
+
+
+def _project_to_json(project: Project):
+    docker_image, docker_image_options = _project_docker_config(project.id)
+    dockerfile = _get_project_setting(project.id, PROJECT_SETTING_DOCKERFILE)
+    if dockerfile is not None and not isinstance(dockerfile, str):
+        dockerfile = str(dockerfile) if dockerfile else None
+    elif dockerfile is not None:
+        dockerfile = (dockerfile or "").strip() or None
+    return {
+        "id": str(project.id),
+        "name": project.name,
+        "description": project.description,
+        "project_path": project.project_path,
+        "github_url": project.github_url,
+        "docker_image": docker_image,
+        "docker_image_options": docker_image_options,
+        "dockerfile": dockerfile,
+        "created_at": project.created_at.isoformat() if project.created_at else None,
+        "updated_at": project.updated_at.isoformat() if project.updated_at else None,
+    }
+
+
+def _normalize_frontend_llm_chat_url(raw_url: str) -> str:
+    url = (raw_url or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if url.endswith("/chat/completions"):
+        return url
+    if url.endswith("/v1"):
+        return f"{url}/chat/completions"
+    return f"{url}/v1/chat/completions"
+
+
+def _extract_node_technologies(nodes) -> list[str]:
+    techs = []
+    for node in (nodes or []):
+        data = node.get("data") if isinstance(node, dict) else {}
+        if not isinstance(data, dict):
+            continue
+        raw_values = []
+        if "technologies" in data:
+            raw_values = data.get("technologies")
+        elif "tech" in data:
+            raw_values = data.get("tech")
+        if isinstance(raw_values, str):
+            raw_values = [raw_values]
+        if not isinstance(raw_values, list):
+            continue
+        for t in raw_values:
+            s = str(t).strip()
+            if s:
+                techs.append(s)
+    seen = set()
+    out = []
+    for t in techs:
+        key = t.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(t)
+    return out
+
+
+def _parse_docker_image_candidates(raw_text: str) -> list[str]:
+    content = (raw_text or "").strip()
+    if not content:
+        return []
+    parsed = None
+    try:
+        parsed = json.loads(content)
+    except Exception:
+        pass
+    if parsed is None:
+        m = re.search(r"\[[\s\S]*\]", content)
+        if m:
+            try:
+                parsed = json.loads(m.group(0))
+            except Exception:
+                parsed = None
+    candidates = []
+    if isinstance(parsed, dict):
+        maybe = parsed.get("images")
+        if isinstance(maybe, list):
+            candidates = maybe
+    elif isinstance(parsed, list):
+        candidates = parsed
+    cleaned = []
+    for item in candidates:
+        s = str(item).strip().strip("`").strip('"').strip("'")
+        if not s or " " in s:
+            continue
+        cleaned.append(s)
+    uniq = []
+    seen = set()
+    for s in cleaned:
+        k = s.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(s)
+        if len(uniq) >= 10:
+            break
+    if len(uniq) < 10:
+        for fallback in DEFAULT_DOCKER_IMAGE_SUGGESTIONS:
+            key = fallback.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(fallback)
+            if len(uniq) >= 10:
+                break
+    return uniq[:10]
+
+
+def _generate_docker_image_options_from_graph(project_id, nodes):
+    technologies = _extract_node_technologies(nodes)
+    if not technologies:
+        _set_project_setting(project_id, PROJECT_SETTING_DOCKER_IMAGE_OPTIONS, [])
+        db.session.commit()
+        return [], None
+
+    llm_url = (get_setting_or_env("FRONTEND_LLM_URL") or "").strip()
+    llm_model = (get_setting_or_env("FRONTEND_LLM_MODEL") or "").strip()
+    llm_api_key = (get_setting_or_env("FRONTEND_LLM_API_KEY") or "").strip()
+    chat_url = _normalize_frontend_llm_chat_url(llm_url)
+    if not chat_url or not llm_model:
+        msg = "Set FRONTEND_LLM_URL and FRONTEND_LLM_MODEL in Settings to auto-generate Docker image options."
+        current_app.logger.info("Docker image suggestion skipped for project %s: %s", project_id, msg)
+        _set_project_setting(project_id, PROJECT_SETTING_DOCKER_IMAGE_OPTIONS, [])
+        db.session.commit()
+        return [], msg
+
+    system_prompt = (
+        "You are selecting Docker base images for development workspaces. "
+        "If your runtime supports web search/browsing tools, use them to check current official image names/tags. "
+        "If web search is unavailable, proceed using your internal knowledge. "
+        "Return ONLY valid JSON: an array of exactly 10 Docker image references (strings, include tags). "
+        "No markdown, no comments."
+    )
+    user_prompt = (
+        "Project technologies extracted from the architecture graph:\n"
+        f"{json.dumps(technologies)}\n\n"
+        "Generate 10 practical Docker images for coding/build/test workflows for this stack. "
+        "Prioritize broadly useful official images and keep each item as a plain image reference with tag. "
+        "Prefer stable, current tags (or widely adopted LTS tags) and avoid obscure/unofficial images."
+    )
+    payload = {
+        "model": llm_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.2,
+    }
+    headers = {"Content-Type": "application/json"}
+    if llm_api_key:
+        headers["Authorization"] = f"Bearer {llm_api_key}"
+
+    try:
+        resp = requests.post(chat_url, json=payload, headers=headers, timeout=45)
+        if resp.status_code >= 400:
+            msg = f"Frontend LLM request failed ({resp.status_code})."
+            current_app.logger.warning("Docker image suggestion failed for project %s: %s", project_id, msg)
+            _set_project_setting(project_id, PROJECT_SETTING_DOCKER_IMAGE_OPTIONS, [])
+            db.session.commit()
+            return [], msg
+        data = resp.json()
+        content = (
+            data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
+        images = _parse_docker_image_candidates(content)
+        if not images:
+            msg = "Frontend LLM returned no usable Docker image suggestions."
+            current_app.logger.warning("Docker image suggestion parse failed for project %s", project_id)
+            _set_project_setting(project_id, PROJECT_SETTING_DOCKER_IMAGE_OPTIONS, [])
+            db.session.commit()
+            return [], msg
+        _set_project_setting(project_id, PROJECT_SETTING_DOCKER_IMAGE_OPTIONS, images)
+        db.session.commit()
+        return images, None
+    except Exception as e:
+        msg = f"Frontend LLM error: {e}"
+        current_app.logger.warning("Docker image suggestion error for project %s: %s", project_id, e)
+        _set_project_setting(project_id, PROJECT_SETTING_DOCKER_IMAGE_OPTIONS, [])
+        db.session.commit()
+        return [], msg
+
+
 @api_bp.route("/projects", methods=["GET", "POST"])
 def projects():
     """List all projects or create a new one."""
     if request.method == "GET":
         projects = Project.query.all()
-        return jsonify([{
-            "id": str(p.id),
-            "name": p.name,
-            "description": p.description,
-            "project_path": p.project_path,
-            "github_url": p.github_url,
-            "created_at": p.created_at.isoformat() if p.created_at else None,
-            "updated_at": p.updated_at.isoformat() if p.updated_at else None,
-        } for p in projects])
+        return jsonify([_project_to_json(p) for p in projects])
 
     if request.method == "POST":
         data = request.json
@@ -112,13 +352,8 @@ def projects():
                     current_app.logger.warning("Could not create default tickets: %s", e)
 
         return jsonify({
-            "id": str(project.id),
-            "name": project.name,
-            "description": project.description,
-            "project_path": project.project_path,
-            "github_url": project.github_url,
+            **_project_to_json(project),
             "created_at": project.created_at.isoformat(),
-            "updated_at": project.updated_at.isoformat() if project.updated_at else None,
         }), 201
 
 
@@ -128,15 +363,7 @@ def project_detail(project_id):
     project = Project.query.get_or_404(project_id)
 
     if request.method == "GET":
-        return jsonify({
-            "id": str(project.id),
-            "name": project.name,
-            "description": project.description,
-            "project_path": project.project_path,
-            "github_url": project.github_url,
-            "created_at": project.created_at.isoformat() if project.created_at else None,
-            "updated_at": project.updated_at.isoformat() if project.updated_at else None,
-        })
+        return jsonify(_project_to_json(project))
 
     if request.method == "PUT":
         data = request.json
@@ -144,16 +371,19 @@ def project_detail(project_id):
         project.description = data.get("description", project.description)
         project.project_path = data.get("project_path", project.project_path)
         project.github_url = data.get("github_url", project.github_url)
+        if "docker_image" in data:
+            docker_image = (data.get("docker_image") or "").strip()
+            _set_project_setting(
+                project.id,
+                PROJECT_SETTING_DOCKER_IMAGE,
+                docker_image if docker_image else None,
+            )
+        if "dockerfile" in data:
+            raw = data.get("dockerfile")
+            dockerfile = (raw if isinstance(raw, str) else "").strip() or None
+            _set_project_setting(project.id, PROJECT_SETTING_DOCKERFILE, dockerfile)
         db.session.commit()
-        return jsonify({
-            "id": str(project.id),
-            "name": project.name,
-            "description": project.description,
-            "project_path": project.project_path,
-            "github_url": project.github_url,
-            "created_at": project.created_at.isoformat() if project.created_at else None,
-            "updated_at": project.updated_at.isoformat() if project.updated_at else None,
-        })
+        return jsonify(_project_to_json(project))
 
     if request.method == "DELETE":
         data = request.json or {}
@@ -175,6 +405,20 @@ def project_detail(project_id):
         db.session.delete(project)
         db.session.commit()
         return jsonify({"message": "Project deleted"})
+
+
+@api_bp.route("/projects/<uuid:project_id>/generate-dockerfile", methods=["POST"])
+def generate_project_dockerfile(project_id):
+    """Generate a Dockerfile from the project repo (GitHub) and store it. Returns the generated dockerfile or an error."""
+    try:
+        Project.query.get_or_404(project_id)
+        dockerfile, err = _generate_dockerfile_from_repo(project_id)
+        if err:
+            return jsonify({"dockerfile": None, "error": err}), 400
+        return jsonify({"dockerfile": dockerfile, "error": None})
+    except Exception as e:
+        current_app.logger.exception("Generate Dockerfile failed for project %s", project_id)
+        return jsonify({"dockerfile": None, "error": f"Server error: {e}"}), 500
 
 
 @api_bp.route("/projects/<uuid:project_id>/graph", methods=["GET", "PUT"])
@@ -238,7 +482,12 @@ def graph(project_id):
             content = (f"{src} -> {tgt}" + (f" {label}" if label else "")).strip() or str(eid)
             upsert_embedding(project_id, "edge", uuid5(NAMESPACE_DNS, f"edge:{eid}"), content)
 
-        return jsonify({"version": graph.version})
+        docker_image_options, docker_image_suggestions_error = _generate_docker_image_options_from_graph(project_id, nodes)
+        return jsonify({
+            "version": graph.version,
+            "docker_image_options": docker_image_options,
+            "docker_image_suggestions_error": docker_image_suggestions_error,
+        })
 
 
 @api_bp.route("/projects/<uuid:project_id>/kanban", methods=["GET", "PUT"])
@@ -403,6 +652,13 @@ def ticket_detail(project_id, ticket_id):
             if not graph or not graph.nodes or len(graph.nodes) == 0:
                 return jsonify({
                     "error": "Add at least one node to the graph before moving a ticket to In Progress.",
+                }), 400
+            docker_image, _ = _project_docker_config(project_id)
+            dockerfile = _get_project_setting(project_id, PROJECT_SETTING_DOCKERFILE)
+            has_dockerfile = isinstance(dockerfile, str) and (dockerfile or "").strip()
+            if not docker_image and not has_dockerfile:
+                return jsonify({
+                    "error": "Select a Docker image or generate a project Dockerfile in the project settings before moving a ticket to In Progress.",
                 }), 400
         if "column_id" in data:
             ticket.column_id = data["column_id"]
@@ -1036,6 +1292,250 @@ def _repo_slug_from_github_url(url):
     path = url.split("github.com")[-1].strip("/")
     parts = path.split("/")
     return "/".join(parts[:2]) if len(parts) >= 2 else None
+
+
+# Files we want to send to the LLM for Dockerfile generation (root only or known paths).
+_DOCKERFILE_CONTEXT_FILES = {
+    "Dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "package.json",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "requirements.txt",
+    "Pipfile",
+    "Pipfile.lock",
+    "pyproject.toml",
+    "go.mod",
+    "go.sum",
+    "Cargo.toml",
+    "Cargo.lock",
+}
+_MAX_FILE_CHARS = 8000
+_MAX_TOTAL_CONTEXT_CHARS = 45000
+
+
+def _get_github_token_for_api():
+    """Return a GitHub token for API calls (user or agent)."""
+    return (
+        (get_setting_or_env("github_user_token") or "").strip()
+        or (get_setting_or_env("github_agent_token") or "").strip()
+    ) or None
+
+
+def _fetch_repo_files_for_dockerfile(github_url, token):
+    """
+    Fetch relevant repo files via GitHub API. Returns (files_dict, None) or (None, error_msg).
+    files_dict: path -> content (decoded, truncated per file and total).
+    """
+    slug = _repo_slug_from_github_url(github_url)
+    if not slug:
+        return None, "Invalid GitHub URL (expected https://github.com/owner/repo)."
+    if not token:
+        return None, "Configure a GitHub token (Settings) to read the repository."
+
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "Authorization": f"Bearer {token}",
+    }
+    api_base = "https://api.github.com/repos/" + slug
+
+    # Get default branch
+    try:
+        repo_resp = requests.get(api_base, headers=headers, timeout=15)
+        if repo_resp.status_code == 404:
+            return None, "Repository not found or no access."
+        if repo_resp.status_code >= 400:
+            return None, f"GitHub API error: {repo_resp.status_code}"
+        repo_data = repo_resp.json()
+        ref = repo_data.get("default_branch") or "main"
+    except requests.RequestException as e:
+        return None, f"Failed to reach GitHub: {e}"
+
+    # List root contents
+    try:
+        contents_resp = requests.get(
+            f"{api_base}/contents",
+            headers=headers,
+            params={"ref": ref},
+            timeout=15,
+        )
+        if contents_resp.status_code >= 400:
+            return None, f"Failed to list repo: {contents_resp.status_code}"
+        root_items = contents_resp.json()
+        if not isinstance(root_items, list):
+            return None, "Unexpected repo contents response."
+    except requests.RequestException as e:
+        return None, f"Failed to list repo: {e}"
+
+    # Collect paths to fetch: root files in our set + any path containing "Dockerfile"
+    paths_to_fetch = []
+    for item in root_items:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or ""
+        path = item.get("path") or name
+        if item.get("type") == "file" and (
+            name in _DOCKERFILE_CONTEXT_FILES or "dockerfile" in name.lower()
+        ):
+            paths_to_fetch.append(path)
+        if item.get("type") == "dir" and name.lower() == "docker":
+            paths_to_fetch.append(path)  # We'll list this dir next
+
+    # List docker/ if present and add any Dockerfile* there
+    for path in list(paths_to_fetch):
+        if path == "docker" or path.startswith("docker/"):
+            try:
+                dir_resp = requests.get(
+                    f"{api_base}/contents/{path}",
+                    headers=headers,
+                    params={"ref": ref},
+                    timeout=15,
+                )
+                if dir_resp.status_code == 200:
+                    dir_items = dir_resp.json()
+                    if isinstance(dir_items, list):
+                        for d in dir_items:
+                            if isinstance(d, dict) and (d.get("name") or "").lower().startswith("dockerfile"):
+                                subpath = (d.get("path") or d.get("name")).strip()
+                                if subpath and subpath not in paths_to_fetch:
+                                    paths_to_fetch.append(subpath)
+            except requests.RequestException:
+                pass
+            if path == "docker":
+                paths_to_fetch.remove("docker")  # Don't fetch dir as file
+
+    # Fetch each file (base64 decode, truncate)
+    files = {}
+    total = 0
+    for path in paths_to_fetch:
+        if total >= _MAX_TOTAL_CONTEXT_CHARS:
+            break
+        try:
+            file_resp = requests.get(
+                f"{api_base}/contents/{path}",
+                headers=headers,
+                params={"ref": ref},
+                timeout=15,
+            )
+            if file_resp.status_code != 200:
+                continue
+            data = file_resp.json()
+            if not isinstance(data, dict) or data.get("type") != "file":
+                continue
+            b64 = data.get("content")
+            if not b64:
+                continue
+            try:
+                raw = base64.b64decode(b64).decode("utf-8", errors="replace")
+            except Exception:
+                continue
+            if len(raw) > _MAX_FILE_CHARS:
+                raw = raw[:_MAX_FILE_CHARS] + "\n... (truncated)"
+            if total + len(raw) > _MAX_TOTAL_CONTEXT_CHARS:
+                raw = raw[: _MAX_TOTAL_CONTEXT_CHARS - total] + "\n... (truncated)"
+            files[path] = raw
+            total += len(raw)
+        except requests.RequestException:
+            continue
+
+    if not files:
+        return None, "No relevant files found in the repository root (e.g. package.json, requirements.txt, Dockerfile)."
+    return files, None
+
+
+def _generate_dockerfile_from_repo(project_id):
+    """
+    Fetch repo files via GitHub, call frontend LLM to generate a Dockerfile, store in project Setting.
+    Returns (dockerfile_string, error_string). On success error_string is None.
+    """
+    project = Project.query.get(project_id)
+    if not project or not (project.github_url or "").strip():
+        return None, "Project has no GitHub URL set."
+
+    token = _get_github_token_for_api()
+    files, err = _fetch_repo_files_for_dockerfile((project.github_url or "").strip(), token)
+    if err:
+        return None, err
+
+    # Optional: graph technologies as hint
+    graph = Graph.query.filter_by(project_id=project_id).first()
+    tech_hint = ""
+    if graph and graph.nodes:
+        techs = _extract_node_technologies(graph.nodes)
+        if techs:
+            tech_hint = f"\nProject technologies (from graph): {json.dumps(techs)}."
+
+    # Build context text for the LLM
+    context_parts = []
+    for path, content in sorted(files.items()):
+        context_parts.append(f"--- {path} ---\n{content}")
+    context_body = "\n\n".join(context_parts)
+
+    llm_url = (get_setting_or_env("FRONTEND_LLM_URL") or "").strip()
+    llm_model = (get_setting_or_env("FRONTEND_LLM_MODEL") or "").strip()
+    llm_api_key = (get_setting_or_env("FRONTEND_LLM_API_KEY") or "").strip()
+    chat_url = _normalize_frontend_llm_chat_url(llm_url)
+    if not chat_url or not llm_model:
+        return None, "Set FRONTEND_LLM_URL and FRONTEND_LLM_MODEL in Settings to generate a Dockerfile."
+
+    system_prompt = (
+        "You are generating a single Dockerfile for a development/build workspace. "
+        "Use the provided project files (and any existing Dockerfiles in the repo) to infer runtimes and dependencies. "
+        "Include all runtimes needed in one image (e.g. Node and Python) so the agent does not reinstall them every run. "
+        "Output only the raw Dockerfile contents. No markdown code fence, no explanation before or after."
+    )
+    user_prompt = (
+        "Project files from the repository:\n\n"
+        f"{context_body}\n\n"
+        f"{tech_hint}\n\n"
+        "Generate one Dockerfile that can build and run this project. Use multi-stage builds if helpful. "
+        "Output only the Dockerfile, nothing else."
+    )
+
+    payload = {
+        "model": llm_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.2,
+    }
+    headers = {"Content-Type": "application/json"}
+    if llm_api_key:
+        headers["Authorization"] = f"Bearer {llm_api_key}"
+
+    try:
+        resp = requests.post(chat_url, json=payload, headers=headers, timeout=90)
+        if resp.status_code >= 400:
+            return None, f"LLM request failed: {resp.status_code}"
+        data = resp.json()
+        content = (
+            data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
+        # Strip markdown code block if present
+        content = (content or "").strip()
+        if content.startswith("```"):
+            lines = content.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            content = "\n".join(lines)
+            if content.endswith("```"):
+                content = content[:-3].rstrip()
+        content = content.strip()
+        if not content:
+            return None, "LLM returned an empty Dockerfile."
+        _set_project_setting(project_id, PROJECT_SETTING_DOCKERFILE, content)
+        db.session.commit()
+        return content, None
+    except requests.RequestException as e:
+        return None, f"LLM request error: {e}"
+    except Exception as e:
+        current_app.logger.exception("Dockerfile generation failed for project %s", project_id)
+        return None, str(e)
 
 
 def _trigger_review_agent(ticket_id, comment_body, pr_number, project_id, github_comment_id):

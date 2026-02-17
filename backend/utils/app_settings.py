@@ -28,6 +28,10 @@ ALLOWED_KEYS = frozenset({
     "WORKER_MODEL",
     "WORKER_TIMEOUT_SEC",
     "MIDDLE_AGENT_DEBUG",
+    # Frontend LLM features (graph-driven UX helpers)
+    "FRONTEND_LLM_URL",
+    "FRONTEND_LLM_MODEL",
+    "FRONTEND_LLM_API_KEY",
     # Memory (HippoRAG) - MEMORY_SAVE_DIR not configurable; fixed default /tmp/terarchitect
     "MEMORY_LLM_MODEL",
     "MEMORY_LLM_BASE_URL",
@@ -46,6 +50,7 @@ SENSITIVE_KEYS = frozenset({
     "anthropic_api_key",
     "AGENT_API_KEY",
     "WORKER_API_KEY",
+    "FRONTEND_LLM_API_KEY",
     "MEMORY_LLM_API_KEY",
     "EMBEDDING_API_KEY",
 })
