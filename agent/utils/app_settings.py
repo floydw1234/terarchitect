@@ -41,12 +41,6 @@ ALLOWED_KEYS = frozenset({
     "EMBEDDING_SERVICE_URL",
     # Worker-facing API (Phase 1: coordinator and agent containers)
     "TERARCHITECT_WORKER_API_KEY",
-    # Git identity for agent commits (optional; agent uses defaults if unset)
-    "GIT_USER_NAME",
-    "GIT_USER_EMAIL",
-    # Git identity for dashboard/backend (gh CLI, UI PR actions; optional)
-    "GIT_DASHBOARD_USER_NAME",
-    "GIT_DASHBOARD_USER_EMAIL",
 })
 
 # Keys stored encrypted; rest stored plain (URLs, paths, model names, etc.)
@@ -196,18 +190,6 @@ def get_gh_env_for_user() -> dict:
     return {"GH_TOKEN": token, "GITHUB_TOKEN": token}
 
 
-def get_dashboard_git_env() -> dict:
-    """Git identity for dashboard/backend (gh CLI, UI). Backend in Docker may have no git config."""
-    out = {}
-    name = (get_setting_or_env("GIT_DASHBOARD_USER_NAME") or os.environ.get("GIT_DASHBOARD_USER_NAME") or "").strip()
-    email = (get_setting_or_env("GIT_DASHBOARD_USER_EMAIL") or os.environ.get("GIT_DASHBOARD_USER_EMAIL") or "").strip()
-    if name:
-        out["GIT_AUTHOR_NAME"] = out["GIT_COMMITTER_NAME"] = name
-    if email:
-        out["GIT_AUTHOR_EMAIL"] = out["GIT_COMMITTER_EMAIL"] = email
-    return out
-
-
 def get_gh_env_for_agent() -> dict:
     """Env dict for gh/git when agent pushes and creates PRs. Merge with os.environ. Empty if no token set.
     When run outside Flask (e.g. standalone runner), falls back to GITHUB_TOKEN/GH_TOKEN from os.environ."""
@@ -216,40 +198,7 @@ def get_gh_env_for_agent() -> dict:
     except Exception:
         token = None
     if not token:
-        token = (
-            os.environ.get("GITHUB_TOKEN")
-            or os.environ.get("GH_TOKEN")
-            or os.environ.get("GITHUB_AGENT_TOKEN")
-            or ""
-        ).strip() or None
+        token = (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or "").strip() or None
     if not token:
         return {}
     return {"GH_TOKEN": token, "GITHUB_TOKEN": token}
-
-
-# Setting keys to send to the agent container (from Settings UI / DB). Agent reads these via env.
-AGENT_ENV_KEYS = (
-    "TERARCHITECT_WORKER_API_KEY",
-    "VLLM_URL",
-    "AGENT_MODEL",
-    "AGENT_API_KEY",
-    "WORKER_LLM_URL",
-    "WORKER_MODEL",
-    "WORKER_API_KEY",
-    "WORKER_TIMEOUT_SEC",
-    "MIDDLE_AGENT_DEBUG",
-    "GIT_USER_NAME",
-    "GIT_USER_EMAIL",
-)
-
-
-def get_agent_env() -> dict:
-    """All env vars the agent container needs, from Settings (DB) with env fallback. Used when building job payload."""
-    out = dict(get_gh_env_for_agent())
-    for key in AGENT_ENV_KEYS:
-        if key not in ALLOWED_KEYS:
-            continue
-        val = get_setting_or_env(key) or os.environ.get(key)
-        if val is not None and str(val).strip():
-            out[key] = str(val).strip()
-    return out

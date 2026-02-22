@@ -10,15 +10,9 @@ import {
   CircularProgress,
   Divider,
   InputAdornment,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem,
 } from '@mui/material';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import { getSettings, updateSettings, type AppSettingsResponse } from '../utils/api';
-
-const WORKER_TYPE_OPTIONS = ['opencode', 'aider', 'claude_code', 'gemini', 'codex'] as const;
 
 /** keys: when set, this field reads/writes multiple settings (e.g. one "LLM base URL" for both Director and Worker). */
 type FieldMeta = { key: string; label: string; hint: string; sensitive: boolean; options?: readonly string[]; keys?: string[] };
@@ -26,13 +20,16 @@ type FieldMeta = { key: string; label: string; hint: string; sensitive: boolean;
 const FIELDS: FieldMeta[] = [
   { key: 'github_user_token', label: 'GitHub user token', hint: 'UI: PR comments, approve, merge, poll. Classic PAT with repo scope.', sensitive: true },
   { key: 'github_agent_token', label: 'GitHub agent token', hint: 'Agent: push branches, create PRs, and reply to PR comments.', sensitive: true },
+  { key: 'GIT_USER_NAME', label: 'Agent git name', hint: 'Author name for agent container commits (default: Terarchitect Agent).', sensitive: false },
+  { key: 'GIT_USER_EMAIL', label: 'Agent git email', hint: 'Author email for agent container commits (default: agent@terarchitect.local).', sensitive: false },
+  { key: 'GIT_DASHBOARD_USER_NAME', label: 'Dashboard git name', hint: 'Git author name for backend/UI (e.g. backend in Docker). Leave blank if not needed.', sensitive: false },
+  { key: 'GIT_DASHBOARD_USER_EMAIL', label: 'Dashboard git email', hint: 'Git author email for backend/UI (e.g. backend in Docker). Leave blank if not needed.', sensitive: false },
   // Agent (Director): own URL, model, key
   { key: 'VLLM_URL', label: 'LLM URL', hint: 'Base URL for the Agent/Director (e.g. http://localhost:8000).', sensitive: false },
   { key: 'AGENT_MODEL', label: 'Model', hint: 'Leave blank for Qwen/Qwen3-Coder-Next-FP8.', sensitive: false },
   { key: 'AGENT_API_KEY', label: 'API key', hint: 'Optional API key for the Agent LLM.', sensitive: true },
   { key: 'MIDDLE_AGENT_DEBUG', label: 'Debug', hint: '1 = verbose logs; 0 = quiet.', sensitive: false },
-  // Worker: own URL, model, key
-  { key: 'WORKER_TYPE', label: 'Worker', hint: 'Only opencode is implemented today.', sensitive: false, options: WORKER_TYPE_OPTIONS },
+  // OpenCode worker: URL, model, key
   { key: 'WORKER_LLM_URL', label: 'LLM URL', hint: 'Leave blank for http://localhost:8080/v1.', sensitive: false },
   { key: 'WORKER_MODEL', label: 'Model', hint: 'Leave blank to use the same model as the Agent (above).', sensitive: false },
   { key: 'WORKER_API_KEY', label: 'API key', hint: 'Optional API key for the Worker LLM.', sensitive: true },
@@ -49,16 +46,18 @@ const FIELDS: FieldMeta[] = [
   { key: 'MEMORY_EMBEDDING_MODEL', label: 'Embedding model', hint: 'Model for embedding (memory and app).', sensitive: false },
   { key: 'EMBEDDING_API_KEY', label: 'Embedding API key', hint: 'Embedding service X-API-Key if required.', sensitive: true },
   { key: 'openai_api_key', label: 'OpenAI API key', hint: 'For OpenAI-compatible embedding/LLM calls. Required for memory.', sensitive: true },
-  { key: 'anthropic_api_key', label: 'Anthropic API key', hint: 'For Claude-based workers (not needed for opencode).', sensitive: true },
+  { key: 'anthropic_api_key', label: 'Anthropic API key', hint: 'Optional; for memory or other features.', sensitive: true },
+  // Worker-facing API (Phase 1: coordinator and agent containers)
+  { key: 'TERARCHITECT_WORKER_API_KEY', label: 'Worker API key', hint: 'Bearer token for /api/worker/* and worker-context/logs/complete. If set, coordinator and agent must send Authorization: Bearer <key>.', sensitive: true },
 ];
 
-/** sectionKey "memory_filter" = hide anthropic when worker is opencode. description = optional subtitle. */
-const SECTIONS: { title: string; keys: string[]; sectionKey?: string; description?: string }[] = [
-  { title: 'GitHub', keys: ['github_user_token', 'github_agent_token'] },
+const SECTIONS: { title: string; keys: string[]; description?: string }[] = [
+  { title: 'GitHub', keys: ['github_user_token', 'github_agent_token', 'GIT_USER_NAME', 'GIT_USER_EMAIL', 'GIT_DASHBOARD_USER_NAME', 'GIT_DASHBOARD_USER_EMAIL'], description: 'Tokens for UI and agent. Agent git = commits from agent container. Dashboard git = backend/UI (e.g. when backend runs in Docker). Leave blank for defaults.' },
   { title: 'Agent', keys: ['VLLM_URL', 'AGENT_MODEL', 'AGENT_API_KEY', 'MIDDLE_AGENT_DEBUG'] },
-  { title: 'Worker', keys: ['WORKER_TYPE', 'WORKER_LLM_URL', 'WORKER_MODEL', 'WORKER_API_KEY', 'WORKER_TIMEOUT_SEC'] },
-  { title: 'Frontend LLM', keys: ['FRONTEND_LLM_URL', 'FRONTEND_LLM_MODEL', 'FRONTEND_LLM_API_KEY'], description: 'Used by backend endpoints that power frontend AI features (for example, Docker image suggestions from graph technologies).' },
-  { title: 'Memory', keys: ['MEMORY_LLM_BASE_URL', 'MEMORY_LLM_MODEL', 'MEMORY_LLM_API_KEY', 'EMBEDDING_SERVICE_URL', 'MEMORY_EMBEDDING_MODEL', 'EMBEDDING_API_KEY', 'openai_api_key', 'anthropic_api_key'], sectionKey: 'memory_filter', description: 'HippoRAG: LLM and embedding for the memory system. Leave URL/model blank to use Agent settings.' },
+  { title: 'OpenCode worker', keys: ['WORKER_LLM_URL', 'WORKER_MODEL', 'WORKER_API_KEY', 'WORKER_TIMEOUT_SEC'], description: 'LLM used by OpenCode inside the agent container. Leave blank for defaults.' },
+  { title: 'Frontend LLM', keys: ['FRONTEND_LLM_URL', 'FRONTEND_LLM_MODEL', 'FRONTEND_LLM_API_KEY'], description: 'Optional. Used by backend for frontend AI features (e.g. graph-based suggestions).' },
+  { title: 'Memory', keys: ['MEMORY_LLM_BASE_URL', 'MEMORY_LLM_MODEL', 'MEMORY_LLM_API_KEY', 'EMBEDDING_SERVICE_URL', 'MEMORY_EMBEDDING_MODEL', 'EMBEDDING_API_KEY', 'openai_api_key', 'anthropic_api_key'], description: 'HippoRAG: LLM and embedding for the memory system. Leave URL/model blank to use Agent settings.' },
+  { title: 'Worker API', keys: ['TERARCHITECT_WORKER_API_KEY'], description: 'Auth for worker-facing API (coordinator and agent containers). Leave blank for no auth (dev).' },
 ];
 
 const keyToMeta: Record<string, FieldMeta> = Object.fromEntries(FIELDS.map((f) => [f.key, f]));
@@ -104,14 +103,6 @@ const SettingsPage: React.FC = () => {
   };
 
   const hasChanges = Object.keys(values).length > 0;
-
-  const effectiveWorker = (): string => {
-    const v = values['WORKER_TYPE'];
-    if (v && typeof v === 'string') return v;
-    const s = status?.['WORKER_TYPE'];
-    if (s && typeof s === 'string') return s;
-    return 'opencode';
-  };
 
   const primaryKey = (meta: FieldMeta) => meta.keys?.[0] ?? meta.key;
 
@@ -181,12 +172,7 @@ const SettingsPage: React.FC = () => {
       )}
 
       <Paper sx={{ p: 3 }}>
-        {SECTIONS.map((section) => {
-          const keys =
-            section.sectionKey === 'memory_filter' && effectiveWorker() === 'opencode'
-              ? section.keys.filter((k) => k !== 'anthropic_api_key')
-              : section.keys;
-          return (
+        {SECTIONS.map((section) => (
           <Box key={section.title} sx={{ mb: 3 }}>
             <Typography variant="subtitle1" fontWeight={600} sx={{ mb: 0.5 }}>
               {section.title}
@@ -197,40 +183,13 @@ const SettingsPage: React.FC = () => {
               </Typography>
             )}
             <Stack spacing={2} sx={{ mt: section.description ? 0 : 1 }}>
-              {keys.map((key) => {
+              {section.keys.map((key) => {
                 const meta = keyToMeta[key];
                 if (!meta) return null;
                 const sensitive = meta.sensitive;
                 const set = isSet(key);
-                const options = meta.options;
                 const value = displayValue(key);
                 const pk = primaryKey(meta);
-
-                if (options) {
-                  return (
-                    <Box key={key}>
-                      <FormControl fullWidth size="small">
-                        <InputLabel id={`settings-${key}`}>{meta.label}</InputLabel>
-                        <Select
-                          labelId={`settings-${key}`}
-                          label={meta.label}
-                          value={value || ''}
-                          onChange={(e) => handleFieldChange(key, e.target.value)}
-                        >
-                          <MenuItem value="">Use default (opencode)</MenuItem>
-                          {options.map((opt) => (
-                            <MenuItem key={opt} value={opt}>
-                              {opt}
-                            </MenuItem>
-                          ))}
-                        </Select>
-                        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
-                          {meta.hint}
-                        </Typography>
-                      </FormControl>
-                    </Box>
-                  );
-                }
 
                 return (
                   <Box key={key}>
@@ -267,8 +226,7 @@ const SettingsPage: React.FC = () => {
             </Stack>
             <Divider sx={{ mt: 2 }} />
           </Box>
-          );
-        })}
+        ))}
 
         <Box sx={{ mt: 3, display: 'flex', gap: 2 }}>
           <Button variant="contained" onClick={handleSave} disabled={saving || !hasChanges}>

@@ -1,4 +1,33 @@
 services:
+  # Agent image (build only). Run the coordinator on the host; it starts agent containers with docker run.
+  # Build with: docker compose build agent
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    image: terarchitect-agent
+    profiles:
+      - build-agent
+
+  # Flask API + DB (no in-process agent; enqueues jobs only)
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: terarchitect-backend
+    network_mode: host
+    environment:
+      # host network: use host ports (postgres published as 5433, backend will bind 5010)
+      DATABASE_URL: postgresql://terarchitect:terarchitect@localhost:5433/terarchitect
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5433"
+      MEMORY_SAVE_DIR: /tmp/terarchitect
+      EMBEDDING_SERVICE_URL: http://localhost:9009
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   # PostgreSQL database
   postgres:
     image: pgvector/pgvector:pg16
@@ -38,3 +67,6 @@ services:
       - "3000:3000"
     restart: unless-stopped
 
+networks:
+  default:
+    name: terarchitect_default

@@ -3,15 +3,16 @@
  */
 export const API_URL = 'http://localhost:5010';
 
+export type ProjectExecutionMode = 'docker' | 'local';
+
 export interface Project {
   id: string;
   name: string;
   description?: string;
-  project_path?: string;
   github_url?: string;
-  docker_image?: string;
-  docker_image_options?: string[];
-  dockerfile?: string | null;
+  /** When execution_mode is "local", agent runs on host at this path. */
+  project_path?: string | null;
+  execution_mode?: ProjectExecutionMode;
   created_at?: string;
   updated_at?: string;
 }
@@ -61,8 +62,9 @@ export async function getProjects(): Promise<Project[]> {
 export async function createProject(data: {
   name: string;
   description?: string;
-  project_path?: string;
   github_url?: string;
+  execution_mode?: ProjectExecutionMode;
+  project_path?: string;
   /** If true, project is from an existing repo; default "Project setup" ticket is not created. */
   is_existing_repo?: boolean;
 }): Promise<Project> {
@@ -82,10 +84,9 @@ export async function getProject(projectId: string): Promise<Project> {
 export async function updateProject(projectId: string, data: {
   name?: string;
   description?: string;
-  project_path?: string;
   github_url?: string;
-  docker_image?: string;
-  dockerfile?: string | null;
+  execution_mode?: ProjectExecutionMode;
+  project_path?: string | null;
 }): Promise<Project> {
   const response = await fetch(`${API_URL}/api/projects/${projectId}`, {
     method: 'PUT',
@@ -102,32 +103,6 @@ export async function deleteProject(projectId: string, confirmName: string) {
     body: JSON.stringify({ confirm_name: confirmName }),
   });
   return checkResponse(response);
-}
-
-export async function generateProjectDockerfile(projectId: string): Promise<{ dockerfile: string | null; error: string | null }> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 120000); // 2 min for GitHub + LLM
-  let response: Response;
-  try {
-    response = await fetch(`${API_URL}/api/projects/${projectId}/generate-dockerfile`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
-    });
-  } catch (e) {
-    clearTimeout(timeout);
-    const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes('abort')) {
-      return { dockerfile: null, error: 'Request timed out. The backend may still be generating; check the project Dockerfile in a moment.' };
-    }
-    return { dockerfile: null, error: `Request failed: ${msg}. Is the backend running at ${API_URL}?` };
-  }
-  clearTimeout(timeout);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    return { dockerfile: null, error: (data.error as string) || response.statusText };
-  }
-  return { dockerfile: data.dockerfile ?? null, error: data.error ?? null };
 }
 
 export interface GraphResponse {
@@ -149,11 +124,7 @@ export async function updateGraph(projectId: string, data: { nodes: any[]; edges
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });
-  return checkResponse<{
-    version: number;
-    docker_image_options?: string[];
-    docker_image_suggestions_error?: string | null;
-  }>(response);
+  return checkResponse<{ version: number }>(response);
 }
 
 export interface KanbanResponse {

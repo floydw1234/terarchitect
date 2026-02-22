@@ -6,19 +6,18 @@ import {
   Paper,
   Grid,
   Button,
-  Alert,
   Dialog,
   DialogTitle,
   DialogContent,
   DialogActions,
   TextField,
+  Stack,
   FormControl,
   InputLabel,
   Select,
   MenuItem,
-  Stack,
 } from '@mui/material';
-import { getProject, updateProject, deleteProject, generateProjectDockerfile, type Project } from '../utils/api';
+import { getProject, updateProject, deleteProject, type Project, type ProjectExecutionMode } from '../utils/api';
 
 const ProjectPage: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
@@ -28,12 +27,9 @@ const ProjectPage: React.FC = () => {
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState('');
   const [editDescription, setEditDescription] = useState('');
-  const [editProjectPath, setEditProjectPath] = useState('');
   const [editGithubUrl, setEditGithubUrl] = useState('');
-  const [editDockerImage, setEditDockerImage] = useState('');
-  const [editCustomDockerImage, setEditCustomDockerImage] = useState('');
-  const [editDockerfile, setEditDockerfile] = useState('');
-  const [generateDockerfileLoading, setGenerateDockerfileLoading] = useState(false);
+  const [editExecutionMode, setEditExecutionMode] = useState<ProjectExecutionMode>('docker');
+  const [editProjectPath, setEditProjectPath] = useState('');
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteConfirmName, setDeleteConfirmName] = useState('');
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
@@ -63,14 +59,9 @@ const ProjectPage: React.FC = () => {
       setProject(data);
       setEditName(data.name);
       setEditDescription(data.description ?? '');
-      setEditProjectPath(data.project_path ?? '');
       setEditGithubUrl(data.github_url ?? '');
-      const opts = data.docker_image_options ?? [];
-      const current = (data.docker_image ?? '').trim();
-      const inList = current && opts.includes(current);
-      setEditDockerImage(inList ? current : '');
-      setEditCustomDockerImage(inList ? '' : current);
-      setEditDockerfile(data.dockerfile ?? '');
+      setEditExecutionMode(data.execution_mode ?? 'docker');
+      setEditProjectPath(data.project_path ?? '');
       setEditOpen(true);
     } catch (error) {
       console.error('Failed to fetch project for edit:', error);
@@ -83,10 +74,9 @@ const ProjectPage: React.FC = () => {
       const data = await updateProject(projectId, {
         name: editName.trim() || project?.name,
         description: editDescription.trim() || undefined,
-        project_path: editProjectPath.trim() || undefined,
         github_url: editGithubUrl.trim() || undefined,
-        docker_image: (editCustomDockerImage.trim() || editDockerImage.trim()) || undefined,
-        dockerfile: editDockerfile.trim() || null,
+        execution_mode: editExecutionMode,
+        project_path: editExecutionMode === 'local' ? (editProjectPath.trim() || null) : null,
       });
       setProject(data);
       setEditOpen(false);
@@ -188,9 +178,12 @@ const ProjectPage: React.FC = () => {
         )}
 
         <Stack spacing={0.5}>
-          {project.project_path && (
+          <Typography sx={infoTextSx}>
+            Agent execution: {project.execution_mode === 'local' ? 'Local' : 'Docker'}
+          </Typography>
+          {project.execution_mode === 'local' && project.project_path && (
             <Typography sx={infoTextSx}>
-              Project Path: {project.project_path}
+              Project path: {project.project_path}
             </Typography>
           )}
           {project.github_url && (
@@ -198,12 +191,6 @@ const ProjectPage: React.FC = () => {
               GitHub URL: {project.github_url}
             </Typography>
           )}
-          <Typography sx={infoTextSx}>
-            Docker image: {project.docker_image || 'Not selected'}
-          </Typography>
-          <Typography sx={infoTextSx}>
-            Project Dockerfile: {project.dockerfile?.trim() ? 'Set' : 'Not set'}
-          </Typography>
         </Stack>
       </Paper>
 
@@ -315,108 +302,37 @@ const ProjectPage: React.FC = () => {
               fullWidth
               size="small"
             />
-            <TextField
-              label="Project path"
-              value={editProjectPath}
-              onChange={(e) => setEditProjectPath(e.target.value)}
-              placeholder="Local path for OpenCode"
-              fullWidth
-              size="small"
-            />
+            <FormControl size="small" fullWidth>
+              <InputLabel>Agent execution</InputLabel>
+              <Select
+                value={editExecutionMode}
+                label="Agent execution"
+                onChange={(e) => setEditExecutionMode(e.target.value as ProjectExecutionMode)}
+              >
+                <MenuItem value="docker">Docker (clone repo in container)</MenuItem>
+                <MenuItem value="local">Local (run on host at project path)</MenuItem>
+              </Select>
+            </FormControl>
+            {editExecutionMode === 'local' && (
+              <TextField
+                label="Project path"
+                value={editProjectPath}
+                onChange={(e) => setEditProjectPath(e.target.value)}
+                placeholder="/path/to/project/on/host"
+                helperText="Path on the machine where the coordinator runs; agent will use this directory instead of cloning."
+                fullWidth
+                size="small"
+              />
+            )}
             <TextField
               label="GitHub URL"
               value={editGithubUrl}
               onChange={(e) => setEditGithubUrl(e.target.value)}
               placeholder="https://github.com/..."
+              helperText={editExecutionMode === 'docker' ? 'Required for Docker (clone). Optional for Local.' : undefined}
               fullWidth
               size="small"
             />
-            <Alert severity="info" sx={{ mb: 0 }}>
-              At run time: if a <strong>project Dockerfile</strong> is set below, it is used to build the agent image. Otherwise the <strong>Docker image</strong> (or custom name) here is used. Set at least one.
-            </Alert>
-            {(project.docker_image_options && project.docker_image_options.length > 0) && (
-              <FormControl fullWidth size="small">
-                <InputLabel id="project-docker-image-label">Docker image (suggestions)</InputLabel>
-                <Select
-                  labelId="project-docker-image-label"
-                  label="Docker image (suggestions)"
-                  value={editCustomDockerImage ? '' : editDockerImage}
-                  onChange={(e) => {
-                    setEditDockerImage(e.target.value);
-                    if (!e.target.value) setEditCustomDockerImage('');
-                  }}
-                >
-                  <MenuItem value="">
-                    <em>Not selected</em>
-                  </MenuItem>
-                  {project.docker_image_options.map((image) => (
-                    <MenuItem key={image} value={image}>
-                      {image}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            )}
-            {(!project.docker_image_options || project.docker_image_options.length === 0) && (
-              <Alert severity="info">
-                No Docker image options yet. Save a graph with node technologies and configure Frontend LLM settings to auto-generate suggestions.
-              </Alert>
-            )}
-            <TextField
-              label="Custom Docker image"
-              value={editCustomDockerImage}
-              onChange={(e) => setEditCustomDockerImage(e.target.value)}
-              placeholder="e.g. python:3.12-slim or myregistry/my-image:tag"
-              fullWidth
-              size="small"
-              helperText="Used when no project Dockerfile is set. Overrides the dropdown when filled."
-            />
-            <Box>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
-                Project Dockerfile: {editDockerfile.trim() ? `Set (${editDockerfile.length} characters)` : 'Not set'}
-              </Typography>
-              <Button
-                size="small"
-                variant="outlined"
-                onClick={async () => {
-                  if (!projectId || !editGithubUrl.trim()) return;
-                  setGenerateDockerfileLoading(true);
-                  try {
-                    const { dockerfile, error } = await generateProjectDockerfile(projectId);
-                    if (error) {
-                      alert(error);
-                      return;
-                    }
-                    if (dockerfile) {
-                      setEditDockerfile(dockerfile);
-                      const updated = await getProject(projectId);
-                      setProject(updated);
-                    }
-                  } finally {
-                    setGenerateDockerfileLoading(false);
-                  }
-                }}
-                disabled={!editGithubUrl.trim() || generateDockerfileLoading}
-              >
-                {generateDockerfileLoading ? 'Generating…' : 'Generate Dockerfile from repo'}
-              </Button>
-              <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 0.5 }}>
-                Uses GitHub token and repo files (package.json, requirements.txt, existing Dockerfiles, etc.). Edit below and Save to keep changes.
-              </Typography>
-              <TextField
-                label="Dockerfile (view / edit)"
-                value={editDockerfile}
-                onChange={(e) => setEditDockerfile(e.target.value)}
-                placeholder="Generate from repo or paste a Dockerfile"
-                fullWidth
-                multiline
-                minRows={6}
-                maxRows={20}
-                size="small"
-                sx={{ mt: 1 }}
-                inputProps={{ style: { fontFamily: 'monospace', fontSize: '0.85rem' } }}
-              />
-            </Box>
           </Box>
         </DialogContent>
         <DialogActions>

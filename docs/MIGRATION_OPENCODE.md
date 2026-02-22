@@ -1,5 +1,7 @@
 # Migration to OpenCode
 
+**Note:** Historical. The agent now uses OpenCode only (HTTP API). See **docs/PHASE1_WORKER_API.md** Phase 5.
+
 This document describes the Terarchitect worker (OpenCode) and **proxy** setup: OpenCode uses the proxy for chat completions, executes **web_search** in the proxy, and receives **other tools** (Read, Edit, Bash, etc.) back so OpenCode executes them locally.
 
 ---

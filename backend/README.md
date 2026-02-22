@@ -1,8 +1,6 @@
 # Terarchitect Backend
 
-Flask backend for the Terarchitect visual SDLC orchestrator.
-
-**Runs on host** (not Docker) for access to OpenCode CLI and local project paths.
+Flask API + DB for the Terarchitect visual SDLC orchestrator. **The app does not run the agent in-process.** It enqueues jobs to `agent_jobs`; a separate **coordinator** claims jobs and runs the **agent image** (Docker). See [docs/RUNBOOK.md](../docs/RUNBOOK.md).
 
 ## Setup
 
@@ -31,8 +29,7 @@ flask run --host=0.0.0.0 --port=5010
 | `VLLM_URL` | vLLM server for Agent/Director (default: http://localhost:8000). Agent API is `{VLLM_URL}/v1/chat/completions`. |
 | `AGENT_MODEL` | Model name for agent API |
 | `AGENT_API_KEY` | API key (optional for vLLM) |
-| `WORKER_TYPE` | Worker type: `opencode`, `aider`, `claude_code`, `gemini`, `codex` (default: `opencode`; only opencode implemented) |
-| `WORKER_LLM_URL` | Worker LLM API base URL (default: http://localhost:8080/v1) |
+| `WORKER_LLM_URL` | OpenCode worker LLM API base URL (default: http://localhost:8080/v1) |
 | `WORKER_MODEL` | Worker model string; leave unset to use Agent model |
 | `WORKER_API_KEY` | API key for worker OpenAI-compatible provider (default: `dummy`) |
 | `WORKER_TIMEOUT_SEC` | Worker run timeout in seconds (default: `3600`) |
@@ -70,9 +67,6 @@ Integration test uses your vLLM (for OpenIE) and the embedding service (via the 
 
 3. `test_01_embedding_adapter` checks the OpenAI-compatible adapter (no external services). `test_02_memory_index_and_retrieve` is skipped unless embedding service and vLLM are reachable; it creates a project, indexes docs, retrieves, and asserts relevance.
 
-## Middle Agent
+## Execution (coordinator + agent image)
 
-Runs when a ticket is moved to "In Progress". Requires:
-- vLLM (or OpenAI-compatible API) for agent decisions
-- OpenCode CLI on PATH
-- Project path set to a local directory the backend can access
+When a ticket is moved to "In Progress" (or a PR review comment is created), the app inserts a row into `agent_jobs`. A **coordinator** process (run on the host, not in Docker) claims jobs via `POST /api/worker/jobs/start` and runs the **agent image** (`terarchitect-agent`) for each job. The container clones the **project** repo (the project’s GitHub URL), creates branch `ticket-{id}`, and runs the Director + OpenCode. Run the coordinator from the **repo root**: `PYTHONPATH=/path/to/terarchitect TERARCHITECT_API_URL=... PROJECT_ID=... python -m coordinator` (or install as a systemd service). See [docs/RUNBOOK.md](../docs/RUNBOOK.md) and [docs/PHASE1_WORKER_API.md](../docs/PHASE1_WORKER_API.md).

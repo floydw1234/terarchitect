@@ -55,16 +55,13 @@ def create_app():
     # Register blueprints
     from api import api_bp
     from api.embedding_openai import embedding_bp
-    from api.routes import _run_agent_and_poll_loop
+    from api.routes import _run_pr_poll_loop
     app.register_blueprint(api_bp, url_prefix="/api")
     app.register_blueprint(embedding_bp)
 
-    # Single background thread: every 10s run PR comment poll then at most one agent job.
-    # Keep this single-threaded to avoid duplicate agent runs.
+    # Background thread: PR comment poll; new comments enqueue to agent_jobs. No in-process agent.
     import threading
-    runner = threading.Thread(
-        target=_run_agent_and_poll_loop, args=(app,), kwargs={"queue_poll_seconds": 10, "pr_poll_seconds": 600}, daemon=True
-    )
+    runner = threading.Thread(target=_run_pr_poll_loop, args=(app,), kwargs={"pr_poll_seconds": 600}, daemon=True)
     runner.start()
 
     # Health check endpoint
