@@ -8,6 +8,17 @@ Terarchitect is a visual-first SDLC orchestrator: model your system as a graph, 
 
 If you’ve ever wanted “Kanban → PRs” with guardrails, this is it.
 
+<p align="center">
+  <img src="pictures/project_view.png" alt="Terarchitect UI (project view)" width="960" />
+</p>
+
+## Screenshots
+
+| Architecture graph | Kanban execution |
+|---|---|
+| <img src="pictures/graph.png" alt="Architecture graph" width="460" /> | <img src="pictures/kanban.png" alt="Kanban board" width="460" /> |
+| <img src="pictures/projects.png" alt="Projects list" width="460" /> | <img src="pictures/ticket.png" alt="Ticket details" width="460" /> |
+
 ---
 
 ## What you get
