@@ -1,45 +1,110 @@
+# Terarchitect
 
-Project: Terarchitect
-Concept: A visual-first, autonomous SDLC (Software Development Lifecycle) orchestrator that uses a "Director-Worker" agent model to build complex systems locally.
+Terarchitect is a visual-first SDLC orchestrator: model your system as a graph, write tickets on a Kanban board, and let a **Director → Worker** agent pair implement changes in your repo and open PRs.
 
+- **You stay in control**: every change ships as a PR you review.
+- **One container per job**: reproducible, isolated runs.
+- **Coordinator-friendly**: run the coordinator on the same machine as the app, or on a completely separate machine.
 
-## Quick Start
-
-```bash
-# Postgres + backend + frontend (all via Docker)
-docker compose up -d
-```
-
-Or run the backend on the host: `cd backend && pip install -r requirements.txt && flask run --host=0.0.0.0 --port=5010` (use `DATABASE_URL=postgresql://terarchitect:terarchitect@localhost:5433/terarchitect` for compose Postgres).
-
-- App: http://localhost:3000
-- API: http://localhost:5010
-
-Execution (tickets → agent): see **Flow** below and [docs/RUNBOOK.md](docs/RUNBOOK.md).
+If you’ve ever wanted “Kanban → PRs” with guardrails, this is it.
 
 ---
 
-## Flow (no Dockerfile mixing)
+## What you get
 
-1. **Build the agent image once** (from this repo). There is a single image; nothing is combined with a “project Dockerfile.”
-   ```bash
-   docker build -f Dockerfile.agent -t terarchitect-agent .
-   ```
+- **Architecture graph**: encode components + interfaces, not just TODO lists
+- **Kanban-driven execution**: moving a ticket to *In Progress* enqueues an agent job
+- **Director/Worker separation**: strategy (Director) vs local execution + tools (Worker/OpenCode)
+- **PR-first workflow**: branch per ticket (`ticket-{id}`), PR opened automatically
+- **Runs anywhere Docker runs**: single-box dev or two-box production
 
-2. **User enqueues a ticket**  
-   In the app, create a project (with its GitHub repo URL), add tickets, and move one to **In Progress**. The backend enqueues a job (project_id, ticket_id, repo_url = that project’s GitHub URL).
+---
 
-3. **Coordinator runs the agent image**  
-   The coordinator is a host process (not a container). It claims jobs from the API and, for each job, runs **the same** image you built:
-   ```text
-   docker run ... -e REPO_URL=... -e TICKET_ID=... terarchitect-agent
-   ```
-   It does **not** pull or build from the project repo; it only runs the pre-built `terarchitect-agent` image.
+## System architecture (app + coordinator + agent)
 
-4. **Inside the container**  
-   The agent runner clones **the project repo** (REPO_URL — the codebase you’re building, e.g. your app), creates branch `ticket-{id}` from the default branch (clone is depth 1, so it’s the latest at clone time), then the Director + OpenCode implement the ticket in that clone and open a PR.
+| Component | What it does | Where it runs |
+|-----------|--------------|---------------|
+| **App** | Flask API + Postgres + React frontend. Stores projects/graph/tickets/logs and enqueues jobs. Does **not** execute the agent. | **Docker Compose** (`postgres`, `backend`, `frontend`) |
+| **Coordinator** | Claims jobs from the API and starts one agent container per job. | **Host process** (can be a different machine with Docker) |
+| **Agent image** | Director + OpenCode. Clones the project repo, implements the ticket, pushes, opens PR, exits. | **Docker container** started by the coordinator |
 
-So: **one image** (Terarchitect’s Dockerfile.agent), **one container per job**, **clone the project repo inside the container** — no combining of Dockerfiles.
+High-level flow: **UI → enqueue → coordinator claims → agent container runs → PR created → human reviews**.
+
+---
+
+## Quick start (local dev)
+
+### 1) Start the app (API + DB + UI)
+
+```bash
+docker compose up -d
+```
+
+- **UI**: `http://localhost:3000`
+- **API**: `http://localhost:5010`
+- **Postgres**: host port `5433` (to avoid clashing with `5432`)
+
+### 2) Build the agent image (once)
+
+```bash
+docker build -f Dockerfile.agent -t terarchitect-agent .
+```
+
+### 3) Run the coordinator (so tickets actually execute)
+
+The coordinator is not part of docker compose. Run it on any host with Docker.
+
+```bash
+pip install -r coordinator/requirements.txt
+TERARCHITECT_API_URL=http://localhost:5010 \
+PROJECT_ID=<your-project-uuid> \
+GITHUB_TOKEN=<token> \
+python -m coordinator
+```
+
+Tip: set `PYTHONPATH=/path/to/terarchitect` if your environment needs it.
+
+---
+
+## Deployments that scale
+
+### Single-box (dev / small deploy)
+
+- Run the app: `docker compose up -d`
+- Run the coordinator on the same host
+- Set `TERARCHITECT_API_URL=http://host.docker.internal:5010` so agent containers can reach the app
+  - On Linux, the coordinator automatically adds `--add-host=host.docker.internal:host-gateway`
+
+### Two-box (production)
+
+- **Machine A**: app only (docker compose). No coordinator required here.
+- **Machine B**: coordinator + Docker. Build the agent image here. Run the coordinator here.
+- Set `TERARCHITECT_API_URL=https://machine-a.example.com` (or the public URL of Machine A)
+
+Agent containers only need:
+- network access to the app (worker-context, logs, complete/fail)
+- network access to GitHub (clone/push/PR)
+
+They do **not** need direct DB access.
+
+Full ops notes (systemd, env, verification): see `docs/RUNBOOK.md`.
+
+---
+
+## How execution works
+
+1. You create a project (with a GitHub repo URL), then add tickets.
+2. Moving a ticket to **In Progress** enqueues a job.
+3. The coordinator claims the job and runs:
+   - `docker run ... -e REPO_URL=... -e TICKET_ID=... terarchitect-agent`
+4. Inside the container, the agent:
+   - clones your repo
+   - creates branch `ticket-{id}`
+   - runs Director + OpenCode to implement
+   - pushes branch and opens a PR
+   - exits
+
+No mixing with your project’s Dockerfile. The agent image is built once and reused.
 
 ---
 
@@ -47,23 +112,20 @@ So: **one image** (Terarchitect’s Dockerfile.agent), **one container per job**
 
 | Path | Role |
 |------|------|
-| `backend/` | Flask API + DB. Enqueues jobs only; no in-process agent. |
-| `frontend/` | React UI (graph, Kanban). |
-| `coordinator/` | Host-side Python app. Claims jobs, runs `docker run ... terarchitect-agent`. Run from repo root: `PYTHONPATH=. python -m coordinator` (or install as systemd service; see RUNBOOK). |
-| `agent/` | Director + runner + worker wiring. Packaged into the `terarchitect-agent` image; not run directly from repo except for dev. |
+| `backend/` | Flask API (served by docker compose). Stores graph/tickets/logs; enqueues jobs only. |
+| `frontend/` | React UI (served by docker compose). |
+| `coordinator/` | Host-side Python process. Claims jobs and starts agent containers. |
+| `agent/` | Director + runner + OpenCode wiring. Packaged into the agent image. |
 
 ---
 
-## Deployment
+## Docs
 
-- **App:** API + DB + frontend only. See `docs/RUNBOOK.md`.
-- **Coordinator:** Run on a host with Docker; it starts agent containers. Same image every time; no per-project image build.
-- **Agent image:** Build once with `docker build -f Dockerfile.agent -t terarchitect-agent .`
+- `docs/RUNBOOK.md`: deployments, coordinator env, systemd, verification
+- `docs/PHASE1_WORKER_API.md`: worker API contract and behavior
 
 ---
 
-## The Core Innovation
+## Contributing
 
-Unlike single-chat tools, this system separates **high-level design (the graph)** from **local execution (the worker)**. The Director Agent reads the graph and ticket and directs the Worker (OpenCode, Aider, etc.) to implement in the project repo. The Kanban board is the handoff: move a ticket to In Progress to enqueue work; review the AI’s PR before moving to Done.
-
-Technical pillars: context separation (Director has the big picture; worker sees plan + files), local inference (vLLM/Ollama), human-in-the-loop (review PRs).
+PRs welcome. Keep changes focused and verifiable (tests where possible). If you’re shipping a behavior change, include a short “why” in the PR description.
