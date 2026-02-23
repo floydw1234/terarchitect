@@ -42,7 +42,7 @@ docker compose up -d
 
 - **UI**: `http://localhost:3000`
 - **API**: `http://localhost:5010`
-- **Postgres**: host port `5433` (to avoid clashing with `5432`)
+- **Postgres**: host port `5433` 
 
 ### 2) Build the agent image (once)
 
@@ -59,10 +59,15 @@ pip install -r coordinator/requirements.txt
 TERARCHITECT_API_URL=http://localhost:5010 \
 PROJECT_ID=<your-project-uuid> \
 GITHUB_TOKEN=<token> \
+TERARCHITECT_WORKER_API_KEY=<optional-worker-api-key> \
 python -m coordinator
 ```
 
 Tip: set `PYTHONPATH=/path/to/terarchitect` if your environment needs it.
+
+**Concurrency note (important):** for now, the coordinator should run **one agent job at a time** (default `MAX_CONCURRENT_AGENTS=1`).
+Even though jobs run in separate agent containers, the agent containers typically use **the host Docker daemon** (Docker-out-of-Docker via `/var/run/docker.sock`) for `docker compose` and integration tests, which can collide under parallel runs.
+We’ll revisit safe parallelism once we switch to real Docker-in-Docker (see TODO below).
 
 ---
 
@@ -123,6 +128,12 @@ No mixing with your project’s Dockerfile. The agent image is built once and re
 
 - `docs/RUNBOOK.md`: deployments, coordinator env, systemd, verification
 - `docs/PHASE1_WORKER_API.md`: worker API contract and behavior
+
+---
+
+## TODO / Roadmap
+
+- **Docker-in-Docker for safe parallelism**: move from host-socket Docker-out-of-Docker to per-job DinD (sidecar daemon) so multiple tickets can run concurrently without `docker compose` collisions. After that, we can raise `MAX_CONCURRENT_AGENTS` beyond 1 safely.
 
 ---
 
