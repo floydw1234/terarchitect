@@ -31,6 +31,58 @@ If you’ve ever wanted “Kanban → PRs” with guardrails, this is it.
 
 ---
 
+## Technology (what’s under the hood)
+
+- **Backend API**: Python 3.11 + Flask + SQLAlchemy
+- **Database**: Postgres (with `pgvector/pgvector` image for vector search support)
+- **Frontend**: Node 20 + React (served from Docker Compose)
+- **Coordinator**: Python (host process) + `requests`
+- **Agent image**: Python runner + **OpenCode** (server mode) + Node 20 (for `npm test` in target repos) + Docker CLI (for integration tests)
+
+LLM endpoints are configurable via Settings/env (Director model via `VLLM_URL`, Worker model via `WORKER_LLM_URL`, etc.). See `backend/README.md` and `docs/RUNBOOK.md`.
+
+---
+
+## Memory system (HippoRAG)
+
+Terarchitect includes a lightweight, file-backed project memory system built on **HippoRAG** (bundled as `backend/hipporag_minimal`). The API exposes locked per-project read/write endpoints:
+
+- `POST /api/projects/<project_id>/memory/index` — body: `{"docs": ["text1", ...]}`
+- `POST /api/projects/<project_id>/memory/retrieve` — body: `{"queries": ["q1", ...], "num_to_retrieve": 5}`
+- `POST /api/projects/<project_id>/memory/delete` — body: `{"docs": ["exact text to remove", ...]}`
+
+Operational notes:
+- Memory is stored under `MEMORY_SAVE_DIR` (default `/tmp/terarchitect`).
+- HippoRAG uses your configured LLM + embedding service via HTTP (no heavyweight local ML dependencies in the backend).
+- The backend also exposes an OpenAI-compatible embeddings adapter at `POST /v1/embeddings` to forward to the configured embedding service.
+
+Details: `backend/README.md` (Memory section).
+
+---
+
+## OpenCode (Worker) + API integration
+
+Terarchitect uses **OpenCode in server mode** as the Worker inside the agent container:
+
+- The agent container entrypoint starts `opencode serve` (HTTP API).
+- The Director talks to that OpenCode server over HTTP (session create + message turns + summarize).
+
+At the app boundary, the coordinator/agent use a small “worker API” surface (Bearer-authenticated when `TERARCHITECT_WORKER_API_KEY` is set):
+
+**Context + logs**
+- `GET /api/projects/<project_id>/tickets/<ticket_id>/worker-context` (includes `agent_settings`)
+- `POST /api/projects/<project_id>/tickets/<ticket_id>/logs` (append execution logs)
+- `POST /api/projects/<project_id>/tickets/<ticket_id>/complete` (mark ticket complete)
+
+**Queue**
+- `POST /api/worker/jobs/start` (claim next job)
+- `POST /api/worker/jobs/<job_id>/complete`
+- `POST /api/worker/jobs/<job_id>/fail`
+
+Details: `docs/PHASE1_WORKER_API.md`.
+
+---
+
 ## System architecture (app + coordinator + agent)
 
 | Component | What it does | Where it runs |
@@ -139,6 +191,17 @@ No mixing with your project’s Dockerfile. The agent image is built once and re
 
 - `docs/RUNBOOK.md`: deployments, coordinator env, systemd, verification
 - `docs/PHASE1_WORKER_API.md`: worker API contract and behavior
+
+---
+
+## Highlights
+
+- **PR review automation**: the app can poll PRs in review, enqueue “review jobs”, and let the agent address comments.
+- **Cancelable runs**: worker-facing cancel flag + polling endpoint so you can stop a run cleanly.
+- **Per-project execution mode**: run jobs in Docker (clone in container) or Local (run at a configured host path).
+- **Encrypted secrets (optional)**: sensitive settings can be stored encrypted at rest with `TERARCHITECT_SECRET_KEY`.
+- **Vector search + safety**: pgvector-backed embeddings with an ORM-safe approach (avoids accidentally selecting vector columns).
+- **Operator-friendly debugging**: scripts for requeueing tickets, dumping logs/memory, and smoke-testing OpenCode server/CLI.
 
 ---
 
