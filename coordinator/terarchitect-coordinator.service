@@ -1,0 +1,45 @@
+# Terarchitect coordinator: claims jobs from the API and runs agent containers via Docker.
+# Runs on the host (not in Docker) so it can start agent containers with `docker run`.
+#
+# Install:
+#   1. Copy repo to /opt/terarchitect (or set path in a drop-in, see below).
+#   2. Create venv: cd /opt/terarchitect && python3 -m venv .venv && .venv/bin/pip install -r coordinator/requirements.txt
+#   3. Build agent image: docker build -f Dockerfile.agent -t terarchitect-agent .
+#   4. Copy this file: sudo cp coordinator/terarchitect-coordinator.service /etc/systemd/system/
+#   5. Create env file: sudo mkdir -p /etc/terarchitect && sudo edit /etc/terarchitect/coordinator.env
+#   6. sudo systemctl daemon-reload && sudo systemctl enable --now terarchitect-coordinator
+#
+# /etc/terarchitect/coordinator.env (required vars):
+#   TERARCHITECT_API_URL=http://localhost:5010
+#   PROJECT_ID=your-project-uuid
+#   GITHUB_TOKEN=ghp_...
+# Optional: TERARCHITECT_WORKER_API_KEY, AGENT_IMAGE=terarchitect-agent, MAX_CONCURRENT_AGENTS=1
+#   COORDINATOR_STATE_DIR=~/.terarchitect/coordinator (per-project image tags)
+#   COORDINATOR_REPO_ROOT=/opt/terarchitect (for direct agent run when Docker fails)
+# For "run agent on host when Docker fails": pip install -r agent/requirements.txt in the same venv.
+#
+# Different install path: sudo systemctl edit terarchitect-coordinator and override:
+#   [Service]
+#   WorkingDirectory=/path/to/terarchitect
+#   Environment=PYTHONPATH=/path/to/terarchitect
+#   ExecStart=/path/to/terarchitect/.venv/bin/python -m coordinator
+
+[Unit]
+Description=Terarchitect coordinator (claims jobs, runs agent containers)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/terarchitect
+Environment=PYTHONPATH=/opt/terarchitect
+ExecStart=/opt/terarchitect/.venv/bin/python -m coordinator
+EnvironmentFile=-/etc/terarchitect/coordinator.env
+Restart=always
+RestartSec=10
+
+# Run as unprivileged user (must be in docker group): uncomment and create user
+# User=terarchitect
+
+[Install]
+WantedBy=multi-user.target

@@ -12,8 +12,12 @@ import {
   DialogActions,
   TextField,
   Stack,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
 } from '@mui/material';
-import { getProject, updateProject, deleteProject, type Project } from '../utils/api';
+import { getProject, updateProject, deleteProject, type Project, type ProjectExecutionMode } from '../utils/api';
 
 const ProjectPage: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
@@ -23,8 +27,9 @@ const ProjectPage: React.FC = () => {
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState('');
   const [editDescription, setEditDescription] = useState('');
-  const [editProjectPath, setEditProjectPath] = useState('');
   const [editGithubUrl, setEditGithubUrl] = useState('');
+  const [editExecutionMode, setEditExecutionMode] = useState<ProjectExecutionMode>('docker');
+  const [editProjectPath, setEditProjectPath] = useState('');
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteConfirmName, setDeleteConfirmName] = useState('');
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
@@ -47,13 +52,19 @@ const ProjectPage: React.FC = () => {
     }
   };
 
-  const openEdit = () => {
-    if (project) {
-      setEditName(project.name);
-      setEditDescription(project.description ?? '');
-      setEditProjectPath(project.project_path ?? '');
-      setEditGithubUrl(project.github_url ?? '');
+  const openEdit = async () => {
+    if (!projectId) return;
+    try {
+      const data = await getProject(projectId);
+      setProject(data);
+      setEditName(data.name);
+      setEditDescription(data.description ?? '');
+      setEditGithubUrl(data.github_url ?? '');
+      setEditExecutionMode(data.execution_mode ?? 'docker');
+      setEditProjectPath(data.project_path ?? '');
       setEditOpen(true);
+    } catch (error) {
+      console.error('Failed to fetch project for edit:', error);
     }
   };
 
@@ -63,8 +74,9 @@ const ProjectPage: React.FC = () => {
       const data = await updateProject(projectId, {
         name: editName.trim() || project?.name,
         description: editDescription.trim() || undefined,
-        project_path: editProjectPath.trim() || undefined,
         github_url: editGithubUrl.trim() || undefined,
+        execution_mode: editExecutionMode,
+        project_path: editExecutionMode === 'local' ? (editProjectPath.trim() || null) : null,
       });
       setProject(data);
       setEditOpen(false);
@@ -166,9 +178,12 @@ const ProjectPage: React.FC = () => {
         )}
 
         <Stack spacing={0.5}>
-          {project.project_path && (
+          <Typography sx={infoTextSx}>
+            Agent execution: {project.execution_mode === 'local' ? 'Local' : 'Docker'}
+          </Typography>
+          {project.execution_mode === 'local' && project.project_path && (
             <Typography sx={infoTextSx}>
-              Project Path: {project.project_path}
+              Project path: {project.project_path}
             </Typography>
           )}
           {project.github_url && (
@@ -287,19 +302,34 @@ const ProjectPage: React.FC = () => {
               fullWidth
               size="small"
             />
-            <TextField
-              label="Project path"
-              value={editProjectPath}
-              onChange={(e) => setEditProjectPath(e.target.value)}
-              placeholder="Local path for OpenCode"
-              fullWidth
-              size="small"
-            />
+            <FormControl size="small" fullWidth>
+              <InputLabel>Agent execution</InputLabel>
+              <Select
+                value={editExecutionMode}
+                label="Agent execution"
+                onChange={(e) => setEditExecutionMode(e.target.value as ProjectExecutionMode)}
+              >
+                <MenuItem value="docker">Docker (clone repo in container)</MenuItem>
+                <MenuItem value="local">Local (run on host at project path)</MenuItem>
+              </Select>
+            </FormControl>
+            {editExecutionMode === 'local' && (
+              <TextField
+                label="Project path"
+                value={editProjectPath}
+                onChange={(e) => setEditProjectPath(e.target.value)}
+                placeholder="/path/to/project/on/host"
+                helperText="Path on the machine where the coordinator runs; agent will use this directory instead of cloning."
+                fullWidth
+                size="small"
+              />
+            )}
             <TextField
               label="GitHub URL"
               value={editGithubUrl}
               onChange={(e) => setEditGithubUrl(e.target.value)}
               placeholder="https://github.com/..."
+              helperText={editExecutionMode === 'docker' ? 'Required for Docker (clone). Optional for Local.' : undefined}
               fullWidth
               size="small"
             />

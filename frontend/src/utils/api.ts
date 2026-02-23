@@ -3,12 +3,16 @@
  */
 export const API_URL = 'http://localhost:5010';
 
+export type ProjectExecutionMode = 'docker' | 'local';
+
 export interface Project {
   id: string;
   name: string;
   description?: string;
-  project_path?: string;
   github_url?: string;
+  /** When execution_mode is "local", agent runs on host at this path. */
+  project_path?: string | null;
+  execution_mode?: ProjectExecutionMode;
   created_at?: string;
   updated_at?: string;
 }
@@ -58,8 +62,9 @@ export async function getProjects(): Promise<Project[]> {
 export async function createProject(data: {
   name: string;
   description?: string;
-  project_path?: string;
   github_url?: string;
+  execution_mode?: ProjectExecutionMode;
+  project_path?: string;
   /** If true, project is from an existing repo; default "Project setup" ticket is not created. */
   is_existing_repo?: boolean;
 }): Promise<Project> {
@@ -79,8 +84,9 @@ export async function getProject(projectId: string): Promise<Project> {
 export async function updateProject(projectId: string, data: {
   name?: string;
   description?: string;
-  project_path?: string;
   github_url?: string;
+  execution_mode?: ProjectExecutionMode;
+  project_path?: string | null;
 }): Promise<Project> {
   const response = await fetch(`${API_URL}/api/projects/${projectId}`, {
     method: 'PUT',
@@ -118,7 +124,7 @@ export async function updateGraph(projectId: string, data: { nodes: any[]; edges
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });
-  return checkResponse(response);
+  return checkResponse<{ version: number }>(response);
 }
 
 export interface KanbanResponse {

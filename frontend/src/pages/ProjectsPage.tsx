@@ -17,15 +17,16 @@ import {
   MenuItem,
 } from '@mui/material';
 import { Link } from 'react-router-dom';
-import { getProjects, createProject, deleteProject, type Project } from '../utils/api';
+import { getProjects, createProject, deleteProject, type Project, type ProjectExecutionMode } from '../utils/api';
 
 const ProjectsPage: React.FC = () => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [projectPath, setProjectPath] = useState('');
   const [githubUrl, setGithubUrl] = useState('');
+  const [executionMode, setExecutionMode] = useState<ProjectExecutionMode>('docker');
+  const [projectPath, setProjectPath] = useState('');
   const [projectType, setProjectType] = useState<'new' | 'existing'>('new');
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
@@ -54,15 +55,17 @@ const ProjectsPage: React.FC = () => {
       const data = await createProject({
         name,
         description,
-        project_path: projectPath || undefined,
         github_url: githubUrl || undefined,
+        execution_mode: executionMode,
+        project_path: executionMode === 'local' ? (projectPath.trim() || undefined) : undefined,
         is_existing_repo: projectType === 'existing',
       });
 
       setName('');
       setDescription('');
-      setProjectPath('');
       setGithubUrl('');
+      setExecutionMode('docker');
+      setProjectPath('');
       setProjectType('new');
       setCreateOpen(false);
       setProjects((prev) => [...prev, data]);
@@ -167,11 +170,10 @@ const ProjectsPage: React.FC = () => {
                     {project.description}
                   </Typography>
                 )}
-                {project.project_path && (
-                  <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8rem', mb: 0.5 }}>
-                    Path: {project.project_path}
-                  </Typography>
-                )}
+                <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8rem', mb: 0.5 }}>
+                  {project.execution_mode === 'local' ? 'Local' : 'Docker'}
+                  {project.execution_mode === 'local' && project.project_path ? ` · ${project.project_path}` : ''}
+                </Typography>
                 {project.github_url && (
                   <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8rem' }}>
                     GitHub: {project.github_url}
@@ -259,21 +261,33 @@ const ProjectsPage: React.FC = () => {
               fullWidth
               size="small"
             />
-            <TextField
-              label="Project Directory Path"
-              value={projectPath}
-              onChange={(e) => setProjectPath(e.target.value)}
-              placeholder="/path/to/project/root"
-              helperText="Local file path where OpenCode will run (contains codebase)"
-              fullWidth
-              size="small"
-            />
+            <FormControl size="small" fullWidth>
+              <InputLabel>Agent execution</InputLabel>
+              <Select
+                value={executionMode}
+                label="Agent execution"
+                onChange={(e) => setExecutionMode(e.target.value as ProjectExecutionMode)}
+              >
+                <MenuItem value="docker">Docker</MenuItem>
+                <MenuItem value="local">Local</MenuItem>
+              </Select>
+            </FormControl>
+            {executionMode === 'local' && (
+              <TextField
+                label="Project path"
+                value={projectPath}
+                onChange={(e) => setProjectPath(e.target.value)}
+                placeholder="/path/to/project/on/host"
+                fullWidth
+                size="small"
+              />
+            )}
             <TextField
               label="GitHub Repository URL"
               value={githubUrl}
               onChange={(e) => setGithubUrl(e.target.value)}
               placeholder="https://github.com/username/repo"
-              helperText="GitHub repository URL for PR creation"
+              helperText="Required for Docker; optional for Local"
               fullWidth
               size="small"
             />

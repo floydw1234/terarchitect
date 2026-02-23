@@ -1,0 +1,76 @@
+# Phase 3: Single agent image. Director + runner; OpenCode wired. No Flask/DB.
+# Build from repo root: docker build -f Dockerfile.agent -t terarchitect-agent .
+# Coordinator should mount a cache volume at /cache so pip/npm reuse packages across runs.
+# Docker CLI is included so the agent can run docker build / docker compose for integration tests.
+# At runtime the coordinator mounts the host Docker socket (-v /var/run/docker.sock:/var/run/docker.sock)
+# so the agent talks to the host engine (Docker-out-of-Docker). For isolated DinD use a docker:dind
+# sidecar and DOCKER_HOST=tcp://dind:2375 (see https://hub.docker.com/_/docker and
+# https://www.docker.com/resources/docker-in-docker-containerized-ci-workflows-dockercon-2023/).
+
+FROM python:3.11-slim
+
+# Git, gh CLI
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    ca-certificates \
+    xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Docker CLI (docker-ce-cli) so the agent can run docker build, docker compose, etc. from inside the container.
+# Engine is provided at runtime via mounted socket (DooD) or DOCKER_HOST to a docker:dind sidecar.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    gnupg \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install GitHub CLI (gh) - multi-arch
+ARG TARGETARCH
+RUN case "$TARGETARCH" in \
+    amd64) GH_ARCH=linux_amd64 ;; \
+    arm64) GH_ARCH=linux_arm64 ;; \
+    *) GH_ARCH=linux_amd64 ;; esac \
+    && curl -sSfL "https://github.com/cli/cli/releases/download/v2.40.1/gh_2.40.1_${GH_ARCH}.tar.gz" | tar xz -C /tmp \
+    && mv /tmp/gh_2.40.1_${GH_ARCH}/bin/gh /usr/local/bin/ \
+    && rm -rf /tmp/gh_2.40.1_*
+
+# Node.js 20 LTS - for npm install / npm test in project repos
+RUN case "$TARGETARCH" in \
+    amd64) NODE_ARCH=x64 ;; \
+    arm64) NODE_ARCH=arm64 ;; \
+    *) NODE_ARCH=x64 ;; esac \
+    && curl -sSfL "https://nodejs.org/download/release/v20.20.0/node-v20.20.0-linux-${NODE_ARCH}.tar.xz" | tar xJ -C /usr/local --strip-components=1
+
+# OpenCode CLI (official install script; no Node required for OpenCode binary)
+RUN curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
+ENV PATH="/root/.opencode/bin:$PATH"
+
+WORKDIR /app
+
+# Package caches: coordinator mounts a volume at /cache so pip and npm reuse downloads across agent runs
+ENV PIP_CACHE_DIR=/cache/pip
+ENV NPM_CONFIG_CACHE=/cache/npm
+RUN mkdir -p /cache/pip /cache/npm
+
+# Director + runner deps only (no Flask/SQLAlchemy)
+COPY agent/requirements.txt /app/requirements-agent.txt
+RUN pip install --no-cache-dir -r /app/requirements-agent.txt
+
+# Copy agent code into flat layout under /app (runner expects middle_agent, agent_runner, utils)
+COPY agent/middle_agent /app/middle_agent
+COPY agent/agent_runner /app/agent_runner
+COPY agent/utils/__init__.py agent/utils/app_settings.py agent/utils/app_settings_crypto.py /app/utils/
+
+ENV PYTHONPATH=/app
+# Do not set AGENT_WORKSPACE here: coordinator sets it only for local execution. In Docker we clone into a temp dir.
+
+RUN chmod +x /app/agent_runner/entrypoint.sh
+
+ENTRYPOINT ["/app/agent_runner/entrypoint.sh"]

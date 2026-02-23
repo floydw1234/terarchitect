@@ -308,6 +308,7 @@ const KanbanPage: React.FC = () => {
       setTickets((prev) => prev.map((t) => (t.id === ticketId ? updated : t)));
     } catch (error) {
       console.error('Failed to move ticket:', error);
+      alert(error instanceof Error ? error.message : 'Failed to move ticket');
     }
   };
 

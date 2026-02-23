@@ -1,0 +1,4 @@
+# Agent image only (Director + runner). No Flask, no DB.
+requests>=2.31.0
+tiktoken>=0.5.0
+openai>=1.0.0

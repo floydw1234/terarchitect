@@ -32,6 +32,9 @@ env/
 .env
 .env.local
 
+# Coordinator debug (contains env/tokens)
+coordinator/run_command.txt
+
 # Database
 data/
 *.db

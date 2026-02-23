@@ -14,8 +14,9 @@ class Project(db.Model):
     id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
     name = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text)
-    project_path = db.Column(db.Text)  # Local file path where OpenCode runs
-    github_url = db.Column(db.Text)    # GitHub repository URL for PR creation
+    project_path = db.Column(db.Text)  # When execution_mode=local: path on host for agent to run in
+    github_url = db.Column(db.Text)    # GitHub repository URL for PR creation and docker-mode clone
+    execution_mode = db.Column(db.String(50), nullable=False, default="docker")  # "docker" | "local"
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
 
@@ -166,6 +167,23 @@ class AppSetting(db.Model):
     value = db.Column(db.Text, nullable=False)  # encrypted or plaintext
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
+
+
+class AgentJob(db.Model):
+    """Queue for agent work: ticket or PR review. Coordinator claims via POST /api/worker/jobs/start."""
+
+    __tablename__ = "agent_jobs"
+
+    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
+    ticket_id = db.Column(db.UUID, db.ForeignKey("tickets.id"), nullable=False)
+    project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
+    kind = db.Column(db.String(50), nullable=False)  # "ticket" | "review"
+    status = db.Column(db.String(50), nullable=False, default="pending")  # pending | running | completed | failed
+    created_at = db.Column(db.TIMESTAMP, default=db.func.now())
+    # For kind=review
+    pr_number = db.Column(db.Integer)
+    comment_body = db.Column(db.Text)
+    github_comment_id = db.Column(db.BigInteger)
 
 
 class RAGEmbedding(db.Model):

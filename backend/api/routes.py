@@ -4,46 +4,104 @@ API Routes for Terarchitect
 import json
 import os
 import re
-import queue
 import subprocess
 import threading
 import time
 from uuid import UUID, uuid5, NAMESPACE_DNS
 
+import requests
 from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy import text, nullslast
 
-from models.db import db, Project, Graph, KanbanBoard, Ticket, Note, Setting, AppSetting, RAGEmbedding, ExecutionLog, PR, PRReviewComment
+from models.db import db, Project, Graph, KanbanBoard, Ticket, Note, Setting, AppSetting, RAGEmbedding, ExecutionLog, PR, PRReviewComment, AgentJob
 from utils.embedding_client import embed_single
 from utils.rag import upsert_embedding, delete_embeddings_for_source
-from utils.app_settings import get_all_for_api, set_value, delete_key, ALLOWED_KEYS, SENSITIVE_KEYS, get_gh_env_for_user, get_gh_env_for_agent
+from utils.app_settings import (
+    get_all_for_api,
+    set_value,
+    delete_key,
+    ALLOWED_KEYS,
+    SENSITIVE_KEYS,
+    get_gh_env_for_user,
+    get_dashboard_git_env,
+    get_gh_env_for_agent,
+    get_agent_env,
+    get_setting_or_env,
+)
 from utils.app_settings_crypto import is_encryption_available
 
 api_bp = Blueprint("api", __name__)
 
+# Worker-facing API: auth via Bearer token. Set TERARCHITECT_WORKER_API_KEY (Settings or env) to require auth; if unset, no auth (dev).
+def _require_worker_auth():
+    """Return (None, None) if authorized, else (response, status_code) to return."""
+    token = (get_setting_or_env("TERARCHITECT_WORKER_API_KEY") or "").strip()
+    if not token:
+        return None, None  # No key configured: allow (dev)
+    auth = request.headers.get("Authorization") or ""
+    if not auth.startswith("Bearer "):
+        return jsonify({"error": "Missing or invalid Authorization header (expected Bearer <token>)"}), 401
+    if auth[7:].strip() != token:
+        return jsonify({"error": "Invalid worker API token"}), 401
+    return None, None
+
 
 def _env_for_gh_user():
-    """Env for gh CLI in UI context (PR comment, approve, merge, poll). Uses stored user token if set."""
-    return {**os.environ, **get_gh_env_for_user()}
+    """Env for gh CLI in UI context (PR comment, approve, merge, poll). Uses stored user token and dashboard git identity if set."""
+    return {**os.environ, **get_gh_env_for_user(), **get_dashboard_git_env()}
 
 
-# Single agent queue: one worker runs jobs (ticket or review) one after another so only one agent touches the repo at a time.
-_agent_queue = queue.Queue()
-# Keys for jobs in queue or in progress; don't enqueue duplicate ticket/review work.
-_agent_queue_keys = set()
-_agent_queue_lock = threading.Lock()
-# Hard execution mutex: only one agent run may execute at a time in this process.
-_agent_run_lock = threading.Lock()
+# Cancel requested by ticket_id (set by UI; read by GET cancel-requested). Agent runs elsewhere (runner/container).
+_cancel_requested: dict = {}  # ticket_id (uuid) -> True
+
+def _get_project_setting(project_id, key, default=None):
+    row = Setting.query.filter_by(project_id=project_id, key=key).first()
+    if not row:
+        return default
+    return row.value if row.value is not None else default
 
 
-def _agent_job_key(kind, args):
-    """Unique key for a queued or in-progress job. ticket -> ticket:id, review -> review:ticket_id:pr#."""
-    if kind == "ticket":
-        return f"ticket:{args[0]}"
-    if kind == "review":
-        # args: (ticket_id, comment_body, pr_number, project_id, github_comment_id)
-        return f"review:{args[0]}:{args[2]}"
-    return None
+def _set_project_setting(project_id, key, value):
+    row = Setting.query.filter_by(project_id=project_id, key=key).first()
+    if value is None:
+        if row:
+            db.session.delete(row)
+        return
+    if row:
+        row.value = value
+    else:
+        db.session.add(Setting(project_id=project_id, key=key, value=value))
+
+
+def _bootstrap_project_memory(project: Project) -> None:
+    """Index one initial doc into project memory so retrieve has something to return. No-op if memory unavailable."""
+    base_save_dir = current_app.config.get("MEMORY_SAVE_DIR")
+    if not base_save_dir:
+        return
+    doc = f"Project: {project.name or 'Untitled'}."
+    if project.description:
+        doc += f" {project.description}"
+    else:
+        doc += " No description."
+    try:
+        from utils.memory import index as memory_index_fn, get_hipporag_kwargs
+        memory_index_fn(project.id, [doc], base_save_dir, **get_hipporag_kwargs())
+        current_app.logger.info("Bootstrap project memory indexed for project %s", project.id)
+    except Exception as e:
+        current_app.logger.warning("Bootstrap project memory failed for %s: %s", project.id, e)
+
+
+def _project_to_json(project: Project):
+    return {
+        "id": str(project.id),
+        "name": project.name,
+        "description": project.description,
+        "github_url": project.github_url,
+        "execution_mode": getattr(project, "execution_mode", None) or "docker",
+        "project_path": project.project_path,
+        "created_at": project.created_at.isoformat() if project.created_at else None,
+        "updated_at": project.updated_at.isoformat() if project.updated_at else None,
+    }
 
 
 @api_bp.route("/projects", methods=["GET", "POST"])
@@ -51,23 +109,16 @@ def projects():
     """List all projects or create a new one."""
     if request.method == "GET":
         projects = Project.query.all()
-        return jsonify([{
-            "id": str(p.id),
-            "name": p.name,
-            "description": p.description,
-            "project_path": p.project_path,
-            "github_url": p.github_url,
-            "created_at": p.created_at.isoformat() if p.created_at else None,
-            "updated_at": p.updated_at.isoformat() if p.updated_at else None,
-        } for p in projects])
+        return jsonify([_project_to_json(p) for p in projects])
 
     if request.method == "POST":
         data = request.json
         project = Project(
             name=data.get("name", "Untitled Project"),
             description=data.get("description"),
-            project_path=data.get("project_path"),
             github_url=data.get("github_url"),
+            execution_mode="local" if (data.get("execution_mode") or "").strip().lower() == "local" else "docker",
+            project_path=data.get("project_path"),
         )
         db.session.add(project)
         db.session.commit()
@@ -111,14 +162,12 @@ def projects():
                 except (json.JSONDecodeError, OSError) as e:
                     current_app.logger.warning("Could not create default tickets: %s", e)
 
+        # Bootstrap project memory so agent retrieve has at least one doc (avoids "No facts available")
+        _bootstrap_project_memory(project)
+
         return jsonify({
-            "id": str(project.id),
-            "name": project.name,
-            "description": project.description,
-            "project_path": project.project_path,
-            "github_url": project.github_url,
+            **_project_to_json(project),
             "created_at": project.created_at.isoformat(),
-            "updated_at": project.updated_at.isoformat() if project.updated_at else None,
         }), 201
 
 
@@ -128,32 +177,19 @@ def project_detail(project_id):
     project = Project.query.get_or_404(project_id)
 
     if request.method == "GET":
-        return jsonify({
-            "id": str(project.id),
-            "name": project.name,
-            "description": project.description,
-            "project_path": project.project_path,
-            "github_url": project.github_url,
-            "created_at": project.created_at.isoformat() if project.created_at else None,
-            "updated_at": project.updated_at.isoformat() if project.updated_at else None,
-        })
+        return jsonify(_project_to_json(project))
 
     if request.method == "PUT":
         data = request.json
         project.name = data.get("name", project.name)
         project.description = data.get("description", project.description)
-        project.project_path = data.get("project_path", project.project_path)
         project.github_url = data.get("github_url", project.github_url)
+        if "execution_mode" in data:
+            project.execution_mode = "local" if (data.get("execution_mode") or "").strip().lower() == "local" else "docker"
+        if "project_path" in data:
+            project.project_path = data.get("project_path") or None
         db.session.commit()
-        return jsonify({
-            "id": str(project.id),
-            "name": project.name,
-            "description": project.description,
-            "project_path": project.project_path,
-            "github_url": project.github_url,
-            "created_at": project.created_at.isoformat() if project.created_at else None,
-            "updated_at": project.updated_at.isoformat() if project.updated_at else None,
-        })
+        return jsonify(_project_to_json(project))
 
     if request.method == "DELETE":
         data = request.json or {}
@@ -290,76 +326,50 @@ def tickets(project_id):
         return jsonify(_ticket_to_json(ticket)), 201
 
 
-def _trigger_middle_agent(ticket_id):
-    """Enqueue Middle Agent for the ticket. Skip if this ticket is already queued or in progress."""
-    import sys
-    key = _agent_job_key("ticket", (ticket_id,))
-    with _agent_queue_lock:
-        if key in _agent_queue_keys:
-            current_app.logger.info("Skipping enqueue: ticket %s already queued or in progress", ticket_id)
+def _enqueue_ticket_job(ticket_id):
+    """Enqueue a ticket job to agent_jobs. Skip if project missing URL/path for mode or already pending/running."""
+    ticket = Ticket.query.get(ticket_id)
+    if not ticket:
+        return
+    project = Project.query.get(ticket.project_id)
+    if not project:
+        return
+    execution_mode = getattr(project, "execution_mode", None) or "docker"
+    if execution_mode == "local":
+        if not (project.project_path or "").strip():
+            current_app.logger.info("Skipping enqueue: ticket %s project is local but has no project path", ticket_id)
             return
-        _agent_queue_keys.add(key)
-    print(f"[Terarchitect] Middle Agent enqueued for ticket {ticket_id}", file=sys.stderr, flush=True)
-    current_app.logger.info("Enqueuing Middle Agent for ticket %s", ticket_id)
-    _agent_queue.put(("ticket", (ticket_id,)))
+    else:
+        if not (project.github_url or "").strip():
+            current_app.logger.info("Skipping enqueue: ticket %s project has no GitHub URL", ticket_id)
+            return
+    existing = AgentJob.query.filter(
+        AgentJob.ticket_id == ticket_id,
+        AgentJob.status.in_(["pending", "running"]),
+    ).first()
+    if existing:
+        current_app.logger.info("Skipping enqueue: ticket %s already has job %s", ticket_id, existing.id)
+        return
+    db.session.add(AgentJob(
+        ticket_id=ticket_id,
+        project_id=ticket.project_id,
+        kind="ticket",
+        status="pending",
+    ))
+    db.session.commit()
+    current_app.logger.info("Enqueued ticket job for ticket %s", ticket_id)
 
 
-def _run_one_agent_job(app, kind, args):
-    """Run a single agent job with app context. Caller holds no lock."""
-    key = _agent_job_key(kind, args)
-    if kind == "review":
-        key = _agent_job_key("review", (args[0], args[1], args[2], args[3], args[4]))
-    try:
-        # Serialize all agent executions globally in-process.
-        with _agent_run_lock:
-            with app.app_context():
-                try:
-                    from middle_agent.agent import MiddleAgent, AgentAPIError
-                except ImportError as e:
-                    app.logger.exception("Middle Agent import failed: %s", e)
-                    return
-                try:
-                    agent = MiddleAgent()
-                    if kind == "ticket":
-                        agent.process_ticket(args[0])
-                    elif kind == "review":
-                        agent.process_ticket_review(args[0], args[1], args[2])
-                except AgentAPIError as e:
-                    app.logger.error("Agent API error: %s", e, exc_info=True)
-                except Exception as e:
-                    app.logger.exception("Agent failed: %s", e)
-        # After review job finishes, mark the comment as addressed so we don't reprocess it.
-        if kind == "review" and len(args) >= 5:
-            with app.app_context():
-                _mark_pr_comment_addressed(args[3], args[2], args[4])
-    finally:
-        if key is not None:
-            with _agent_queue_lock:
-                _agent_queue_keys.discard(key)
-
-
-def _run_agent_and_poll_loop(app, queue_poll_seconds=10, pr_poll_seconds=60):
-    """
-    Single background thread: every queue_poll_seconds check the queue and run at most one
-    agent job; every pr_poll_seconds run the PR comment poll. No blocking get(), no race.
-    """
-    last_pr_poll = 0.0
+def _run_pr_poll_loop(app, pr_poll_seconds=60):
+    """Background thread: run PR review comment poll; new comments enqueue to agent_jobs. No in-process agent run."""
     while True:
-        time.sleep(queue_poll_seconds)
-        now = time.monotonic()
-        if now - last_pr_poll >= pr_poll_seconds:
-            last_pr_poll = now
-            try:
-                with app.app_context():
-                    _poll_pr_review_comments()
-            except Exception as e:
-                if app:
-                    app.logger.exception("PR review poller error: %s", e)
+        time.sleep(pr_poll_seconds)
         try:
-            kind, args = _agent_queue.get_nowait()
-        except queue.Empty:
-            continue
-        _run_one_agent_job(app, kind, args)
+            with app.app_context():
+                _poll_pr_review_comments()
+        except Exception as e:
+            if app:
+                app.logger.exception("PR review poller error: %s", e)
 
 
 def _ticket_to_json(t):
@@ -399,6 +409,20 @@ def ticket_detail(project_id, ticket_id):
             data.get("column_id") == "in_progress" and ticket.column_id != "in_progress"
         )
         if moved_to_in_progress:
+            project = Project.query.get(project_id)
+            if not project:
+                return jsonify({"error": "Project not found"}), 404
+            execution_mode = getattr(project, "execution_mode", None) or "docker"
+            if execution_mode == "local":
+                if not (project.project_path or "").strip():
+                    return jsonify({
+                        "error": "Project has execution mode Local; set Project path in project settings before moving a ticket to In Progress.",
+                    }), 400
+            else:
+                if not (project.github_url or "").strip():
+                    return jsonify({
+                        "error": "Project must have a GitHub URL set before moving a ticket to In Progress.",
+                    }), 400
             graph = Graph.query.filter_by(project_id=project_id).first()
             if not graph or not graph.nodes or len(graph.nodes) == 0:
                 return jsonify({
@@ -423,7 +447,7 @@ def ticket_detail(project_id, ticket_id):
         if content:
             upsert_embedding(project_id, "ticket", ticket.id, content)
         if moved_to_in_progress:
-            _trigger_middle_agent(ticket.id)
+            _enqueue_ticket_job(ticket.id)
         return jsonify(_ticket_to_json(ticket))
 
     if request.method == "DELETE":
@@ -450,6 +474,111 @@ def ticket_logs(project_id, ticket_id):
         "success": log.success,
         "created_at": log.created_at.isoformat() if log.created_at else None,
     } for log in logs])
+
+
+# Keys sent to agent in worker-context (agent/worker/memory config). Sensitive values are decrypted.
+_AGENT_SETTINGS_KEYS = (
+    "VLLM_URL", "AGENT_MODEL", "AGENT_API_KEY",
+    "WORKER_LLM_URL", "WORKER_MODEL", "WORKER_API_KEY", "WORKER_TIMEOUT_SEC", "MIDDLE_AGENT_DEBUG",
+    "github_agent_token",
+    "MEMORY_LLM_MODEL", "MEMORY_LLM_BASE_URL", "MEMORY_LLM_API_KEY",
+    "MEMORY_EMBEDDING_MODEL", "MEMORY_EMBEDDING_BASE_URL", "EMBEDDING_SERVICE_URL",
+)
+
+
+@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/worker-context", methods=["GET"])
+def worker_context(project_id, ticket_id):
+    """Phase 1: Worker-facing context. Same shape as build_worker_context(ticket) plus agent_settings; no project_path. Auth: Bearer token."""
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
+    ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
+    project = Project.query.get_or_404(project_id)
+    try:
+        from worker_context import build_worker_context
+        context = build_worker_context(ticket)
+    except Exception as e:
+        current_app.logger.exception("worker_context: build_worker_context failed: %s", e)
+        return jsonify({"error": "Failed to load context", "detail": str(e)}), 500
+    context.pop("project_path", None)
+    context["repo_url"] = project.github_url or ""
+    context["project_id"] = str(project_id)
+    context["agent_settings"] = {k: (get_setting_or_env(k) or "") for k in _AGENT_SETTINGS_KEYS}
+    return jsonify(context)
+
+
+@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/logs", methods=["POST"])
+def ticket_logs_append(project_id, ticket_id):
+    """Phase 1: Append an execution log entry (worker-facing). Body: session_id, step, summary, raw_output (optional). Auth: Bearer."""
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
+    ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
+    data = request.json or {}
+    session_id = (data.get("session_id") or "").strip()
+    step = (data.get("step") or "").strip() or "step"
+    summary = (data.get("summary") or "").strip() or ""
+    raw_output = data.get("raw_output")
+    if not session_id:
+        return jsonify({"error": "session_id is required"}), 400
+    log_entry = ExecutionLog(
+        project_id=project_id,
+        ticket_id=ticket_id,
+        session_id=session_id,
+        step=step[:100],
+        summary=summary,
+        raw_output=raw_output,
+        success=True,
+    )
+    db.session.add(log_entry)
+    db.session.commit()
+    return jsonify({"id": str(log_entry.id), "message": "Logged"})
+
+
+@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/complete", methods=["POST"])
+def ticket_complete(project_id, ticket_id):
+    """Phase 1: Mark ticket complete (worker-facing). Body: pr_url, pr_number, summary; optional review_comment_body. Auth: Bearer."""
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
+    ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
+    data = request.json or {}
+    pr_url = (data.get("pr_url") or "").strip() or None
+    pr_number = data.get("pr_number")
+    if pr_number is not None and not isinstance(pr_number, int):
+        try:
+            pr_number = int(pr_number)
+        except (TypeError, ValueError):
+            pr_number = None
+    summary = (data.get("summary") or "").strip() or ""
+    review_comment_body = (data.get("review_comment_body") or "").strip() or None
+
+    ticket.status = "completed"
+    ticket.column_id = "in_review"
+    if pr_url is not None:
+        existing = PR.query.filter_by(ticket_id=ticket.id).first()
+        if existing:
+            existing.pr_url = pr_url
+            existing.pr_number = pr_number
+        else:
+            db.session.add(PR(
+                project_id=project_id,
+                ticket_id=ticket.id,
+                pr_url=pr_url,
+                pr_number=pr_number,
+            ))
+    db.session.commit()
+    return jsonify({"message": "Complete", "ticket_id": str(ticket.id)})
+
+
+@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/cancel-requested", methods=["GET"])
+def ticket_cancel_requested(project_id, ticket_id):
+    """Phase 1: Poll by agent to see if cancellation was requested. Auth: Bearer."""
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
+    Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
+    return jsonify({"cancel_requested": _cancel_requested.get(ticket_id) is True})
 
 
 @api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/review", methods=["GET"])
@@ -700,18 +829,104 @@ def ticket_review_merge(project_id, ticket_id):
 
 @api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/cancel", methods=["POST"])
 def cancel_ticket_execution_api(project_id, ticket_id):
-    """Request cancellation of the Middle Agent execution for a ticket."""
-    ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
-    try:
-        from middle_agent.agent import cancel_ticket_execution as cancel_fn
-    except ImportError as e:
-        current_app.logger.exception("Middle Agent import failed for cancel: %s", e)
-        return jsonify({"error": "Middle Agent not available"}), 500
+    """Request cancellation. Set flag so GET cancel-requested returns true; runner/container will poll and exit."""
+    Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
+    _cancel_requested[ticket_id] = True
+    return jsonify({"message": "Cancellation requested"}), 200
 
-    cancelled = cancel_fn(ticket.id)
-    if cancelled:
-        return jsonify({"message": "Cancellation requested"}), 200
-    return jsonify({"message": "No active execution for this ticket"}), 202
+
+# ---------- Phase 1: Queue (worker-facing). Auth: Bearer (TERARCHITECT_WORKER_API_KEY). ----------
+
+def _job_to_response(job):
+    """Build JSON payload for a claimed job."""
+    project = Project.query.get(job.project_id)
+    repo_url = (project.github_url or "") if project else ""
+    execution_mode = getattr(project, "execution_mode", None) or "docker" if project else "docker"
+    out = {
+        "job_id": str(job.id),
+        "ticket_id": str(job.ticket_id),
+        "project_id": str(job.project_id),
+        "kind": job.kind,
+        "repo_url": repo_url,
+        "execution_mode": execution_mode,
+        "project_path": (project.project_path or "").strip() or None if project else None,
+    }
+    if job.kind == "review":
+        out["pr_number"] = job.pr_number
+        out["comment_body"] = job.comment_body or ""
+        out["github_comment_id"] = job.github_comment_id
+    try:
+        agent_env = get_agent_env()
+        if agent_env:
+            out["agent_env"] = agent_env
+    except Exception:
+        pass
+    return out
+
+
+@api_bp.route("/worker/jobs/start", methods=["POST"])
+def worker_jobs_start():
+    """Phase 1: Claim one pending job. Body: optional {"project_id": "<uuid>"}. If project_id omitted, claim next pending job from any project. Returns 200 + job or 204."""
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
+    data = request.json or {}
+    project_id = data.get("project_id")
+    if project_id:
+        try:
+            project_id = UUID(project_id) if isinstance(project_id, str) else project_id
+        except (ValueError, TypeError):
+            return jsonify({"error": "project_id must be a valid UUID"}), 400
+        if Project.query.get(project_id) is None:
+            return jsonify({"error": "Project not found"}), 404
+        job = (
+            AgentJob.query.filter_by(project_id=project_id, status="pending")
+            .order_by(AgentJob.created_at.asc())
+            .with_for_update(skip_locked=True)
+            .first()
+        )
+    else:
+        job = (
+            AgentJob.query.filter_by(status="pending")
+            .order_by(AgentJob.created_at.asc())
+            .with_for_update(skip_locked=True)
+            .first()
+        )
+    if not job:
+        return "", 204
+    job.status = "running"
+    db.session.commit()
+    return jsonify(_job_to_response(job)), 200
+
+
+@api_bp.route("/worker/jobs/<uuid:job_id>/complete", methods=["POST"])
+def worker_jobs_complete(job_id):
+    """Phase 1: Mark job completed when container exits."""
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
+    job = AgentJob.query.filter_by(id=job_id).first_or_404()
+    if job.status != "running":
+        return jsonify({"error": "Job not running", "status": job.status}), 409
+    job.status = "completed"
+    if job.kind == "review" and job.pr_number is not None and job.github_comment_id is not None:
+        _mark_pr_comment_addressed(job.project_id, job.pr_number, job.github_comment_id)
+    db.session.commit()
+    return jsonify({"message": "Job completed", "job_id": str(job_id)})
+
+
+@api_bp.route("/worker/jobs/<uuid:job_id>/fail", methods=["POST"])
+def worker_jobs_fail(job_id):
+    """Phase 1: Mark job failed when container exits."""
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
+    job = AgentJob.query.filter_by(id=job_id).first_or_404()
+    if job.status != "running":
+        return jsonify({"error": "Job not running", "status": job.status}), 409
+    job.status = "failed"
+    db.session.commit()
+    return jsonify({"message": "Job failed", "job_id": str(job_id)})
 
 
 @api_bp.route("/settings", methods=["GET"])
@@ -900,7 +1115,10 @@ def rag_search():
 
 @api_bp.route("/projects/<uuid:project_id>/memory/index", methods=["POST"])
 def memory_index(project_id):
-    """Index documents into project memory (HippoRAG). Locked per project."""
+    """Index documents into project memory (HippoRAG). Locked per project. Auth: Bearer (worker)."""
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
     if Project.query.get(project_id) is None:
         return jsonify({"error": "Project not found"}), 404
     data = request.json or {}
@@ -923,7 +1141,10 @@ def memory_index(project_id):
 
 @api_bp.route("/projects/<uuid:project_id>/memory/retrieve", methods=["POST"])
 def memory_retrieve(project_id):
-    """Retrieve relevant passages for queries (HippoRAG). Locked per project."""
+    """Retrieve relevant passages for queries (HippoRAG). Locked per project. Auth: Bearer (worker)."""
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
     if Project.query.get(project_id) is None:
         return jsonify({"error": "Project not found"}), 404
     data = request.json or {}
@@ -941,6 +1162,16 @@ def memory_retrieve(project_id):
             num_to_retrieve=num_to_retrieve,
             **get_hipporag_kwargs(),
         )
+        # If no memory yet (e.g. existing project), bootstrap one doc then retry so agent gets something
+        if results and all(len((r.get("docs") or [])) == 0 for r in results):
+            project = Project.query.get(project_id)
+            if project:
+                _bootstrap_project_memory(project)
+                results = memory_retrieve_fn(
+                    project_id, queries, base_save_dir,
+                    num_to_retrieve=num_to_retrieve,
+                    **get_hipporag_kwargs(),
+                )
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 503
     except Exception as e:
@@ -951,7 +1182,10 @@ def memory_retrieve(project_id):
 
 @api_bp.route("/projects/<uuid:project_id>/memory/delete", methods=["POST"])
 def memory_delete(project_id):
-    """Remove documents from project memory (HippoRAG). Locked per project."""
+    """Remove documents from project memory (HippoRAG). Locked per project. Auth: Bearer (worker)."""
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
     if Project.query.get(project_id) is None:
         return jsonify({"error": "Project not found"}), 404
     data = request.json or {}
@@ -1038,18 +1272,28 @@ def _repo_slug_from_github_url(url):
     return "/".join(parts[:2]) if len(parts) >= 2 else None
 
 
-def _trigger_review_agent(ticket_id, comment_body, pr_number, project_id, github_comment_id):
-    """Enqueue Middle Agent in PR review mode. Skip if this ticket+PR is already queued or in progress."""
-    import sys
-    key = _agent_job_key("review", (ticket_id, comment_body, pr_number, project_id, github_comment_id))
-    with _agent_queue_lock:
-        if key in _agent_queue_keys:
-            current_app.logger.info("Skipping enqueue: ticket %s PR #%s already queued or in progress", ticket_id, pr_number)
-            return
-        _agent_queue_keys.add(key)
-    print(f"[Terarchitect] PR review agent enqueued for ticket {ticket_id} PR #{pr_number} comment {github_comment_id}", file=sys.stderr, flush=True)
-    current_app.logger.info("Enqueuing PR review agent for ticket %s PR #%s comment %s", ticket_id, pr_number, github_comment_id)
-    _agent_queue.put(("review", (ticket_id, comment_body, pr_number, project_id, github_comment_id)))
+def _enqueue_review_job(ticket_id, comment_body, pr_number, project_id, github_comment_id):
+    """Enqueue a PR review job to agent_jobs. Skip if same ticket+PR already pending/running."""
+    existing = AgentJob.query.filter(
+        AgentJob.ticket_id == ticket_id,
+        AgentJob.kind == "review",
+        AgentJob.pr_number == pr_number,
+        AgentJob.status.in_(["pending", "running"]),
+    ).first()
+    if existing:
+        current_app.logger.info("Skipping enqueue: ticket %s PR #%s already has job", ticket_id, pr_number)
+        return
+    db.session.add(AgentJob(
+        ticket_id=ticket_id,
+        project_id=project_id,
+        kind="review",
+        status="pending",
+        pr_number=pr_number,
+        comment_body=comment_body,
+        github_comment_id=github_comment_id,
+    ))
+    db.session.commit()
+    current_app.logger.info("Enqueued review job for ticket %s PR #%s", ticket_id, pr_number)
 
 
 def _mark_pr_comment_addressed(project_id, pr_number, github_comment_id):
@@ -1267,7 +1511,7 @@ def _poll_pr_review_comments():
             q = q.filter(db.or_(PRReviewComment.author_login.is_(None), PRReviewComment.author_login != gh_login))
         next_comment = q.order_by(nullslast(PRReviewComment.comment_created_at.desc())).limit(1).first()
         if next_comment and gh_login:
-            _trigger_review_agent(
+            _enqueue_review_job(
                 ticket.id,
                 next_comment.body,
                 pr_number,
@@ -1276,13 +1520,3 @@ def _poll_pr_review_comments():
             )
 
 
-def _run_pr_review_poller(app, interval_seconds=600):
-    """Background loop: every interval_seconds run _poll_pr_review_comments with app context."""
-    while True:
-        time.sleep(interval_seconds)
-        try:
-            with app.app_context():
-                _poll_pr_review_comments()
-        except Exception as e:
-            if app:
-                app.logger.exception("PR review poller error: %s", e)
