@@ -1,5 +1,7 @@
-Project: Architask AI (Working Title)
-Concept: A visual-first, autonomous SDLC orchestrator that uses a "Director-Worker" agent model to build complex systems locally.
+
+Project: Terarchitect
+Concept: A visual-first, autonomous SDLC (Software Development Lifecycle) orchestrator that uses a "Director-Worker" agent model to build complex systems locally.
+
 
 ## Quick Start
 
