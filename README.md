@@ -25,7 +25,7 @@ If you’ve ever wanted “Kanban → PRs” with guardrails, this is it.
 
 - **Architecture graph**: encode components + interfaces, not just TODO lists
 - **Kanban-driven execution**: moving a ticket to *In Progress* enqueues an agent job
-- **Director/Worker separation**: strategy (Director) vs local execution + tools (Worker/OpenCode)
+- **Director/Worker separation**: strategy (Director) vs local execution + tools (Worker — OpenCode or Claude Code)
 - **PR-first workflow**: branch per ticket (`ticket-{id}`), PR opened automatically
 - **Runs anywhere Docker runs**: single-box dev or two-box production
 
@@ -37,7 +37,7 @@ If you’ve ever wanted “Kanban → PRs” with guardrails, this is it.
 - **Database**: Postgres (with `pgvector/pgvector` image for vector search support)
 - **Frontend**: Node 20 + React (served from Docker Compose)
 - **Coordinator**: Python (host process) + `requests`
-- **Agent image**: Python runner + **OpenCode** (server mode) + Node 20 (for `npm test` in target repos) + Docker CLI (for integration tests)
+- **Agent image**: Python runner + **OpenCode** (server mode) + **Claude Code** (headless CLI) + Node 20 (for `npm test` in target repos) + Docker daemon (full DinD — each container has its own isolated daemon)
 
 LLM endpoints are configurable via Settings/env (Director model via `VLLM_URL`, Worker model via `WORKER_LLM_URL`, etc.). See `backend/README.md` and `docs/RUNBOOK.md`.
 
@@ -60,12 +60,14 @@ Details: `backend/README.md` (Memory section).
 
 ---
 
-## OpenCode (Worker) + API integration
+## Worker modes + API integration
 
-Terarchitect uses **OpenCode in server mode** as the Worker inside the agent container:
+Terarchitect supports two worker backends, selectable via **Settings → Worker → Worker mode**:
 
-- The agent container entrypoint starts `opencode serve` (HTTP API).
-- The Director talks to that OpenCode server over HTTP (session create + message turns + summarize).
+| Mode | How it works |
+|------|-------------|
+| **OpenCode** (default) | The agent entrypoint starts `opencode serve` (HTTP API). The Director sends prompts over HTTP (session create → message turns → summarize every 30 turns). Requires `WORKER_LLM_URL` pointing at an OpenAI-compatible LLM. |
+| **Claude Code** | The Director invokes `claude -p "..."` (headless CLI) for each prompt. No LLM URL needed — just set `WORKER_API_KEY` to your Anthropic API key. |
 
 At the app boundary, the coordinator/agent use a small “worker API” surface (Bearer-authenticated when `TERARCHITECT_WORKER_API_KEY` is set):
 
@@ -89,7 +91,7 @@ Details: `docs/PHASE1_WORKER_API.md`.
 |-----------|--------------|---------------|
 | **App** | Flask API + Postgres + React frontend. Stores projects/graph/tickets/logs and enqueues jobs. Does **not** execute the agent. | **Docker Compose** (`postgres`, `backend`, `frontend`) |
 | **Coordinator** | Claims jobs from the API and starts one agent container per job. | **Host process** (can be a different machine with Docker) |
-| **Agent image** | Director + OpenCode. Clones the project repo, implements the ticket, pushes, opens PR, exits. | **Docker container** started by the coordinator |
+| **Agent image** | Director + Worker (OpenCode or Claude Code). Clones the project repo, implements the ticket, pushes, opens PR, exits. | **Docker container** started by the coordinator |
 
 High-level flow: **UI → enqueue → coordinator claims → agent container runs → PR created → human reviews**.
 
@@ -128,9 +130,7 @@ python -m coordinator
 
 Tip: set `PYTHONPATH=/path/to/terarchitect` if your environment needs it.
 
-**Concurrency note (important):** for now, the coordinator should run **one agent job at a time** (default `MAX_CONCURRENT_AGENTS=1`).
-Even though jobs run in separate agent containers, the agent containers typically use **the host Docker daemon** (Docker-out-of-Docker via `/var/run/docker.sock`) for `docker compose` and integration tests, which can collide under parallel runs.
-We’ll revisit safe parallelism once we switch to real Docker-in-Docker (see TODO below).
+**Concurrency note:** the coordinator defaults to `MAX_CONCURRENT_AGENTS=1` but parallel runs are now safe. Each agent container runs its own isolated Docker daemon (DinD via `--privileged`), so concurrent jobs never conflict on container names, networks, or ports. Increase `MAX_CONCURRENT_AGENTS` to run multiple tickets in parallel; see the TODO section for tuning guidance.
 
 ---
 
@@ -168,7 +168,7 @@ Full ops notes (systemd, env, verification): see `docs/RUNBOOK.md`.
 4. Inside the container, the agent:
    - clones your repo
    - creates branch `ticket-{id}`
-   - runs Director + OpenCode to implement
+   - runs Director + Worker (OpenCode or Claude Code) to implement
    - pushes branch and opens a PR
    - exits
 
@@ -183,7 +183,7 @@ No mixing with your project’s Dockerfile. The agent image is built once and re
 | `backend/` | Flask API (served by docker compose). Stores graph/tickets/logs; enqueues jobs only. |
 | `frontend/` | React UI (served by docker compose). |
 | `coordinator/` | Host-side Python process. Claims jobs and starts agent containers. |
-| `agent/` | Director + runner + OpenCode wiring. Packaged into the agent image. |
+| `agent/` | Director + runner + worker wiring (OpenCode and Claude Code). Packaged into the agent image. |
 
 ---
 
@@ -207,7 +207,7 @@ No mixing with your project’s Dockerfile. The agent image is built once and re
 
 ## TODO / Roadmap
 
-- **Docker-in-Docker for safe parallelism**: move from host-socket Docker-out-of-Docker to per-job DinD (sidecar daemon) so multiple tickets can run concurrently without `docker compose` collisions. After that, we can raise `MAX_CONCURRENT_AGENTS` beyond 1 safely.
+- **Raise `MAX_CONCURRENT_AGENTS`**: DinD is now the default (each agent container runs its own isolated `dockerd` via `--privileged`), so `docker compose` collisions no longer occur. Increase `MAX_CONCURRENT_AGENTS` to run multiple tickets in parallel. Monitor host resource usage (RAM, CPU) and tune accordingly.
 
 ---
 

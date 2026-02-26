@@ -10,12 +10,25 @@ import {
   CircularProgress,
   Divider,
   InputAdornment,
+  MenuItem,
+  Select,
+  FormControl,
+  InputLabel,
+  FormHelperText,
 } from '@mui/material';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import { getSettings, updateSettings, type AppSettingsResponse } from '../utils/api';
 
 /** keys: when set, this field reads/writes multiple settings (e.g. one "LLM base URL" for both Director and Worker). */
-type FieldMeta = { key: string; label: string; hint: string; sensitive: boolean; options?: readonly string[]; keys?: string[] };
+type FieldMeta = { key: string; label: string; hint: string; sensitive: boolean; options?: readonly string[]; optionLabels?: Record<string, string>; keys?: string[] };
+
+const WORKER_MODES = ['opencode', 'claude-code'] as const;
+type WorkerMode = typeof WORKER_MODES[number];
+
+const WORKER_MODE_LABELS: Record<WorkerMode, string> = {
+  'opencode': 'OpenCode (default)',
+  'claude-code': 'Claude Code (headless)',
+};
 
 const FIELDS: FieldMeta[] = [
   { key: 'github_user_token', label: 'GitHub user token', hint: 'UI: PR comments, approve, merge, poll. Classic PAT with repo scope.', sensitive: true },
@@ -29,6 +42,8 @@ const FIELDS: FieldMeta[] = [
   { key: 'AGENT_MODEL', label: 'Model', hint: 'Leave blank for Qwen/Qwen3-Coder-Next-FP8.', sensitive: false },
   { key: 'AGENT_API_KEY', label: 'API key', hint: 'Optional API key for the Agent LLM.', sensitive: true },
   { key: 'MIDDLE_AGENT_DEBUG', label: 'Debug', hint: '1 = verbose logs; 0 = quiet.', sensitive: false },
+  // Worker mode selector
+  { key: 'WORKER_MODE', label: 'Worker mode', hint: 'OpenCode uses an OpenCode HTTP server. Claude Code runs the claude CLI in headless mode (-p flag).', sensitive: false, options: WORKER_MODES, optionLabels: WORKER_MODE_LABELS },
   // OpenCode worker: URL, model, key
   { key: 'WORKER_LLM_URL', label: 'LLM URL', hint: 'Leave blank for http://localhost:8080/v1.', sensitive: false },
   { key: 'WORKER_MODEL', label: 'Model', hint: 'Leave blank to use the same model as the Agent (above).', sensitive: false },
@@ -47,6 +62,8 @@ const FIELDS: FieldMeta[] = [
   { key: 'EMBEDDING_API_KEY', label: 'Embedding API key', hint: 'Embedding service X-API-Key if required.', sensitive: true },
   { key: 'openai_api_key', label: 'OpenAI API key', hint: 'For OpenAI-compatible embedding/LLM calls. Required for memory.', sensitive: true },
   { key: 'anthropic_api_key', label: 'Anthropic API key', hint: 'Optional; for memory or other features.', sensitive: true },
+  // Coordinator
+  { key: 'MAX_CONCURRENT_AGENTS', label: 'Max concurrent agents', hint: 'How many agent jobs the coordinator runs in parallel. Default 1. Safe to raise with DinD enabled (each container has its own isolated Docker daemon). The coordinator re-reads this every poll cycle — no restart needed.', sensitive: false },
   // Worker-facing API (Phase 1: coordinator and agent containers)
   { key: 'TERARCHITECT_WORKER_API_KEY', label: 'Worker API key', hint: 'Bearer token for /api/worker/* and worker-context/logs/complete. If set, coordinator and agent must send Authorization: Bearer <key>.', sensitive: true },
 ];
@@ -54,9 +71,10 @@ const FIELDS: FieldMeta[] = [
 const SECTIONS: { title: string; keys: string[]; description?: string }[] = [
   { title: 'GitHub', keys: ['github_user_token', 'github_agent_token', 'GIT_USER_NAME', 'GIT_USER_EMAIL', 'GIT_DASHBOARD_USER_NAME', 'GIT_DASHBOARD_USER_EMAIL'], description: 'Tokens for UI and agent. Agent git = commits from agent container. Dashboard git = backend/UI (e.g. when backend runs in Docker). Leave blank for defaults.' },
   { title: 'Agent', keys: ['VLLM_URL', 'AGENT_MODEL', 'AGENT_API_KEY', 'MIDDLE_AGENT_DEBUG'] },
-  { title: 'OpenCode worker', keys: ['WORKER_LLM_URL', 'WORKER_MODEL', 'WORKER_API_KEY', 'WORKER_TIMEOUT_SEC'], description: 'LLM used by OpenCode inside the agent container. Leave blank for defaults.' },
+  { title: 'Worker', keys: ['WORKER_MODE', 'WORKER_LLM_URL', 'WORKER_MODEL', 'WORKER_API_KEY', 'WORKER_TIMEOUT_SEC'], description: 'Worker used inside the agent container. OpenCode (default) uses an LLM via HTTP; Claude Code runs the claude CLI headless.' },
   { title: 'Frontend LLM', keys: ['FRONTEND_LLM_URL', 'FRONTEND_LLM_MODEL', 'FRONTEND_LLM_API_KEY'], description: 'Optional. Used by backend for frontend AI features (e.g. graph-based suggestions).' },
   { title: 'Memory', keys: ['MEMORY_LLM_BASE_URL', 'MEMORY_LLM_MODEL', 'MEMORY_LLM_API_KEY', 'EMBEDDING_SERVICE_URL', 'MEMORY_EMBEDDING_MODEL', 'EMBEDDING_API_KEY', 'openai_api_key', 'anthropic_api_key'], description: 'HippoRAG: LLM and embedding for the memory system. Leave URL/model blank to use Agent settings.' },
+  { title: 'Coordinator', keys: ['MAX_CONCURRENT_AGENTS'], description: 'Settings read by the coordinator process. Changes take effect on the next poll cycle without restarting the coordinator.' },
   { title: 'Worker API', keys: ['TERARCHITECT_WORKER_API_KEY'], description: 'Auth for worker-facing API (coordinator and agent containers). Leave blank for no auth (dev).' },
 ];
 
@@ -105,6 +123,18 @@ const SettingsPage: React.FC = () => {
   const hasChanges = Object.keys(values).length > 0;
 
   const primaryKey = (meta: FieldMeta) => meta.keys?.[0] ?? meta.key;
+
+  /** Current worker mode: pending edit takes priority, then saved value, then default. */
+  const currentWorkerMode = (): WorkerMode => {
+    const pending = values['WORKER_MODE'];
+    if (pending !== undefined) return (WORKER_MODES.includes(pending as WorkerMode) ? pending : 'opencode') as WorkerMode;
+    const saved = status?.['WORKER_MODE'];
+    if (typeof saved === 'string' && WORKER_MODES.includes(saved as WorkerMode)) return saved as WorkerMode;
+    return 'opencode';
+  };
+
+  /** Keys hidden when worker mode is claude-code (URL and model not needed). */
+  const CLAUDE_CODE_HIDDEN_KEYS = new Set(['WORKER_LLM_URL', 'WORKER_MODEL']);
 
   const displayValue = (key: string): string => {
     const meta = keyToMeta[key];
@@ -186,10 +216,42 @@ const SettingsPage: React.FC = () => {
               {section.keys.map((key) => {
                 const meta = keyToMeta[key];
                 if (!meta) return null;
+
+                // Hide URL/model fields when Claude Code mode is active
+                const workerMode = currentWorkerMode();
+                if (workerMode === 'claude-code' && CLAUDE_CODE_HIDDEN_KEYS.has(key)) return null;
+
                 const sensitive = meta.sensitive;
                 const set = isSet(key);
                 const value = displayValue(key);
                 const pk = primaryKey(meta);
+
+                // Dynamic hint for WORKER_API_KEY based on mode
+                const hint = key === 'WORKER_API_KEY' && workerMode === 'claude-code'
+                  ? 'Anthropic API key for Claude Code (passed as ANTHROPIC_API_KEY to the claude CLI).'
+                  : meta.hint;
+
+                // Render as Select dropdown for fields with options
+                if (meta.options) {
+                  const selectValue = value || meta.options[0];
+                  return (
+                    <FormControl key={key} fullWidth size="small">
+                      <InputLabel>{meta.label}</InputLabel>
+                      <Select
+                        label={meta.label}
+                        value={selectValue}
+                        onChange={(e) => handleFieldChange(key, e.target.value as string)}
+                      >
+                        {meta.options.map((opt) => (
+                          <MenuItem key={opt} value={opt}>
+                            {meta.optionLabels?.[opt] ?? opt}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                      <FormHelperText>{hint}</FormHelperText>
+                    </FormControl>
+                  );
+                }
 
                 return (
                   <Box key={key}>
@@ -201,7 +263,7 @@ const SettingsPage: React.FC = () => {
                       placeholder={sensitive ? (set ? '••••••••' : 'Not set') : 'Leave blank for default'}
                       value={value}
                       onChange={(e) => handleFieldChange(key, e.target.value)}
-                      helperText={meta.hint}
+                      helperText={hint}
                       autoComplete="off"
                       InputProps={
                         sensitive && set && values[pk] === undefined

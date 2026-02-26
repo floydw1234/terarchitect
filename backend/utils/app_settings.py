@@ -39,6 +39,10 @@ ALLOWED_KEYS = frozenset({
     "MEMORY_EMBEDDING_BASE_URL",
     # Embedding service
     "EMBEDDING_SERVICE_URL",
+    # Worker mode: "opencode" (default) or "claude-code" (Claude Code CLI headless)
+    "WORKER_MODE",
+    # Coordinator settings (read by the coordinator process from GET /api/settings each poll cycle)
+    "MAX_CONCURRENT_AGENTS",
     # Worker-facing API (Phase 1: coordinator and agent containers)
     "TERARCHITECT_WORKER_API_KEY",
     # Git identity for agent commits (optional; agent uses defaults if unset)
@@ -233,6 +237,7 @@ AGENT_ENV_KEYS = (
     "VLLM_URL",
     "AGENT_MODEL",
     "AGENT_API_KEY",
+    "WORKER_MODE",
     "WORKER_LLM_URL",
     "WORKER_MODEL",
     "WORKER_API_KEY",

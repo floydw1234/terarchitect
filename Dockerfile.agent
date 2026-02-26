@@ -17,8 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Docker CLI (docker-ce-cli) so the agent can run docker build, docker compose, etc. from inside the container.
-# Engine is provided at runtime via mounted socket (DooD) or DOCKER_HOST to a docker:dind sidecar.
+# Docker daemon + CLI for true Docker-in-Docker (DinD).
+# Each agent container runs its own isolated dockerd so concurrent jobs never share container
+# names, networks, or ports. The coordinator starts this image with --privileged (no socket mount).
+# docker-ce: daemon; containerd.io: container runtime; docker-ce-cli: client binary.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -28,7 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && chmod a+r /etc/apt/keyrings/docker.asc \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \
     && apt-get update \
-    && apt-get install -y --no-install-recommends docker-ce-cli \
+    && apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io \
     && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI (gh) - multi-arch
@@ -51,6 +53,9 @@ RUN case "$TARGETARCH" in \
 # OpenCode CLI (official install script; no Node required for OpenCode binary)
 RUN curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
 ENV PATH="/root/.opencode/bin:$PATH"
+
+# Claude Code CLI - used when WORKER_MODE=claude-code (headless -p mode)
+RUN npm install -g @anthropic-ai/claude-code
 
 WORKDIR /app
 

@@ -7,6 +7,8 @@ Phase 4: Coordinator. Loop: claim job → run agent in Docker (or on host if exe
 Env: TERARCHITECT_API_URL, [TERARCHITECT_WORKER_API_KEY], [PROJECT_ID or PROJECT_IDS (comma; if omitted, claims from any project)],
 AGENT_IMAGE (default terarchitect-agent), MAX_CONCURRENT_AGENTS (default 1), POLL_INTERVAL_SEC (default 10),
 AGENT_CACHE_VOLUME, COORDINATOR_STATE_DIR, COORDINATOR_REPO_ROOT (for direct agent run fallback).
+AGENT_DOCKER_MODE: "dind" (default) — run --privileged with an isolated dockerd inside each container;
+  "dood" — mount the host Docker socket (legacy Docker-out-of-Docker, shared daemon).
 """
 import json
 import os
@@ -90,6 +92,21 @@ def _headers() -> dict:
     if not token:
         return {}
     return {"Authorization": f"Bearer {token}"}
+
+
+def fetch_max_concurrent(base_url: str, fallback: int) -> int:
+    """Fetch MAX_CONCURRENT_AGENTS from the backend settings API. Returns fallback on any error or if unset.
+    Called each poll cycle so the value can be changed in the UI without restarting the coordinator."""
+    try:
+        r = requests.get(f"{base_url}/api/settings", headers=_headers(), timeout=10)
+        r.raise_for_status()
+        raw = r.json().get("MAX_CONCURRENT_AGENTS")
+        if raw is not None and str(raw).strip():
+            val = int(str(raw).strip())
+            return max(1, val)
+    except Exception:
+        pass
+    return fallback
 
 
 def claim_job(base_url: str, project_id: Optional[str] = None) -> Optional[dict]:
@@ -214,8 +231,13 @@ def _docker_run_args(image: str, job: dict) -> List[str]:
     Mac/Windows Docker Desktop provide it; on Linux we add --add-host=host.docker.internal:host-gateway.
     When DOCKER_NETWORK is set (e.g. in compose), add --network so agent containers can reach the app.
     Mounts AGENT_CACHE_VOLUME at /cache so pip and npm reuse packages across runs.
-    Mounts host Docker socket at /var/run/docker.sock so the agent can run docker build/compose (Docker-out-of-Docker).
-    Set AGENT_MOUNT_DOCKER_SOCKET=0 to disable socket mount (e.g. if using a docker:dind sidecar and DOCKER_HOST)."""
+
+    Docker isolation mode (AGENT_DOCKER_MODE):
+      "dind" (default) — each agent container starts its own isolated dockerd (--privileged). No shared
+        daemon, so concurrent agents never conflict on container names, networks, or ports.
+      "dood" — legacy Docker-out-of-Docker: mounts the host socket. All agents share one daemon;
+        set AGENT_MOUNT_DOCKER_SOCKET=0 together with DOCKER_HOST to use an external sidecar instead.
+    """
     env = job_to_env(job, for_docker=True)
     for key in _DOCKER_STRIP_ENV:
         env.pop(key, None)
@@ -223,7 +245,12 @@ def _docker_run_args(image: str, job: dict) -> List[str]:
     cache_volume = _env("AGENT_CACHE_VOLUME", "terarchitect-agent-cache")
     if cache_volume:
         args.extend(["-v", f"{cache_volume}:/cache"])
-    if _env("AGENT_MOUNT_DOCKER_SOCKET", "1") != "0":
+    docker_mode = _env("AGENT_DOCKER_MODE", "dind").lower()
+    if docker_mode == "dind":
+        # True DinD: privileged so the container can run its own dockerd.
+        args.append("--privileged")
+    elif _env("AGENT_MOUNT_DOCKER_SOCKET", "1") != "0":
+        # Legacy DooD: mount the host Docker socket (shared daemon, potential conflicts).
         args.extend(["-v", "/var/run/docker.sock:/var/run/docker.sock"])
     network = _env("DOCKER_NETWORK")
     if network:
@@ -322,18 +349,26 @@ def main() -> None:
     project_ids = _project_ids()
     base_url = _base_url()
     default_image = _env("AGENT_IMAGE", "terarchitect-agent")
-    max_concurrent = int(_env("MAX_CONCURRENT_AGENTS", "1") or "1")
+    # env var is the startup default; the backend setting (set via UI) overrides it each poll cycle.
+    env_max_concurrent = max(1, int(_env("MAX_CONCURRENT_AGENTS", "1") or "1"))
     poll_interval = float(_env("POLL_INTERVAL_SEC", "10") or "10")
-    if max_concurrent < 1:
-        max_concurrent = 1
 
     running: List[threading.Thread] = []
+    docker_mode = _env("AGENT_DOCKER_MODE", "dind").lower()
     scope = f"projects={project_ids}" if project_ids else "all projects"
-    print(f"[coordinator] started; scope={scope}, default_image={default_image}, max_concurrent={max_concurrent}", flush=True)
+    # Fetch initial value (may differ from env if already set in the UI)
+    max_concurrent = fetch_max_concurrent(base_url, env_max_concurrent)
+    print(f"[coordinator] started; scope={scope}, default_image={default_image}, max_concurrent={max_concurrent}, docker_mode={docker_mode}", flush=True)
     print(f"[coordinator] state_dir={_state_dir()}, repo_root={_repo_root()}", flush=True)
     while True:
         # Reap finished threads
         running = [t for t in running if t.is_alive()]
+
+        # Re-read max_concurrent each cycle so UI changes take effect without restart
+        new_max = fetch_max_concurrent(base_url, env_max_concurrent)
+        if new_max != max_concurrent:
+            print(f"[coordinator] max_concurrent changed: {max_concurrent} → {new_max}", flush=True)
+            max_concurrent = new_max
 
         # Claim and start new jobs up to max_concurrent
         while len(running) < max_concurrent:

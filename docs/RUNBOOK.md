@@ -101,6 +101,7 @@ See comments in `coordinator/terarchitect-coordinator.service` for details.
 - **MAX_CONCURRENT_AGENTS** — Default 1. Increase to run multiple jobs in parallel.
 - **POLL_INTERVAL_SEC** — Default 10.
 - **AGENT_CACHE_VOLUME** — Default `terarchitect-agent-cache`. Named volume mounted at `/cache` in the agent so pip and npm reuse packages across runs. Set to empty to disable.
+- **AGENT_DOCKER_MODE** — Default `dind`. `dind`: each agent container runs its own isolated Docker daemon (requires kernel support for nested containers; coordinator adds `--privileged`). `dood`: mount host socket (legacy, shared daemon, unsafe for parallel jobs).
 - **COORDINATOR_STATE_DIR** — Default `~/.terarchitect/coordinator`. Holds `project_images.json` (project_id → image tag). When a Docker run succeeds for a project, that image is saved so the next job for that project uses it.
 - **COORDINATOR_REPO_ROOT** — Repo root path (for direct agent run when Docker fails). Default: parent of coordinator package. Set if you install elsewhere (e.g. systemd override).
 
@@ -116,7 +117,16 @@ Build from repo root:
 docker build -f Dockerfile.agent -t terarchitect-agent .
 ```
 
-The image includes the Director, standalone runner, OpenCode (HTTP server started by entrypoint), Node.js 20 (for `npm install` / `npm test` in project repos), and **Docker CLI** (for `docker build`, `docker compose`, and integration tests). It uses `/cache` for pip/npm caches. The coordinator mounts a volume at `/cache` by default (`terarchitect-agent-cache`) and **mounts the host Docker socket** at `/var/run/docker.sock` so the agent can run Docker commands (Docker-out-of-Docker). Set **AGENT_MOUNT_DOCKER_SOCKET=0** to disable the socket mount (e.g. if using a [docker:dind](https://hub.docker.com/_/docker) sidecar and `DOCKER_HOST`). It does **not** include Aider, Claude Code, Gemini, or Codex; to use those, extend the image or run the agent on a host where those CLIs are installed.
+The image includes the Director, standalone runner, OpenCode (HTTP server started by entrypoint), Claude Code CLI, Node.js 20 (for `npm install` / `npm test` in project repos), and the full **Docker daemon + CLI** (for `docker build`, `docker compose`, and integration tests inside each agent container).
+
+**Docker isolation mode (`AGENT_DOCKER_MODE`):**
+
+| Mode | How it works | When to use |
+|------|-------------|-------------|
+| `dind` (**default**) | Each agent container runs its own isolated `dockerd` (started by the entrypoint). The coordinator adds `--privileged` to `docker run`. Concurrent agents never conflict on container names, ports, or networks. | Recommended for all new deployments. Requires a host kernel that supports nested overlay2 (standard Linux ≥ 4.0). |
+| `dood` | Mounts the host Docker socket (`/var/run/docker.sock`) — all agents share one daemon. Set `AGENT_MOUNT_DOCKER_SOCKET=0` together with `DOCKER_HOST` to point to an external sidecar. | Legacy / hosts where `--privileged` is not allowed. Only safe with `MAX_CONCURRENT_AGENTS=1`. |
+
+Set `AGENT_DOCKER_MODE=dood` on the coordinator to revert to the old socket-mount behaviour.
 
 OpenCode worker env (`WORKER_LLM_URL`, `WORKER_MODEL`, `WORKER_API_KEY`) can be set in the app Settings (sent via worker-context) or passed by the coordinator into the container.
 

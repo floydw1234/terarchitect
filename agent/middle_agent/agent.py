@@ -193,6 +193,10 @@ class MiddleAgent:
         self.agent_model = (get_setting_or_env("AGENT_MODEL") or "Qwen/Qwen3-Coder-Next-FP8").strip()
         self.agent_api_key = (get_setting_or_env("AGENT_API_KEY") or "").strip() or None
 
+        # Worker mode: "opencode" (default) or "claude-code" (Claude Code CLI headless).
+        raw_worker_mode = (get_setting_or_env("WORKER_MODE") or "opencode").strip().lower()
+        self.worker_mode: str = raw_worker_mode if raw_worker_mode in ("opencode", "claude-code") else "opencode"
+
         # OpenCode worker: model, LLM URL. WORKER_LLM_URL defaults to http://localhost:8080/v1.
         self.worker_provider_id = "terarchitect-proxy"
         worker_llm_url = (get_setting_or_env("WORKER_LLM_URL") or "").strip()
@@ -225,6 +229,9 @@ class MiddleAgent:
             self.agent_model = (settings.get("AGENT_MODEL") or "").strip()
         if "AGENT_API_KEY" in settings:
             self.agent_api_key = (settings.get("AGENT_API_KEY") or "").strip() or None
+        if settings.get("WORKER_MODE"):
+            raw = settings["WORKER_MODE"].strip().lower()
+            self.worker_mode = raw if raw in ("opencode", "claude-code") else "opencode"
         worker_url = (settings.get("WORKER_LLM_URL") or "").strip().rstrip("/")
         if worker_url and not self._env_has_container_url("WORKER_LLM_URL"):
             self.worker_llm_url = worker_url if worker_url.endswith("/v1") else f"{worker_url}/v1"
@@ -1116,6 +1123,64 @@ class MiddleAgent:
             out.append(copy)
         return out
 
+    def _call_claude_code_worker(
+        self,
+        prompt: str,
+        session_id: str,
+        project_path: Optional[str] = None,
+        resume: bool = False,
+    ) -> dict:
+        """Invoke Claude Code CLI in headless mode (-p flag) as the worker.
+        Uses WORKER_API_KEY as ANTHROPIC_API_KEY. Sessions are continued via --resume <session_id>."""
+        cmd = ["claude", "-p", prompt, "--output-format", "json", "--allowedTools", "Bash,Read,Edit,Write,MultiEdit,Glob,Grep,LS"]
+        worker_session_id = self._worker_sessions.get(session_id)
+        if resume and worker_session_id:
+            cmd.extend(["--resume", worker_session_id])
+        env = dict(os.environ)
+        if self.worker_api_key and self.worker_api_key != "dummy":
+            env["ANTHROPIC_API_KEY"] = self.worker_api_key
+        cwd = project_path if (project_path and os.path.isdir(project_path)) else None
+        self._debug_log(f"Claude Code CLI: cwd={cwd!r}, resume={worker_session_id!r}")
+        try:
+            r = subprocess.run(
+                cmd,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=self.worker_timeout_sec,
+                env=env,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise WorkerUnavailableError(
+                f"Claude Code timed out after {self.worker_timeout_sec}s",
+                cause=e,
+            ) from e
+        except FileNotFoundError as e:
+            raise WorkerUnavailableError(
+                "claude CLI not found. Install Claude Code (npm install -g @anthropic-ai/claude-code) in the agent image.",
+                cause=e,
+            ) from e
+        if r.returncode != 0:
+            err_detail = (r.stderr or r.stdout or "")[:1000]
+            raise WorkerUnavailableError(
+                f"Claude Code exited with code {r.returncode}: {err_detail}",
+                cause=None,
+            )
+        try:
+            data = json.loads(r.stdout)
+        except (json.JSONDecodeError, ValueError):
+            return {"output": r.stdout.strip(), "error": "", "return_code": 0}
+        new_session_id = (data.get("session_id") or "").strip()
+        if new_session_id:
+            self._worker_sessions[session_id] = new_session_id
+            self._worker_turn_count[session_id] = self._worker_turn_count.get(session_id, 0) + 1
+        output = (data.get("result") or "").strip()
+        if not output and self.debug:
+            self._debug_log(f"Claude Code response empty; keys={list(data.keys())!r}")
+        if session_id and project_path:
+            self._trace_log(session_id, f"Claude Code response len={len(output)}", project_path)
+        return {"output": output, "error": "", "return_code": 0}
+
     def _send_to_worker(
         self,
         prompt: str,
@@ -1123,10 +1188,13 @@ class MiddleAgent:
         project_path: Optional[str] = None,
         resume: bool = False,
     ) -> dict:
-        """Send a prompt to OpenCode via HTTP API. Routes per https://opencode.ai/docs/server:
-        POST /session (body: title), POST /session/:id/summarize (body: providerID, modelID),
-        POST /session/:id/message (body: parts, model). Directory via query or x-opencode-directory header.
-        """
+        """Send a prompt to the configured worker. Dispatches to OpenCode (HTTP) or Claude Code (CLI) based on worker_mode."""
+        if self.worker_mode == "claude-code":
+            return self._call_claude_code_worker(prompt, session_id, project_path, resume)
+        # --- OpenCode HTTP server ---
+        # Routes per https://opencode.ai/docs/server:
+        # POST /session (body: title), POST /session/:id/summarize (body: providerID, modelID),
+        # POST /session/:id/message (body: parts, model). Directory via query or x-opencode-directory header.
         base = self._opencode_server_url.rstrip("/")
         timeout_sec = self.worker_timeout_sec
         local_model_name = self.worker_model
