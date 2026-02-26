@@ -38,7 +38,7 @@ def get_hipporag_kwargs() -> Dict[str, Any]:
     if llm_url and not llm_url.endswith("/v1"):
         llm_url = f"{llm_url}/v1"
     llm_model = get_setting_or_env("MEMORY_LLM_MODEL") or get_setting_or_env("AGENT_MODEL") or "gpt-4o-mini"
-    emb_model = get_setting_or_env("MEMORY_EMBEDDING_MODEL", "text-embedding-mpnet") or "text-embedding-mpnet"
+    emb_model = get_setting_or_env("MEMORY_EMBEDDING_MODEL", "text-embedding-3-small") or "text-embedding-3-small"
     emb_url = (get_setting_or_env("MEMORY_EMBEDDING_BASE_URL") or get_setting_or_env("EMBEDDING_SERVICE_URL") or "").strip().rstrip("/")
     memory_api_key = (
         get_setting_or_env("MEMORY_LLM_API_KEY")

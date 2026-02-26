@@ -15,14 +15,16 @@ services:
       context: .
       dockerfile: Dockerfile.backend
     container_name: terarchitect-backend
-    network_mode: host
+    ports:
+      - "5010:5010"
     environment:
-      # host network: use host ports (postgres published as 5433, backend will bind 5010)
-      DATABASE_URL: postgresql://terarchitect:terarchitect@localhost:5433/terarchitect
-      POSTGRES_HOST: localhost
-      POSTGRES_PORT: "5433"
+      # Bridge network: reach postgres by service name on its internal port
+      DATABASE_URL: postgresql://terarchitect:terarchitect@postgres:5432/terarchitect
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
       MEMORY_SAVE_DIR: /tmp/terarchitect
-      EMBEDDING_SERVICE_URL: http://localhost:9009
+      # EMBEDDING_SERVICE_URL: leave blank to use OpenAI directly, or set to any OpenAI-compatible endpoint
+      # (e.g. a local vLLM/Ollama server). Configure EMBEDDING_API_KEY and MEMORY_EMBEDDING_MODEL in Settings.
     depends_on:
       postgres:
         condition: service_healthy

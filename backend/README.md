@@ -36,9 +36,9 @@ flask run --host=0.0.0.0 --port=5010
 | `MIDDLE_AGENT_DEBUG` | Set to `1` to log agent activity |
 | `MEMORY_SAVE_DIR` | Directory for HippoRAG project memory (default: `/tmp/terarchitect`; not configurable via UI) |
 | `MEMORY_LLM_MODEL` | LLM for HippoRAG OpenIE (default: `gpt-4o-mini`) |
-| `MEMORY_EMBEDDING_MODEL` | Embedding model (default: `text-embedding-mpnet` for minimal HippoRAG) |
-| `MEMORY_LLM_BASE_URL` | Optional LLM base URL (e.g. vLLM) |
-| `MEMORY_EMBEDDING_BASE_URL` | Optional embedding service URL |
+| `MEMORY_EMBEDDING_MODEL` | Embedding model name (default: `text-embedding-3-small`). Any model supported by your endpoint. |
+| `MEMORY_LLM_BASE_URL` | Optional LLM base URL for OpenIE (leave blank to use OpenAI directly via `OPENAI_API_KEY`). |
+| `MEMORY_EMBEDDING_BASE_URL` | Optional embedding base URL (leave blank to use OpenAI directly, or set to any OpenAI-compatible endpoint). |
 
 ## Project memory (HippoRAG)
 
@@ -50,22 +50,21 @@ When `MEMORY_SAVE_DIR` is set, the API exposes locked read/write memory per proj
 
 Uses the bundled **hipporag_minimal** in `backend/hipporag_minimal` (no torch/vllm; uses your vLLM + embedding service via HTTP). Dependencies are in `requirements.txt`. One HippoRAG instance per project; a lock per project prevents concurrent writes from corrupting files.
 
-The backend also exposes **OpenAI-compatible embeddings** at **POST /v1/embeddings** so HippoRAG can use the existing embedding service: send `{"input": ["text1", ...], "model": "text-embedding-mpnet"}` (or `"model": "mpnet-multilingual"`); the route forwards to the embedding service and returns OpenAI-shaped `{"data": [{"embedding": [...]}, ...]}`. Set `MEMORY_EMBEDDING_BASE_URL=http://localhost:5010/v1` when running the backend so HippoRAG calls this adapter.
+The backend also exposes **OpenAI-compatible embeddings** at **POST /v1/embeddings**: send `{"input": ["text1", ...], "model": "text-embedding-3-small"}`; the route forwards to the configured embedding endpoint (real OpenAI or any OpenAI-compatible service) and returns `{"data": [{"embedding": [...]}, ...]}`. Set `MEMORY_EMBEDDING_BASE_URL=http://localhost:5010/v1` if you want HippoRAG to route through this backend adapter rather than calling the embedding service directly.
 
 ### Testing HippoRAG memory
 
-Integration test uses your vLLM (for OpenIE) and the embedding service (via the /v1/embeddings adapter):
+Integration test uses an OpenAI-compatible LLM (for OpenIE) and an OpenAI-compatible embedding endpoint:
 
-1. Start embedding service (e.g. port 9009), vLLM (e.g. port 8000), and Postgres.
-2. From `backend/` run:
+1. Set `OPENAI_API_KEY` (uses real OpenAI for both), or configure local endpoints (see test file docstring).
+2. Start Postgres (via `docker compose up -d postgres`).
+3. From `backend/` run:
 
    ```bash
-   MEMORY_SAVE_DIR=/tmp/terarchitect_memory_test python -m pytest tests/test_memory_hipporag.py -v -s
+   OPENAI_API_KEY=sk-... MEMORY_SAVE_DIR=/tmp/terarchitect_memory_test python -m pytest tests/test_memory_hipporag.py -v -s
    ```
 
-   Override URLs if needed: `EMBEDDING_SERVICE_URL=http://localhost:9009` `MEMORY_LLM_BASE_URL=http://localhost:8000/v1` `MEMORY_LLM_MODEL=your/vllm-model`.
-
-3. `test_01_embedding_adapter` checks the OpenAI-compatible adapter (no external services). `test_02_memory_index_and_retrieve` is skipped unless embedding service and vLLM are reachable; it creates a project, indexes docs, retrieves, and asserts relevance.
+4. `test_01_embedding_adapter` verifies the `/v1/embeddings` adapter. `test_02_memory_index_and_retrieve` is skipped unless both embedding and LLM are reachable; it indexes docs and asserts retrieval relevance.
 
 ## Execution (coordinator + agent image)
 

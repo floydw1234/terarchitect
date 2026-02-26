@@ -1,19 +1,29 @@
 """
 Integration test for HippoRAG-backed project memory.
 
-Uses your vLLM for the LLM (OpenIE) and the existing embedding service for
-embeddings (via the backend's OpenAI-compatible /v1/embeddings adapter).
+Uses an OpenAI-compatible LLM for OpenIE and an OpenAI-compatible embedding service.
+Both can be real OpenAI (set OPENAI_API_KEY) or any compatible local endpoint
+(e.g. vLLM/Ollama — set EMBEDDING_SERVICE_URL and MEMORY_LLM_BASE_URL).
 
-Prerequisites (must be running):
-  - Embedding service at EMBEDDING_SERVICE_URL (default http://localhost:9009)
-  - vLLM at MEMORY_LLM_BASE_URL (default http://localhost:8000/v1)
-  - Postgres (for project creation)
+Prerequisites:
+  - Embedding: set OPENAI_API_KEY (uses OpenAI directly) OR
+                set EMBEDDING_SERVICE_URL to an OpenAI-compatible endpoint.
+  - LLM (OpenIE): set OPENAI_API_KEY (uses OpenAI directly) OR
+                   set MEMORY_LLM_BASE_URL + MEMORY_LLM_MODEL to a local vLLM endpoint.
+  - Postgres (for project creation).
 
-Run from repo root:
-  cd backend && MEMORY_SAVE_DIR=/tmp/terarchitect_memory_test python -m pytest tests/test_memory_hipporag.py -v -s
+Run from backend/:
+  OPENAI_API_KEY=sk-... MEMORY_SAVE_DIR=/tmp/terarchitect_memory_test python -m pytest tests/test_memory_hipporag.py -v -s
 
-Or with env for ports:
-  EMBEDDING_SERVICE_URL=http://localhost:9009 MEMORY_LLM_BASE_URL=http://localhost:8000/v1 MEMORY_SAVE_DIR=/tmp/terarchitect_memory_test python -m pytest tests/test_memory_hipporag.py -v -s
+Or with a local LLM + OpenAI embeddings:
+  OPENAI_API_KEY=sk-... MEMORY_LLM_BASE_URL=http://localhost:8000/v1 MEMORY_LLM_MODEL=your-model \\
+    MEMORY_SAVE_DIR=/tmp/terarchitect_memory_test python -m pytest tests/test_memory_hipporag.py -v -s
+
+Or fully local (local LLM + local embedding service):
+  EMBEDDING_SERVICE_URL=http://localhost:11434/v1 EMBEDDING_API_KEY=... \\
+    MEMORY_EMBEDDING_MODEL=nomic-embed-text \\
+    MEMORY_LLM_BASE_URL=http://localhost:8000/v1 MEMORY_LLM_MODEL=your-model \\
+    MEMORY_SAVE_DIR=/tmp/terarchitect_memory_test python -m pytest tests/test_memory_hipporag.py -v -s
 """
 import os
 import sys
@@ -30,9 +40,9 @@ if _BASE_DIR not in sys.path:
 
 os.environ.setdefault("MEMORY_SAVE_DIR", tempfile.mkdtemp(prefix="terarchitect_memory_test_"))
 os.environ.setdefault("MEMORY_EMBEDDING_BASE_URL", f"http://127.0.0.1:{_TEST_PORT}/v1")
-os.environ.setdefault("MEMORY_EMBEDDING_MODEL", "text-embedding-mpnet")
+os.environ.setdefault("MEMORY_EMBEDDING_MODEL", "text-embedding-3-small")
 os.environ.setdefault("MEMORY_LLM_BASE_URL", "http://localhost:8000/v1")
-os.environ.setdefault("MEMORY_LLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")  # adjust to your vLLM model
+os.environ.setdefault("MEMORY_LLM_MODEL", "gpt-4o-mini")
 
 import requests
 
@@ -51,19 +61,45 @@ def _wait_for_url(url: str, timeout: float = 10.0, interval: float = 0.3) -> boo
 
 
 def _embedding_available() -> bool:
-    url = os.environ.get("EMBEDDING_SERVICE_URL", "http://localhost:9009").rstrip("/") + "/health"
-    try:
-        return requests.get(url, timeout=2).status_code == 200
-    except Exception:
-        return False
+    """Return True if embedding is configured (OpenAI key set) or a local service responds."""
+    openai_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    embedding_key = (os.environ.get("EMBEDDING_API_KEY") or "").strip()
+    embedding_url = (os.environ.get("EMBEDDING_SERVICE_URL") or "").strip()
+
+    # Real OpenAI: just check the key is present
+    if openai_key and openai_key != "sk-":
+        return True
+    if embedding_key:
+        return True
+
+    # Local service: try a /health or /v1/models endpoint
+    if embedding_url:
+        for path in ("/health", "/v1/models"):
+            try:
+                r = requests.get(embedding_url.rstrip("/") + path, timeout=2)
+                if r.status_code == 200:
+                    return True
+            except Exception:
+                pass
+
+    return False
 
 
 def _vllm_available() -> bool:
-    url = (os.environ.get("MEMORY_LLM_BASE_URL", "http://localhost:8000/v1")).rstrip("/").replace("/v1", "") + "/health"
-    try:
-        return requests.get(url, timeout=2).status_code == 200
-    except Exception:
-        return False
+    """Return True if the LLM for OpenIE is reachable (or OpenAI key is set)."""
+    openai_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    if openai_key and openai_key != "sk-":
+        return True
+    llm_url = (os.environ.get("MEMORY_LLM_BASE_URL", "http://localhost:8000/v1")).rstrip("/")
+    base = llm_url.replace("/v1", "")
+    for path in ("/health", "/v1/models"):
+        try:
+            r = requests.get(base + path, timeout=2)
+            if r.status_code == 200:
+                return True
+        except Exception:
+            pass
+    return False
 
 
 class TestMemoryHippoRAG(unittest.TestCase):
@@ -85,12 +121,14 @@ class TestMemoryHippoRAG(unittest.TestCase):
         if not _wait_for_url(f"http://127.0.0.1:{_TEST_PORT}/health", timeout=15):
             raise RuntimeError("Backend did not start in time")
 
+    @unittest.skipUnless(_embedding_available(), "No embedding configured (set OPENAI_API_KEY or EMBEDDING_SERVICE_URL)")
     def test_01_embedding_adapter(self):
         """OpenAI-compatible adapter returns embeddings."""
+        model = os.environ.get("MEMORY_EMBEDDING_MODEL", "text-embedding-3-small")
         base = f"http://127.0.0.1:{_TEST_PORT}/v1"
         r = requests.post(
             f"{base}/embeddings",
-            json={"input": ["hello world"], "model": "text-embedding-mpnet"},
+            json={"input": ["hello world"], "model": model},
             timeout=10,
         )
         self.assertEqual(r.status_code, 200, r.text)
@@ -102,10 +140,10 @@ class TestMemoryHippoRAG(unittest.TestCase):
         self.assertIsInstance(emb, list)
         self.assertGreater(len(emb), 0)
 
-    @unittest.skipUnless(_embedding_available(), "Embedding service not running (e.g. http://localhost:9009/health)")
-    @unittest.skipUnless(_vllm_available(), "vLLM not running (e.g. http://localhost:8000/health)")
+    @unittest.skipUnless(_embedding_available(), "No embedding configured (set OPENAI_API_KEY or EMBEDDING_SERVICE_URL)")
+    @unittest.skipUnless(_vllm_available(), "No LLM configured for OpenIE (set OPENAI_API_KEY or MEMORY_LLM_BASE_URL)")
     def test_02_memory_index_and_retrieve(self):
-        """Create project, index docs, retrieve; HippoRAG uses vLLM + embedding service."""
+        """Create project, index docs, retrieve; HippoRAG uses configured LLM + embedding."""
         base = f"http://127.0.0.1:{_TEST_PORT}/api"
         # Create project
         r = requests.post(
@@ -118,7 +156,7 @@ class TestMemoryHippoRAG(unittest.TestCase):
 
         docs = [
             "The backend runs on Flask and uses PostgreSQL.",
-            "The embedding service runs on port 9009 and returns 768-dimensional vectors.",
+            "The embedding model converts text into dense vector representations.",
             "HippoRAG builds a knowledge graph and uses Personalized PageRank for retrieval.",
         ]
         # Index
@@ -133,7 +171,7 @@ class TestMemoryHippoRAG(unittest.TestCase):
         # Retrieve
         r = requests.post(
             f"{base}/projects/{project_id}/memory/retrieve",
-            json={"queries": ["Where does the embedding service run?"], "num_to_retrieve": 2},
+            json={"queries": ["How are texts converted to vectors?"], "num_to_retrieve": 2},
             timeout=60,
         )
         self.assertEqual(r.status_code, 200, r.text)
@@ -143,11 +181,10 @@ class TestMemoryHippoRAG(unittest.TestCase):
         self.assertIn("question", results[0])
         retrieved = results[0]["docs"]
         self.assertGreater(len(retrieved), 0, "Should retrieve at least one passage")
-        # Should surface the sentence about port 9009
         combined = " ".join(retrieved).lower()
         self.assertTrue(
-            "9009" in combined or "embedding" in combined or "port" in combined,
-            f"Retrieved docs should be relevant to embedding service; got: {retrieved}",
+            "embedding" in combined or "vector" in combined or "text" in combined,
+            f"Retrieved docs should be relevant to embeddings; got: {retrieved}",
         )
 
 
