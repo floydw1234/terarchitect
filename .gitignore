@@ -1,5 +1,7 @@
 training/data/
 
+testenv
+
 # Python
 __pycache__/
 *.py[cod]
