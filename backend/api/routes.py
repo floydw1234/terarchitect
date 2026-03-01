@@ -32,6 +32,11 @@ from utils.app_settings_crypto import is_encryption_available
 
 api_bp = Blueprint("api", __name__)
 
+# Invisible HTML comment appended to all agent-posted PR comments.
+# Used to distinguish agent replies from human reviewer comments during PR polling,
+# since the agent and user may share the same GitHub token.
+BOT_COMMENT_SIGNATURE = "<!-- terarchitect-bot -->"
+
 # Worker-facing API: auth via Bearer token. Set TERARCHITECT_WORKER_API_KEY (Settings or env) to require auth; if unset, no auth (dev).
 def _require_worker_auth():
     """Return (None, None) if authorized, else (response, status_code) to return."""
@@ -428,6 +433,10 @@ def ticket_detail(project_id, ticket_id):
                 return jsonify({
                     "error": "Add at least one node to the graph before moving a ticket to In Progress.",
                 }), 400
+            if not get_value("github_agent_token"):
+                return jsonify({
+                    "error": "GitHub agent token is not set. Go to Settings and add a GitHub agent token (classic PAT with repo scope) so the agent can push branches and open PRs.",
+                }), 400
         if "column_id" in data:
             ticket.column_id = data["column_id"]
         if "title" in data:
@@ -478,11 +487,13 @@ def ticket_logs(project_id, ticket_id):
 
 # Keys sent to agent in worker-context (agent/worker/memory config). Sensitive values are decrypted.
 _AGENT_SETTINGS_KEYS = (
-    "VLLM_URL", "AGENT_MODEL", "AGENT_API_KEY",
+    "AGENT_PROVIDER", "AGENT_LLM_URL", "AGENT_MODEL", "AGENT_API_KEY",
     "WORKER_LLM_URL", "WORKER_MODEL", "WORKER_API_KEY", "WORKER_TIMEOUT_SEC", "MIDDLE_AGENT_DEBUG",
     "github_agent_token",
     "MEMORY_LLM_MODEL", "MEMORY_LLM_BASE_URL", "MEMORY_LLM_API_KEY",
-    "MEMORY_EMBEDDING_MODEL", "MEMORY_EMBEDDING_BASE_URL", "EMBEDDING_SERVICE_URL",
+    "EMBEDDING_PROVIDER", "EMBEDDING_SERVICE_URL", "EMBEDDING_API_KEY",
+    "MEMORY_EMBEDDING_MODEL", "MEMORY_EMBEDDING_BASE_URL",
+    "openai_api_key",
 )
 
 
@@ -976,6 +987,16 @@ def app_settings_put():
         return jsonify({"error": str(e)}), 500
 
 
+@api_bp.route("/settings/check", methods=["GET"])
+def app_settings_check():
+    """Return which required settings are missing and which are warnings.
+    Used by the frontend to show setup guidance without exposing secret values.
+    Response: { ready: bool, missing_required: [{key, label, reason}], warnings: [{key, label, reason}] }
+    """
+    from utils.settings_check import compute_settings_check
+    return jsonify(compute_settings_check())
+
+
 @api_bp.route("/projects/<uuid:project_id>/notes", methods=["GET", "POST"])
 def notes(project_id):
     """List notes or create a new one."""
@@ -1314,28 +1335,10 @@ def _mark_pr_comment_addressed(project_id, pr_number, github_comment_id):
             db.session.rollback()
 
 
-def _gh_current_login():
-    """Return the login of the agent's GitHub user (same token used for PRs and PR comments). We ignore comments from this user to avoid replying to ourselves."""
-    try:
-        env = {**os.environ, **get_gh_env_for_agent()}
-        r = subprocess.run(
-            ["gh", "api", "user", "-q", ".login"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            env=env,
-        )
-        if r.returncode == 0 and r.stdout:
-            return r.stdout.strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-    return None
-
 
 def _poll_pr_review_comments():
     """Check PRs in review for new comments via gh CLI and trigger review agent for new ones. Call with app context."""
     repo_slug = _repo_slug_from_github_url
-    gh_login = _gh_current_login()
     # Tickets in_review with a PR
     prs_in_review = list(
         db.session.query(PR, Ticket, Project)
@@ -1479,38 +1482,38 @@ def _poll_pr_review_comments():
         except Exception:
             db.session.rollback()
             continue
-        # Mark our own (bot) comments as addressed so we never respond to ourselves. If we don't
-        # know gh_login we can't tell; skip triggering for this PR to avoid a self-reply loop.
-        if gh_login:
-            our_comments = PRReviewComment.query.filter_by(
-                project_id=project.id,
-                pr_number=pr_number,
-                author_login=gh_login,
-            ).filter(PRReviewComment.addressed_at.is_(None)).all()
-            for row in our_comments:
-                row.addressed_at = _dt.utcnow()
-                row.updated_at = _dt.utcnow()
-            if our_comments:
-                try:
-                    db.session.commit()
-                except Exception:
-                    db.session.rollback()
-        else:
-            current_app.logger.info(
-                "PR poll: gh_login unknown for %s PR #%s, skipping trigger to avoid replying to own comments",
-                project.id, pr_number,
+        # Mark bot-posted comments as addressed so we never respond to our own replies.
+        # We identify bot comments by the BOT_COMMENT_SIGNATURE embedded in the body,
+        # which is more reliable than login-based filtering when agent and user share a token.
+        our_comments = PRReviewComment.query.filter(
+            PRReviewComment.project_id == project.id,
+            PRReviewComment.pr_number == pr_number,
+            PRReviewComment.body.contains(BOT_COMMENT_SIGNATURE),
+            PRReviewComment.addressed_at.is_(None),
+        ).all()
+        for row in our_comments:
+            row.addressed_at = _dt.utcnow()
+            row.updated_at = _dt.utcnow()
+        if our_comments:
+            try:
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+        # Trigger only for the single most recent unaddressed human comment (no bot signature)
+        next_comment = (
+            PRReviewComment.query.filter(
+                PRReviewComment.project_id == project.id,
+                PRReviewComment.pr_number == pr_number,
+                PRReviewComment.addressed_at.is_(None),
+                PRReviewComment.body.isnot(None),
+                PRReviewComment.body != "",
+                ~PRReviewComment.body.contains(BOT_COMMENT_SIGNATURE),
             )
-        # Trigger only for the single most recent unaddressed comment from a human (not our bot)
-        q = (
-            PRReviewComment.query.filter_by(project_id=project.id, pr_number=pr_number)
-            .filter(PRReviewComment.addressed_at.is_(None))
-            .filter(PRReviewComment.body.isnot(None))
-            .filter(PRReviewComment.body != "")
+            .order_by(nullslast(PRReviewComment.comment_created_at.desc()))
+            .limit(1)
+            .first()
         )
-        if gh_login:
-            q = q.filter(db.or_(PRReviewComment.author_login.is_(None), PRReviewComment.author_login != gh_login))
-        next_comment = q.order_by(nullslast(PRReviewComment.comment_created_at.desc())).limit(1).first()
-        if next_comment and gh_login:
+        if next_comment:
             _enqueue_review_job(
                 ticket.id,
                 next_comment.body,

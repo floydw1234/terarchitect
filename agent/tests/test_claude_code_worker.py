@@ -19,9 +19,10 @@ def _make_agent(env_overrides: dict | None = None):
     from middle_agent.agent import MiddleAgent
 
     env = {
-        "WORKER_MODE": "opencode",  # safe default; tests override via env_overrides
-        "VLLM_URL": "http://localhost:8000",
+        "WORKER_MODE": "opencode",  # explicit; tests override via env_overrides
+        "AGENT_LLM_URL": "http://localhost:8000",
         "WORKER_LLM_URL": "http://localhost:8080/v1",
+        "WORKER_MODEL": "gpt-4o",
         "WORKER_API_KEY": "dummy",
     }
     if env_overrides:
@@ -42,9 +43,9 @@ class TestWorkerModeInit(unittest.TestCase):
         agent = _make_agent({"WORKER_MODE": "claude-code"})
         self.assertEqual(agent.worker_mode, "claude-code")
 
-    def test_invalid_mode_falls_back_to_opencode(self):
+    def test_invalid_mode_falls_back_to_claude_code(self):
         agent = _make_agent({"WORKER_MODE": "unknown-mode"})
-        self.assertEqual(agent.worker_mode, "opencode")
+        self.assertEqual(agent.worker_mode, "claude-code")
 
     def test_apply_agent_settings_updates_worker_mode(self):
         agent = _make_agent({"WORKER_MODE": "opencode"})
@@ -54,7 +55,7 @@ class TestWorkerModeInit(unittest.TestCase):
     def test_apply_agent_settings_rejects_invalid_mode(self):
         agent = _make_agent({"WORKER_MODE": "opencode"})
         agent._apply_agent_settings({"WORKER_MODE": "bad-value"})
-        self.assertEqual(agent.worker_mode, "opencode")
+        self.assertEqual(agent.worker_mode, "claude-code")
 
 
 class TestClaudeCodeWorkerDispatch(unittest.TestCase):
@@ -177,6 +178,22 @@ class TestClaudeCodeWorkerDispatch(unittest.TestCase):
             self.assertIn("--output-format", cmd)
             self.assertIn("json", cmd)
             self.assertIn("--allowedTools", cmd)
+
+    def test_claude_code_passes_model_flag_when_set(self):
+        agent = _make_agent({"WORKER_MODE": "claude-code", "WORKER_API_KEY": "sk-ant-test", "WORKER_MODEL": "claude-opus-4-5"})
+        with patch("subprocess.run", return_value=self._mock_success()) as mock_run:
+            agent._call_claude_code_worker("prompt", "sess1", project_path=None, resume=False)
+            cmd = mock_run.call_args[0][0]
+            self.assertIn("--model", cmd)
+            model_idx = cmd.index("--model")
+            self.assertEqual(cmd[model_idx + 1], "claude-opus-4-5")
+
+    def test_claude_code_no_model_flag_when_unset(self):
+        agent = _make_agent({"WORKER_MODE": "claude-code", "WORKER_API_KEY": "sk-ant-test", "WORKER_MODEL": ""})
+        with patch("subprocess.run", return_value=self._mock_success()) as mock_run:
+            agent._call_claude_code_worker("prompt", "sess1", project_path=None, resume=False)
+            cmd = mock_run.call_args[0][0]
+            self.assertNotIn("--model", cmd)
 
 
 if __name__ == "__main__":

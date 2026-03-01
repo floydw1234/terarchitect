@@ -39,7 +39,7 @@ If you’ve ever wanted “Kanban → PRs” with guardrails, this is it.
 - **Coordinator**: Python (host process) + `requests`
 - **Agent image**: Python runner + **OpenCode** (server mode) + **Claude Code** (headless CLI) + Node 20 (for `npm test` in target repos) + Docker daemon (full DinD — each container has its own isolated daemon)
 
-LLM endpoints are configurable via Settings/env (Director model via `VLLM_URL`, Worker model via `WORKER_LLM_URL`, etc.). See `backend/README.md` and `docs/RUNBOOK.md`.
+LLM endpoints are configurable via Settings/env (Director model via `AGENT_LLM_URL`, Worker model via `WORKER_LLM_URL`, etc.). See `backend/README.md` and `docs/RUNBOOK.md`.
 
 ---
 

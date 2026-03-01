@@ -44,7 +44,7 @@ def create_app():
             "pool_pre_ping": True,
             "pool_recycle": 300,
         },
-        VLLM_URL="http://host.docker.internal:8000",
+        AGENT_LLM_URL="",
         MEMORY_SAVE_DIR=memory_save_dir,
     )
 

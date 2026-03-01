@@ -26,7 +26,7 @@ flask run --host=0.0.0.0 --port=5010
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL (default: `postgresql://terarchitect:terarchitect@localhost:5433/terarchitect`, port 5433 to avoid conflict with other Postgres on 5432) |
-| `VLLM_URL` | vLLM server for Agent/Director (default: http://localhost:8000). Agent API is `{VLLM_URL}/v1/chat/completions`. |
+| `AGENT_LLM_URL` | Base URL for the Director LLM (e.g. https://api.openai.com or http://your-host:8000). No default — must be explicitly configured. Agent API is `{AGENT_LLM_URL}/v1/chat/completions`. |
 | `AGENT_MODEL` | Model name for agent API |
 | `AGENT_API_KEY` | API key (optional for vLLM) |
 | `WORKER_LLM_URL` | OpenCode worker LLM API base URL (default: http://localhost:8080/v1) |

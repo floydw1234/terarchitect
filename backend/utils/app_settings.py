@@ -12,7 +12,6 @@ from utils.app_settings_crypto import encrypt_value, decrypt_value, is_encryptio
 # openai_api_key: used as fallback for memory LLM (HippoRAG). anthropic_api_key: reserved for future Claude workers.
 ALLOWED_KEYS = frozenset({
     # GitHub (sensitive)
-    "github_user_token",
     "github_agent_token",
     # LLM / API keys (sensitive)
     "openai_api_key",
@@ -20,9 +19,11 @@ ALLOWED_KEYS = frozenset({
     "AGENT_API_KEY",
     "WORKER_API_KEY",
     "EMBEDDING_API_KEY",
-    # Agent
-    "VLLM_URL",
+    # Agent / Worker
+    "AGENT_PROVIDER",
+    "AGENT_LLM_URL",
     "AGENT_MODEL",
+    "EMBEDDING_PROVIDER",
     "WORKER_LLM_URL",
     "WORKER_MODEL",
     "WORKER_TIMEOUT_SEC",
@@ -45,17 +46,13 @@ ALLOWED_KEYS = frozenset({
     "MAX_CONCURRENT_AGENTS",
     # Worker-facing API (Phase 1: coordinator and agent containers)
     "TERARCHITECT_WORKER_API_KEY",
-    # Git identity for agent commits (optional; agent uses defaults if unset)
+    # Git identity for agent commits and all GitHub actions
     "GIT_USER_NAME",
     "GIT_USER_EMAIL",
-    # Git identity for dashboard/backend (gh CLI, UI PR actions; optional)
-    "GIT_DASHBOARD_USER_NAME",
-    "GIT_DASHBOARD_USER_EMAIL",
 })
 
 # Keys stored encrypted; rest stored plain (URLs, paths, model names, etc.)
 SENSITIVE_KEYS = frozenset({
-    "github_user_token",
     "github_agent_token",
     "openai_api_key",
     "anthropic_api_key",
@@ -193,18 +190,16 @@ def get_masked_status() -> dict:
 
 
 def get_gh_env_for_user() -> dict:
-    """Env dict for gh CLI when doing UI actions. Merge with os.environ. Empty if no token set."""
-    token = get_value("github_user_token")
-    if not token:
-        return {}
-    return {"GH_TOKEN": token, "GITHUB_TOKEN": token}
+    """Env dict for gh CLI when doing UI actions (PR polling, approve, merge, comment).
+    Uses the shared agent token — same token for both agent and UI actions."""
+    return get_gh_env_for_agent()
 
 
 def get_dashboard_git_env() -> dict:
-    """Git identity for dashboard/backend (gh CLI, UI). Backend in Docker may have no git config."""
+    """Git identity for dashboard/backend (gh CLI, UI). Uses the shared GIT_USER_NAME/GIT_USER_EMAIL."""
     out = {}
-    name = (get_setting_or_env("GIT_DASHBOARD_USER_NAME") or os.environ.get("GIT_DASHBOARD_USER_NAME") or "").strip()
-    email = (get_setting_or_env("GIT_DASHBOARD_USER_EMAIL") or os.environ.get("GIT_DASHBOARD_USER_EMAIL") or "").strip()
+    name = (get_setting_or_env("GIT_USER_NAME") or os.environ.get("GIT_USER_NAME") or "").strip()
+    email = (get_setting_or_env("GIT_USER_EMAIL") or os.environ.get("GIT_USER_EMAIL") or "").strip()
     if name:
         out["GIT_AUTHOR_NAME"] = out["GIT_COMMITTER_NAME"] = name
     if email:
@@ -234,7 +229,8 @@ def get_gh_env_for_agent() -> dict:
 # Setting keys to send to the agent container (from Settings UI / DB). Agent reads these via env.
 AGENT_ENV_KEYS = (
     "TERARCHITECT_WORKER_API_KEY",
-    "VLLM_URL",
+    "AGENT_PROVIDER",
+    "AGENT_LLM_URL",
     "AGENT_MODEL",
     "AGENT_API_KEY",
     "WORKER_MODE",
@@ -245,6 +241,10 @@ AGENT_ENV_KEYS = (
     "MIDDLE_AGENT_DEBUG",
     "GIT_USER_NAME",
     "GIT_USER_EMAIL",
+    "EMBEDDING_PROVIDER",
+    "EMBEDDING_SERVICE_URL",
+    "EMBEDDING_API_KEY",
+    "MEMORY_EMBEDDING_MODEL",
 )
 
 
@@ -257,4 +257,9 @@ def get_agent_env() -> dict:
         val = get_setting_or_env(key) or os.environ.get(key)
         if val is not None and str(val).strip():
             out[key] = str(val).strip()
+    # Map openai_api_key → OPENAI_API_KEY so the OpenAI SDK and embedding client
+    # find it in the standard env var name inside the agent container.
+    openai_key = get_setting_or_env("openai_api_key") or os.environ.get("openai_api_key")
+    if openai_key and str(openai_key).strip():
+        out["OPENAI_API_KEY"] = str(openai_key).strip()
     return out

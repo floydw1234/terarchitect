@@ -34,7 +34,7 @@ def get_hipporag_kwargs() -> Dict[str, Any]:
     except ImportError:
         get_setting_or_env = lambda k, d=None: os.environ.get(k, d)
     # Memory LLM: default to Agent's URL and model when not set. OpenAI client expects base_url to include /v1.
-    llm_url = (get_setting_or_env("MEMORY_LLM_BASE_URL") or get_setting_or_env("VLLM_URL") or "").strip().rstrip("/")
+    llm_url = (get_setting_or_env("MEMORY_LLM_BASE_URL") or get_setting_or_env("AGENT_LLM_URL") or "").strip().rstrip("/")
     if llm_url and not llm_url.endswith("/v1"):
         llm_url = f"{llm_url}/v1"
     llm_model = get_setting_or_env("MEMORY_LLM_MODEL") or get_setting_or_env("AGENT_MODEL") or "gpt-4o-mini"

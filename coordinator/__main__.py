@@ -179,9 +179,6 @@ def job_to_env(job: dict, for_docker: bool = False) -> dict:
         if job.get("github_comment_id") is not None:
             env["GITHUB_COMMENT_ID"] = str(job["github_comment_id"])
     if for_docker:
-        # Default worker LLM URL for container when backend doesn't send it (agent would otherwise use localhost:8080).
-        if not (env.get("WORKER_LLM_URL") or "").strip():
-            env["WORKER_LLM_URL"] = "http://host.docker.internal:8080/v1"
         # Inside container, localhost is the container. Rewrite any URL with localhost/127.0.0.1 so agent/worker reach host.
         for k, v in list(env.items()):
             if isinstance(v, str) and ("localhost" in v or "127.0.0.1" in v):

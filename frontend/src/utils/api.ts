@@ -346,6 +346,23 @@ export async function getSettings(): Promise<AppSettingsResponse> {
   return checkResponse<AppSettingsResponse>(response);
 }
 
+export interface SettingIssue {
+  key: string;
+  label: string;
+  reason: string;
+}
+
+export interface SettingsCheckResponse {
+  ready: boolean;
+  missing_required: SettingIssue[];
+  warnings: SettingIssue[];
+}
+
+export async function getSettingsCheck(): Promise<SettingsCheckResponse> {
+  const response = await fetch(`${API_URL}/api/settings/check`);
+  return checkResponse<SettingsCheckResponse>(response);
+}
+
 /** Body: include only keys to update. Empty string = clear that key. */
 export async function updateSettings(data: Record<string, string>): Promise<AppSettingsResponse> {
   const response = await fetch(`${API_URL}/api/settings`, {

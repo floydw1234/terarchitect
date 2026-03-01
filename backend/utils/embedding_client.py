@@ -21,13 +21,15 @@ def _get_client() -> OpenAI:
         from utils.app_settings import get_setting_or_env
         base_url = (get_setting_or_env("EMBEDDING_SERVICE_URL") or "").strip().rstrip("/") or None
         api_key = (get_setting_or_env("EMBEDDING_API_KEY") or "").strip() or None
+        if not api_key:
+            api_key = (get_setting_or_env("openai_api_key") or "").strip() or None
     except Exception:
         base_url = (os.environ.get("EMBEDDING_SERVICE_URL") or "").strip().rstrip("/") or None
         api_key = (os.environ.get("EMBEDDING_API_KEY") or "").strip() or None
 
-    # Fall back to OPENAI_API_KEY so real OpenAI works out of the box
+    # Fall back to OPENAI_API_KEY / openai_api_key so real OpenAI works out of the box
     if not api_key:
-        api_key = (os.environ.get("OPENAI_API_KEY") or "").strip() or None
+        api_key = (os.environ.get("OPENAI_API_KEY") or os.environ.get("openai_api_key") or "").strip() or None
 
     # openai SDK requires a non-empty api_key; use a placeholder for local services that don't check it
     effective_key = api_key or "sk-placeholder"
