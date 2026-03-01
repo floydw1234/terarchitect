@@ -12,7 +12,6 @@ from utils.app_settings_crypto import encrypt_value, decrypt_value, is_encryptio
 # openai_api_key: used as fallback for memory LLM (HippoRAG). anthropic_api_key: reserved for future Claude workers.
 ALLOWED_KEYS = frozenset({
     # GitHub (sensitive)
-    "github_user_token",
     "github_agent_token",
     # LLM / API keys (sensitive)
     "openai_api_key",
@@ -20,8 +19,10 @@ ALLOWED_KEYS = frozenset({
     "AGENT_API_KEY",
     "WORKER_API_KEY",
     "EMBEDDING_API_KEY",
-    # Agent
-    "VLLM_URL",
+    # Agent / Worker
+    "AGENT_PROVIDER",
+    "AGENT_LLM_URL",
+    "EMBEDDING_PROVIDER",
     "AGENT_MODEL",
     "WORKER_LLM_URL",
     "WORKER_MODEL",
@@ -45,7 +46,6 @@ ALLOWED_KEYS = frozenset({
 
 # Keys stored encrypted; rest stored plain (URLs, paths, model names, etc.)
 SENSITIVE_KEYS = frozenset({
-    "github_user_token",
     "github_agent_token",
     "openai_api_key",
     "anthropic_api_key",
@@ -183,11 +183,8 @@ def get_masked_status() -> dict:
 
 
 def get_gh_env_for_user() -> dict:
-    """Env dict for gh CLI when doing UI actions. Merge with os.environ. Empty if no token set."""
-    token = get_value("github_user_token")
-    if not token:
-        return {}
-    return {"GH_TOKEN": token, "GITHUB_TOKEN": token}
+    """Env dict for gh CLI when doing UI actions. Uses the shared agent token."""
+    return get_gh_env_for_agent()
 
 
 def get_gh_env_for_agent() -> dict:

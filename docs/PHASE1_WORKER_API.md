@@ -77,7 +77,7 @@ docker run --rm \
   terarchitect-agent
 ```
 
-**Required env:** `TICKET_ID`, `PROJECT_ID`, `TERARCHITECT_API_URL`, `REPO_URL`. Optional: `GITHUB_TOKEN` (for private repos and `gh pr create`), `TERARCHITECT_WORKER_API_KEY` (when app has worker API auth). Agent settings (VLLM_URL, WORKER_LLM_URL, WORKER_MODEL, etc.) are supplied by the worker-context response; override via env if needed.
+**Required env:** `TICKET_ID`, `PROJECT_ID`, `TERARCHITECT_API_URL`, `REPO_URL`. Optional: `GITHUB_TOKEN` (for private repos and `gh pr create`), `TERARCHITECT_WORKER_API_KEY` (when app has worker API auth). Agent settings (AGENT_LLM_URL, WORKER_LLM_URL, WORKER_MODEL, etc.) are supplied by the worker-context response; override via env if needed.
 
 Workspace in container: `/workspace` (clone and run happen there). Exit 0 = success; non-zero = failure (coordinator uses this to call jobs/complete or jobs/fail). For **review** jobs the container receives `JOB_KIND=review`, `PR_NUMBER`, `COMMENT_BODY` (and optionally `GITHUB_COMMENT_ID`) and runs `agent_runner review`.
 

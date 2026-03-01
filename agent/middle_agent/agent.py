@@ -14,6 +14,11 @@ from typing import Any, Dict, List, Optional, Protocol
 
 from utils.app_settings import get_gh_env_for_agent, get_setting_or_env
 
+# Invisible HTML comment appended to all agent-posted PR comments.
+# Must match the constant in backend/api/routes.py — used by the PR polling loop
+# to distinguish agent replies from human reviewer comments when both share the same token.
+BOT_COMMENT_SIGNATURE = "<!-- terarchitect-bot -->"
+
 
 class TicketLike(Protocol):
     """Minimal ticket interface for Director (no DB dependency). Used by process_ticket and process_ticket_review."""
@@ -187,23 +192,27 @@ class MiddleAgent:
         # Verbose debug logs (stderr + trace file) default on; set MIDDLE_AGENT_DEBUG=0 to disable.
         self.debug = (get_setting_or_env("MIDDLE_AGENT_DEBUG") or "1").lower() not in ("0", "false", "no", "off")
 
-        # Director/agent API (LLM used to assess completion and decide next prompts)
-        vllm_base = (get_setting_or_env("VLLM_URL") or "http://localhost:8000").rstrip("/")
-        self.agent_api_url = f"{vllm_base}/v1/chat/completions"
-        self.agent_model = (get_setting_or_env("AGENT_MODEL") or "Qwen/Qwen3-Coder-Next-FP8").strip()
+        # Director/agent API (LLM used to assess completion and decide next prompts).
+        # AGENT_LLM_URL is resolved from AGENT_PROVIDER when not explicitly set.
+        self.agent_provider = (get_setting_or_env("AGENT_PROVIDER") or "openai").strip().lower()
+        vllm_base = (get_setting_or_env("AGENT_LLM_URL") or "").strip().rstrip("/")
+        if not vllm_base and self.agent_provider == "openai":
+            vllm_base = "https://api.openai.com"
+        self.agent_api_url = f"{vllm_base}/v1/chat/completions" if vllm_base else ""
+        self.agent_model = (get_setting_or_env("AGENT_MODEL") or "").strip()
         self.agent_api_key = (get_setting_or_env("AGENT_API_KEY") or "").strip() or None
 
-        # Worker mode: "opencode" (default) or "claude-code" (Claude Code CLI headless).
-        raw_worker_mode = (get_setting_or_env("WORKER_MODE") or "opencode").strip().lower()
-        self.worker_mode: str = raw_worker_mode if raw_worker_mode in ("opencode", "claude-code") else "opencode"
+        # Worker mode: "claude-code" (default) or "opencode" (OpenCode CLI with HTTP LLM server).
+        raw_worker_mode = (get_setting_or_env("WORKER_MODE") or "claude-code").strip().lower()
+        self.worker_mode: str = raw_worker_mode if raw_worker_mode in ("opencode", "claude-code") else "claude-code"
 
-        # OpenCode worker: model, LLM URL. WORKER_LLM_URL defaults to http://localhost:8080/v1.
+        # OpenCode worker: model, LLM URL. No default URL — WORKER_LLM_URL must be configured.
         self.worker_provider_id = "terarchitect-proxy"
         worker_llm_url = (get_setting_or_env("WORKER_LLM_URL") or "").strip()
-        self.worker_llm_url = (worker_llm_url or "http://localhost:8080/v1").rstrip("/")
+        self.worker_llm_url = worker_llm_url.rstrip("/") if worker_llm_url else ""
         raw_worker_model = (get_setting_or_env("WORKER_MODEL") or "").strip()
-        self.worker_model = raw_worker_model or f"{self.worker_provider_id}/{self.agent_model}"
-        self.worker_api_key = (get_setting_or_env("WORKER_API_KEY") or "dummy").strip() or "dummy"
+        self.worker_model = raw_worker_model  # no default — must be explicitly configured
+        self.worker_api_key = (get_setting_or_env("WORKER_API_KEY") or "").strip() or None
         self.worker_timeout_sec: int = int(get_setting_or_env("WORKER_TIMEOUT_SEC") or "3600")
 
     def _env_has_container_url(self, key: str) -> bool:
@@ -212,18 +221,46 @@ class MiddleAgent:
 
     def _reapply_container_urls_from_env(self) -> None:
         """When running in Docker, env has host.docker.internal URLs. Ensure we use them (undo any overwrite from agent_settings)."""
-        vllm = (os.environ.get("VLLM_URL") or "").strip().rstrip("/")
+        vllm = (os.environ.get("AGENT_LLM_URL") or "").strip().rstrip("/")
         if vllm and "host.docker.internal" in vllm:
             self.agent_api_url = f"{vllm}/v1/chat/completions"
         worker = (os.environ.get("WORKER_LLM_URL") or "").strip().rstrip("/")
         if worker and "host.docker.internal" in worker:
             self.worker_llm_url = worker if worker.endswith("/v1") else f"{worker}/v1"
 
+    def _validate_config(self, project_id: uuid.UUID, ticket_id: uuid.UUID, session_id: str) -> bool:
+        """Fail fast with a clear log message if required settings are missing. Returns True if valid."""
+        errors = []
+        if not self.agent_api_url:
+            errors.append("AGENT_LLM_URL is not set — Director LLM has no URL. Set AGENT_PROVIDER=openai or provide AGENT_LLM_URL.")
+        if not self.agent_model:
+            errors.append("AGENT_MODEL is not set — Director LLM has no model to use.")
+        if self.worker_mode == "claude-code":
+            if not self.worker_api_key:
+                errors.append("WORKER_API_KEY (Anthropic) is not set — required for Claude Code mode.")
+        else:
+            if not self.worker_llm_url:
+                errors.append("WORKER_LLM_URL is not set — Worker LLM has no URL to connect to.")
+            if not self.worker_model:
+                errors.append("WORKER_MODEL is not set — required for OpenCode mode.")
+            if not self.worker_api_key:
+                errors.append("WORKER_API_KEY is not set — required for OpenCode mode (use 'dummy' for local LLMs that skip auth).")
+        if errors:
+            msg = "Agent misconfigured — cannot start:\n" + "\n".join(f"  • {e}" for e in errors)
+            self._debug_log(msg)
+            self._log(project_id, ticket_id, session_id, "misconfigured", msg)
+            return False
+        return True
+
     def _apply_agent_settings(self, settings: Dict[str, str]) -> None:
         """Apply agent_settings from worker-context (HTTP backend). Overrides instance URL/model/keys.
         When running in Docker, env may have host.docker.internal URLs; do not overwrite with backend's localhost."""
-        vllm_base = (settings.get("VLLM_URL") or "").strip().rstrip("/")
-        if vllm_base and not self._env_has_container_url("VLLM_URL"):
+        if settings.get("AGENT_PROVIDER"):
+            self.agent_provider = settings["AGENT_PROVIDER"].strip().lower()
+        vllm_base = (settings.get("AGENT_LLM_URL") or "").strip().rstrip("/")
+        if not vllm_base and self.agent_provider == "openai":
+            vllm_base = "https://api.openai.com"
+        if vllm_base and not self._env_has_container_url("AGENT_LLM_URL"):
             self.agent_api_url = f"{vllm_base}/v1/chat/completions"
         if settings.get("AGENT_MODEL"):
             self.agent_model = (settings.get("AGENT_MODEL") or "").strip()
@@ -231,14 +268,14 @@ class MiddleAgent:
             self.agent_api_key = (settings.get("AGENT_API_KEY") or "").strip() or None
         if settings.get("WORKER_MODE"):
             raw = settings["WORKER_MODE"].strip().lower()
-            self.worker_mode = raw if raw in ("opencode", "claude-code") else "opencode"
+            self.worker_mode = raw if raw in ("opencode", "claude-code") else "claude-code"
         worker_url = (settings.get("WORKER_LLM_URL") or "").strip().rstrip("/")
         if worker_url and not self._env_has_container_url("WORKER_LLM_URL"):
             self.worker_llm_url = worker_url if worker_url.endswith("/v1") else f"{worker_url}/v1"
         if settings.get("WORKER_MODEL"):
             self.worker_model = (settings.get("WORKER_MODEL") or "").strip()
         if "WORKER_API_KEY" in settings:
-            self.worker_api_key = (settings.get("WORKER_API_KEY") or "dummy").strip() or "dummy"
+            self.worker_api_key = (settings.get("WORKER_API_KEY") or "").strip() or None
         if "MIDDLE_AGENT_DEBUG" in settings:
             self.debug = (settings.get("MIDDLE_AGENT_DEBUG") or "1").lower() not in ("0", "false", "no", "off")
         if settings.get("WORKER_TIMEOUT_SEC"):
@@ -664,6 +701,9 @@ class MiddleAgent:
         self._log(project_id, ticket_id, session_id, "session_started", f"Started worker session {session_id}")
         self._debug_log("Session started, loading context...")
 
+        if not self._validate_config(project_id, ticket_id, session_id):
+            sys.exit(1)
+
         self._log(project_id, ticket_id, session_id, "context_loaded", "Loaded project context and graph")
 
         # Resolve project_path: from arg (standalone) or from context (Flask has project_path in context)
@@ -1021,6 +1061,8 @@ class MiddleAgent:
         ticket = _TicketLike(project_id, ticket_id, context)
         session_id = str(uuid.uuid4())
         self._log(project_id, ticket_id, session_id, "review_started", "Started PR review feedback session")
+        if not self._validate_config(project_id, ticket_id, session_id):
+            sys.exit(1)
         self._debug_log("Flow: PR review (address comment → loop until complete)")
         self._log(project_id, ticket_id, session_id, "context_loaded", "Loaded context for PR review")
         if not project_path or not os.path.isdir(project_path):
@@ -1133,6 +1175,8 @@ class MiddleAgent:
         """Invoke Claude Code CLI in headless mode (-p flag) as the worker.
         Uses WORKER_API_KEY as ANTHROPIC_API_KEY. Sessions are continued via --resume <session_id>."""
         cmd = ["claude", "-p", prompt, "--output-format", "json", "--allowedTools", "Bash,Read,Edit,Write,MultiEdit,Glob,Grep,LS"]
+        if self.worker_model:
+            cmd.extend(["--model", self.worker_model])
         worker_session_id = self._worker_sessions.get(session_id)
         if resume and worker_session_id:
             cmd.extend(["--resume", worker_session_id])
@@ -1801,6 +1845,7 @@ Write a clear, descriptive paragraph for the PR description explaining what was 
                 )
                 if review_mode and pr_number_for_comment is not None:
                     body = (pr_comment_body or completion_summary or "Addressed review feedback.").strip()
+                    body = body + "\n\n" + BOT_COMMENT_SIGNATURE
                     if len(body) > 60000:
                         body = body[:59997] + "..."
                     subprocess.run(
