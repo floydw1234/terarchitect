@@ -79,9 +79,25 @@ def _load_feedback_style() -> str:
 def get_agent_system_prompt() -> str:
     base = _load_prompts()["agent_system_prompt"]
     style = _load_feedback_style()
+    # Hard constraints for the Director: enforce respectful tone and avoid over-verification.
+    guidelines = (
+        "\n\nGuidelines (must follow):\n"
+        "- When the worker reports that they have created or updated files and their summary is specific and consistent,\n"
+        "  generally accept that as true; you do NOT need to see full file contents unless something is clearly inconsistent\n"
+        "  with earlier context or would change a critical behavior.\n"
+        "- Focus your judgment on whether the described changes fit the ticket requirements and the overall project\n"
+        "  architecture, not on micromanaging each keystroke.\n"
+        "- Prefer targeted clarifying questions over demanding full-file verbatim pastes; ask for diffs or snippets only\n"
+        "  when they are truly necessary to resolve ambiguity.\n"
+    )
     if not style:
-        return base
-    return base + "\n\n---\nCommunication style (use this tone when directing the worker; draw from these examples):\n\n" + style
+        return base + guidelines
+    return (
+        base
+        + guidelines
+        + "\n\n---\nCommunication style (use this tone when directing the worker; draw from these examples):\n\n"
+        + style
+    )
 
 
 def get_worker_review_prompt_prefix() -> str:
@@ -118,7 +134,13 @@ def get_worker_plan_prompt_prefix(task_plan_path: Optional[str] = None) -> str:
 def get_agent_plan_review_instructions() -> str:
     return _get_optional_prompt(
         "agent_plan_review_instructions",
-        "You are in plan-review mode. Evaluate the plan for consistency, concrete steps, achievability, and logical ordering. Be constructive and concise. Avoid hostile language and avoid repeatedly demanding full-file verbatim pastes unless absolutely necessary. Prefer targeted feedback (max 3 concrete fixes) and keep next_prompt under 180 words with no markdown code fences. If the plan is solid, respond with JSON: {\"plan_approved\": true, \"approved_plan_text\": \"<concise approved execution checklist>\"}. If not, respond with {\"plan_approved\": false, \"next_prompt\": \"<concise feedback and exact fixes>\"}. approved_plan_text should be a concise execution checklist, not a verbatim file dump.",
+        "You are in plan-review mode. Evaluate the plan for consistency, concrete steps, achievability, and logical ordering.\n"
+        "Be constructive and concise. Never use hostile language or profanity. Assume the worker's description of their\n"
+        "own work is accurate unless it clearly contradicts earlier context; you are not required to see full file contents\n"
+        "to believe that work was done. Prefer targeted feedback (max 3 concrete fixes) and keep next_prompt under 180 words\n"
+        "with no markdown code fences. If the plan is solid, respond with JSON: {\"plan_approved\": true, \"approved_plan_text\":\n"
+        "\"<concise approved execution checklist>\"}. If not, respond with {\"plan_approved\": false, \"next_prompt\": \"<concise\n"
+        "feedback and exact fixes>\"}. approved_plan_text should be a concise execution checklist, not a verbatim file dump.",
     )
 
 
@@ -192,15 +214,13 @@ class MiddleAgent:
         # Verbose debug logs (stderr + trace file) default on; set MIDDLE_AGENT_DEBUG=0 to disable.
         self.debug = (get_setting_or_env("MIDDLE_AGENT_DEBUG") or "1").lower() not in ("0", "false", "no", "off")
 
-        # Director/agent API (LLM used to assess completion and decide next prompts).
-        # AGENT_LLM_URL is resolved from AGENT_PROVIDER when not explicitly set.
-        self.agent_provider = (get_setting_or_env("AGENT_PROVIDER") or "openai").strip().lower()
-        vllm_base = (get_setting_or_env("AGENT_LLM_URL") or "").strip().rstrip("/")
-        if not vllm_base and self.agent_provider == "openai":
-            vllm_base = "https://api.openai.com"
-        self.agent_api_url = f"{vllm_base}/v1/chat/completions" if vllm_base else ""
-        self.agent_model = (get_setting_or_env("AGENT_MODEL") or "").strip()
-        self.agent_api_key = (get_setting_or_env("AGENT_API_KEY") or "").strip() or None
+        # Director API (LLM used to assess completion and decide next prompts).
+        # DIRECTOR_LLM_URL and DIRECTOR_MODEL must be provided via environment (no built-in defaults).
+        self.director_provider = (get_setting_or_env("DIRECTOR_PROVIDER") or "custom").strip().lower()
+        vllm_base = (get_setting_or_env("DIRECTOR_LLM_URL") or "").strip().rstrip("/")
+        self.director_api_url = f"{vllm_base}/v1/chat/completions" if vllm_base else ""
+        self.director_model = (get_setting_or_env("DIRECTOR_MODEL") or "").strip()
+        self.director_api_key = (get_setting_or_env("DIRECTOR_API_KEY") or "").strip() or None
 
         # Worker mode: "claude-code" (default) or "opencode" (OpenCode CLI with HTTP LLM server).
         raw_worker_mode = (get_setting_or_env("WORKER_MODE") or "claude-code").strip().lower()
@@ -220,21 +240,26 @@ class MiddleAgent:
         return "host.docker.internal" in (os.environ.get(key) or "")
 
     def _reapply_container_urls_from_env(self) -> None:
-        """When running in Docker, env has host.docker.internal URLs. Ensure we use them (undo any overwrite from agent_settings)."""
-        vllm = (os.environ.get("AGENT_LLM_URL") or "").strip().rstrip("/")
+        """When running in Docker, env has host.docker.internal URLs. Ensure we keep those container-safe URLs."""
+        vllm = (os.environ.get("DIRECTOR_LLM_URL") or "").strip().rstrip("/")
         if vllm and "host.docker.internal" in vllm:
-            self.agent_api_url = f"{vllm}/v1/chat/completions"
+            self.director_api_url = f"{vllm}/v1/chat/completions"
         worker = (os.environ.get("WORKER_LLM_URL") or "").strip().rstrip("/")
         if worker and "host.docker.internal" in worker:
             self.worker_llm_url = worker if worker.endswith("/v1") else f"{worker}/v1"
 
     def _validate_config(self, project_id: uuid.UUID, ticket_id: uuid.UUID, session_id: str) -> bool:
-        """Fail fast with a clear log message if required settings are missing. Returns True if valid."""
+        """Fail fast with a clear log message if required env (Director/Worker URLs and keys) is missing. Returns True if valid."""
         errors = []
-        if not self.agent_api_url:
-            errors.append("AGENT_LLM_URL is not set — Director LLM has no URL. Set AGENT_PROVIDER=openai or provide AGENT_LLM_URL.")
-        if not self.agent_model:
-            errors.append("AGENT_MODEL is not set — Director LLM has no model to use.")
+        if ":8000" in (self.director_api_url or ""):
+            self._debug_log(
+                "DIRECTOR_LLM_URL points to port 8000 (old vLLM default). "
+                "Set DIRECTOR_LLM_URL to your Ollama URL (e.g. http://localhost:11434) in coordinator/.env and restart."
+            )
+        if not self.director_api_url:
+            errors.append("DIRECTOR_LLM_URL is not set — Director LLM has no URL. Set DIRECTOR_PROVIDER=openai or provide DIRECTOR_LLM_URL.")
+        if not self.director_model:
+            errors.append("DIRECTOR_MODEL is not set — Director LLM has no model to use.")
         if self.worker_mode == "claude-code":
             if not self.worker_api_key:
                 errors.append("WORKER_API_KEY (Anthropic) is not set — required for Claude Code mode.")
@@ -246,43 +271,11 @@ class MiddleAgent:
             if not self.worker_api_key:
                 errors.append("WORKER_API_KEY is not set — required for OpenCode mode (use 'dummy' for local LLMs that skip auth).")
         if errors:
-            msg = "Agent misconfigured — cannot start:\n" + "\n".join(f"  • {e}" for e in errors)
+            msg = "Director/Worker misconfigured — cannot start:\n" + "\n".join(f"  • {e}" for e in errors)
             self._debug_log(msg)
             self._log(project_id, ticket_id, session_id, "misconfigured", msg)
             return False
         return True
-
-    def _apply_agent_settings(self, settings: Dict[str, str]) -> None:
-        """Apply agent_settings from worker-context (HTTP backend). Overrides instance URL/model/keys.
-        When running in Docker, env may have host.docker.internal URLs; do not overwrite with backend's localhost."""
-        if settings.get("AGENT_PROVIDER"):
-            self.agent_provider = settings["AGENT_PROVIDER"].strip().lower()
-        vllm_base = (settings.get("AGENT_LLM_URL") or "").strip().rstrip("/")
-        if not vllm_base and self.agent_provider == "openai":
-            vllm_base = "https://api.openai.com"
-        if vllm_base and not self._env_has_container_url("AGENT_LLM_URL"):
-            self.agent_api_url = f"{vllm_base}/v1/chat/completions"
-        if settings.get("AGENT_MODEL"):
-            self.agent_model = (settings.get("AGENT_MODEL") or "").strip()
-        if "AGENT_API_KEY" in settings:
-            self.agent_api_key = (settings.get("AGENT_API_KEY") or "").strip() or None
-        if settings.get("WORKER_MODE"):
-            raw = settings["WORKER_MODE"].strip().lower()
-            self.worker_mode = raw if raw in ("opencode", "claude-code") else "claude-code"
-        worker_url = (settings.get("WORKER_LLM_URL") or "").strip().rstrip("/")
-        if worker_url and not self._env_has_container_url("WORKER_LLM_URL"):
-            self.worker_llm_url = worker_url if worker_url.endswith("/v1") else f"{worker_url}/v1"
-        if settings.get("WORKER_MODEL"):
-            self.worker_model = (settings.get("WORKER_MODEL") or "").strip()
-        if "WORKER_API_KEY" in settings:
-            self.worker_api_key = (settings.get("WORKER_API_KEY") or "").strip() or None
-        if "MIDDLE_AGENT_DEBUG" in settings:
-            self.debug = (settings.get("MIDDLE_AGENT_DEBUG") or "1").lower() not in ("0", "false", "no", "off")
-        if settings.get("WORKER_TIMEOUT_SEC"):
-            try:
-                self.worker_timeout_sec = int(settings["WORKER_TIMEOUT_SEC"])
-            except (ValueError, TypeError):
-                pass
 
     def _debug_log(self, msg: str) -> None:
         if self.debug:
@@ -346,12 +339,12 @@ class MiddleAgent:
             if not diff:
                 return fallback
             headers = {"Content-Type": "application/json"}
-            if self.agent_api_key:
-                headers["Authorization"] = f"Bearer {self.agent_api_key}"
+            if self.director_api_key:
+                headers["Authorization"] = f"Bearer {self.director_api_key}"
             resp = requests.post(
-                self.agent_api_url,
+                self.director_api_url,
                 json={
-                    "model": self.agent_model,
+                    "model": self.director_model,
                     "messages": [
                         {
                             "role": "system",
@@ -576,7 +569,7 @@ class MiddleAgent:
                     "Do not report complete until you have made the required code changes (tests and implementation)."
                 )
             if not next_prompt:
-                raise AgentAPIError("Agent API returned no next_prompt when task is incomplete")
+                raise AgentAPIError("Director API returned no next_prompt when task is incomplete")
             if "assess: is the ticket complete" not in next_prompt.lower():
                 if "one file at a time" not in next_prompt.lower() and "slowly" not in next_prompt.lower():
                     next_prompt = "Work VERY slowly: modify one file at a time, verify each change before proceeding.\n\n" + next_prompt
@@ -692,9 +685,6 @@ class MiddleAgent:
                 self.description = cur.get("description") or ""
         ticket = _TicketLike(project_id, ticket_id, context)
 
-        # Apply agent_settings from context when present (HTTP backend supplies these)
-        if context.get("agent_settings"):
-            self._apply_agent_settings(context["agent_settings"])
         self._reapply_container_urls_from_env()
 
         session_id = str(uuid.uuid4())
@@ -710,7 +700,7 @@ class MiddleAgent:
         if project_path is None:
             project_path = (context.get("project_path") or "").strip() or None
         if not project_path or not os.path.isdir(project_path):
-            msg = f"Invalid project_path for ticket: {project_path!r}. Pass a clone path (standalone) or set project path in settings (Flask)."
+            msg = f"Invalid project_path for ticket: {project_path!r}. Pass a clone path (standalone) or set project path in project config (local execution mode)."
             self._debug_log(msg)
             self._log(project_id, ticket_id, session_id, "invalid_project_path", msg)
             sys.exit(1)
@@ -870,7 +860,7 @@ class MiddleAgent:
                     break
                     next_prompt = agent_response.get("next_prompt")
                     if not next_prompt:
-                        raise AgentAPIError("Agent API returned no next_prompt during plan review")
+                        raise AgentAPIError("Director API returned no next_prompt during plan review")
                     self._trace_log(session_id, f"[Director -> Worker] Plan-review turn {plan_turn + 1}:\n{next_prompt}", project_path)
                     self._debug_log(f"[Director -> Worker] Plan-review turn {plan_turn + 1}:\n" + (next_prompt[:800] + "..." if len(next_prompt) > 800 else next_prompt))
                     self._log(
@@ -1020,7 +1010,7 @@ class MiddleAgent:
                 return completion_summary
             next_prompt = agent_response.get("next_prompt")
             if not next_prompt:
-                raise AgentAPIError("Agent API returned no next_prompt when task is incomplete")
+                raise AgentAPIError("Director API returned no next_prompt when task is incomplete")
             if "assess: is the ticket complete" not in next_prompt.lower():
                 if "one file at a time" not in next_prompt.lower() and "slowly" not in next_prompt.lower():
                     next_prompt = "Work VERY slowly: modify one file at a time, verify each change before proceeding.\n\n" + next_prompt
@@ -1047,8 +1037,6 @@ class MiddleAgent:
         if not context:
             self._debug_log("Could not load context for review, exiting")
             sys.exit(1)
-        if context.get("agent_settings"):
-            self._apply_agent_settings(context["agent_settings"])
         self._reapply_container_urls_from_env()
         context["pr_review_comment"] = comment_body
         class _TicketLike:
@@ -1344,13 +1332,13 @@ class MiddleAgent:
 Preserve: project/ticket context if present, completion decisions (complete vs not), key next prompts given to the worker, and worker outcomes.
 Output a single concise narrative. No JSON, no labels—just prose."""
         headers = {"Content-Type": "application/json"}
-        if self.agent_api_key:
-            headers["Authorization"] = f"Bearer {self.agent_api_key}"
+        if self.director_api_key:
+            headers["Authorization"] = f"Bearer {self.director_api_key}"
         try:
             resp = requests.post(
-                self.agent_api_url,
+                self.director_api_url,
                 json={
-                    "model": self.agent_model,
+                    "model": self.director_model,
                     "messages": [
                         {"role": "system", "content": system},
                         {"role": "user", "content": formatted},
@@ -1504,15 +1492,15 @@ Assess: Is the ticket complete? Respond in JSON only."""
         messages_for_api = [{"role": "system", "content": system_content}] + compacted + [new_user_msg]
 
         headers = {"Content-Type": "application/json"}
-        if self.agent_api_key:
-            headers["Authorization"] = f"Bearer {self.agent_api_key}"
+        if self.director_api_key:
+            headers["Authorization"] = f"Bearer {self.director_api_key}"
 
         if session_id:
             self._trace_log(
                 session_id,
-                "Agent API request (stateful):\n"
-                f"URL: {self.agent_api_url}\n"
-                f"Model: {self.agent_model}\n"
+                "Director API request (stateful):\n"
+                f"URL: {self.director_api_url}\n"
+                f"Model: {self.director_model}\n"
                 f"Messages count: {len(messages_for_api)}\n"
                 f"System prompt length: {len(system_content)} chars\n"
                 f"Last user message:\n{user_msg_content[:1500]}...",
@@ -1521,9 +1509,9 @@ Assess: Is the ticket complete? Respond in JSON only."""
 
         try:
             resp = requests.post(
-                self.agent_api_url,
+                self.director_api_url,
                 json={
-                    "model": self.agent_model,
+                    "model": self.director_model,
                     "messages": messages_for_api,
                     "max_tokens": 1024,
                     "temperature": 0.2,
@@ -1534,7 +1522,7 @@ Assess: Is the ticket complete? Respond in JSON only."""
             resp.raise_for_status()
         except requests.RequestException as e:
             raise AgentAPIError(
-                f"Agent API request failed: {self.agent_api_url} - {e}",
+                f"Director API request failed: {self.director_api_url} - {e}",
                 cause=e,
             ) from e
 
@@ -1543,15 +1531,15 @@ Assess: Is the ticket complete? Respond in JSON only."""
             content = data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
         except (KeyError, IndexError, TypeError) as e:
             raise AgentAPIError(
-                f"Agent API returned invalid response format: {e}",
+                f"Director API returned invalid response format: {e}",
                 cause=e,
             ) from e
 
-        self._debug_log(f"Agent API response: {content[:300]}...")
+        self._debug_log(f"Director API response: {content[:300]}...")
         if session_id:
             self._trace_log(
                 session_id,
-                f"Agent API raw response content:\n{content}",
+                f"Director API raw response content:\n{content}",
                 project_path,
             )
 
@@ -1586,12 +1574,12 @@ Assess: Is the ticket complete? Respond in JSON only."""
                 content = extract
         if parsed is None:
             raise AgentAPIError(
-                f"Agent API response is not valid JSON: {content[:200]}...",
+                f"Director API response is not valid JSON: {content[:200]}...",
                 cause=None,
             )
 
         if not isinstance(parsed, dict):
-            raise AgentAPIError(f"Agent API response must be a JSON object, got: {type(parsed)}")
+            raise AgentAPIError(f"Director API response must be a JSON object, got: {type(parsed)}")
 
         response_dict: Dict[str, Any] = {
             "complete": parsed.get("complete", False),
@@ -1627,13 +1615,13 @@ The implementation work produced this summary:
 Write a short direct reply to the reviewer (2–5 sentences) that answers their question or addresses their point. If they asked a specific question (e.g. "Do we update X on the backend?"), answer it directly (e.g. "Yes, we update X in ..." or "No; I've added that in ..."). Do not post a generic "ticket completed" summary. Output only the reply text, no preamble or labels."""
 
         headers = {"Content-Type": "application/json"}
-        if self.agent_api_key:
-            headers["Authorization"] = f"Bearer {self.agent_api_key}"
+        if self.director_api_key:
+            headers["Authorization"] = f"Bearer {self.director_api_key}"
         try:
             resp = requests.post(
-                self.agent_api_url,
+                self.director_api_url,
                 json={
-                    "model": self.agent_model,
+                    "model": self.director_model,
                     "messages": [
                         {"role": "user", "content": user_msg},
                     ],
@@ -1760,13 +1748,13 @@ Summary of what was done: {completion_summary}
 
 Write a clear, descriptive paragraph for the PR description explaining what was accomplished: files changed, behavior added or fixed, and any notable decisions. Plain text only, no markdown headers. Keep it under 400 words."""
         headers = {"Content-Type": "application/json"}
-        if self.agent_api_key:
-            headers["Authorization"] = f"Bearer {self.agent_api_key}"
+        if self.director_api_key:
+            headers["Authorization"] = f"Bearer {self.director_api_key}"
         try:
             resp = requests.post(
-                self.agent_api_url,
+                self.director_api_url,
                 json={
-                    "model": self.agent_model,
+                    "model": self.director_model,
                     "messages": [
                         {"role": "system", "content": "You write concise, accurate PR descriptions for code changes. Output only the paragraph, no labels or prefixes."},
                         {"role": "user", "content": user_content},

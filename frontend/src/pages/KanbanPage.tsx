@@ -46,12 +46,12 @@ import {
   updateKanban,
   getTicketLogs,
   cancelTicketExecution,
-  getSettingsCheck,
+  getExecutionReady,
   type Ticket,
   type KanbanColumn,
   type Note,
   type ExecutionLogEntry,
-  type SettingIssue,
+  type ReadyMissing,
 } from '../utils/api';
 
 interface GraphNodeOption { id: string; label: string; }
@@ -362,15 +362,17 @@ const KanbanPage: React.FC = () => {
   // Card-level action error (e.g. Run fails due to missing settings)
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // Settings readiness — determines whether Run is allowed
-  const [missingRequired, setMissingRequired] = useState<SettingIssue[]>([]);
+  const [missingRequired, setMissingRequired] = useState<ReadyMissing[]>([]);
 
   useEffect(() => {
     if (projectId) fetchKanban();
-    getSettingsCheck()
-      .then((res) => setMissingRequired(res.missing_required ?? []))
-      .catch(() => {}); // non-fatal — Run button will fall back to backend validation
   }, [projectId]);
+
+  useEffect(() => {
+    getExecutionReady()
+      .then((res) => setMissingRequired(res.missing ?? []))
+      .catch(() => {});
+  }, []);
 
   const fetchKanban = async () => {
     if (!projectId) return;
@@ -1181,7 +1183,7 @@ interface TicketCardProps {
   columnId: string;
   projectId: string;
   graphNodes: GraphNodeOption[];
-  missingRequired: SettingIssue[];
+  missingRequired: ReadyMissing[];
   onEdit: (ticket: Ticket) => void;
   onRun: (ticket: Ticket) => void;
   onApprove: (ticket: Ticket) => void;
@@ -1284,23 +1286,13 @@ const TicketCard: React.FC<TicketCardProps> = ({
         <Box>
           {columnId === 'backlog' && (() => {
             const noGraph = graphNodes.length === 0;
-            const blocked = missingRequired.length > 0 || noGraph;
+            const blocked = noGraph || missingRequired.length > 0;
             const tooltipLines: string[] = [];
             if (noGraph) tooltipLines.push('Add at least one node to the graph first.');
-            missingRequired.forEach((s) => tooltipLines.push(`Missing: ${s.label} — ${s.reason}`));
-            const tooltipText = blocked
-              ? tooltipLines.join('\n')
-              : 'Run ticket';
+            missingRequired.forEach((m) => tooltipLines.push(`Missing: ${m.label} — set ${m.key} in .env`));
+            const tooltipText = blocked ? tooltipLines.join('\n') : 'Run ticket';
             return (
-              <Tooltip
-                title={
-                  blocked ? (
-                    <Box component="span" sx={{ whiteSpace: 'pre-line', display: 'block' }}>
-                      {tooltipLines.join('\n')}
-                    </Box>
-                  ) : 'Run ticket'
-                }
-              >
+              <Tooltip title={tooltipText}>
                 <span>
                   <Button
                     size="small"

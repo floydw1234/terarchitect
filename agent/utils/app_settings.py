@@ -1,201 +1,34 @@
 """
-App-level settings (tokens, URLs, env-style keys). Sensitive keys encrypted at rest when TERARCHITECT_SECRET_KEY is set.
-Use from request context or with an active app context.
+Agent config read from environment variables only.
+The coordinator injects these when starting local/docker agent runs.
 """
 import os
-from typing import Optional, Any
-
-from utils.app_settings_crypto import encrypt_value, decrypt_value, is_encryption_available
+from typing import Optional
 
 
-# All keys that can be set via the Settings UI. Use same names as env vars where applicable.
-# openai_api_key: used as fallback for memory LLM (HippoRAG). anthropic_api_key: reserved for future Claude workers.
-ALLOWED_KEYS = frozenset({
-    # GitHub (sensitive)
-    "github_agent_token",
-    # LLM / API keys (sensitive)
-    "openai_api_key",
-    "anthropic_api_key",
-    "AGENT_API_KEY",
-    "WORKER_API_KEY",
-    "EMBEDDING_API_KEY",
-    # Agent / Worker
-    "AGENT_PROVIDER",
-    "AGENT_LLM_URL",
-    "EMBEDDING_PROVIDER",
-    "AGENT_MODEL",
-    "WORKER_LLM_URL",
-    "WORKER_MODEL",
-    "WORKER_TIMEOUT_SEC",
-    "MIDDLE_AGENT_DEBUG",
-    # Frontend LLM features (graph-driven UX helpers)
-    "FRONTEND_LLM_URL",
-    "FRONTEND_LLM_MODEL",
-    "FRONTEND_LLM_API_KEY",
-    # Memory (HippoRAG) - MEMORY_SAVE_DIR not configurable; fixed default /tmp/terarchitect
-    "MEMORY_LLM_MODEL",
-    "MEMORY_LLM_BASE_URL",
-    "MEMORY_LLM_API_KEY",
-    "MEMORY_EMBEDDING_MODEL",
-    "MEMORY_EMBEDDING_BASE_URL",
-    # Embedding service
-    "EMBEDDING_SERVICE_URL",
-    # Worker-facing API (Phase 1: coordinator and agent containers)
-    "TERARCHITECT_WORKER_API_KEY",
-})
-
-# Keys stored encrypted; rest stored plain (URLs, paths, model names, etc.)
-SENSITIVE_KEYS = frozenset({
-    "github_agent_token",
-    "openai_api_key",
-    "anthropic_api_key",
-    "AGENT_API_KEY",
-    "WORKER_API_KEY",
-    "FRONTEND_LLM_API_KEY",
-    "MEMORY_LLM_API_KEY",
-    "EMBEDDING_API_KEY",
-    "TERARCHITECT_WORKER_API_KEY",
-})
-
-
-def get_value(key: str) -> Optional[str]:
-    """Get value for key (decrypted if sensitive, raw if plain). Returns None if missing or invalid. Requires app context."""
-    if key not in ALLOWED_KEYS:
+def _env(key: str, default: Optional[str] = None) -> Optional[str]:
+    v = os.environ.get(key) or default
+    if v is None:
         return None
-    from flask import current_app
-    from models.db import AppSetting
-    with current_app.app_context():
-        row = AppSetting.query.filter_by(key=key).first()
-        if not row or not row.value:
-            return None
-        if key in SENSITIVE_KEYS:
-            dec = decrypt_value(row.value)
-            return dec if dec else None
-        return row.value
-
-
-def set_value(key: str, plaintext: str) -> bool:
-    """Store value. Sensitive keys are encrypted (requires TERARCHITECT_SECRET_KEY). Plain keys stored as-is. Returns False if key not allowed or encryption required but unavailable."""
-    import sys
-    if key not in ALLOWED_KEYS:
-        print(f"[DEBUG] set_value: key {key!r} not in ALLOWED_KEYS", file=sys.stderr, flush=True)
-        return False
-    from flask import current_app
-    from models.db import db, AppSetting
-    if key in SENSITIVE_KEYS:
-        if not is_encryption_available():
-            print("[DEBUG] set_value: encryption not available", file=sys.stderr, flush=True)
-            return False
-        encrypted = encrypt_value(plaintext)
-        if not encrypted:
-            print("[DEBUG] set_value: encrypt_value returned None", file=sys.stderr, flush=True)
-            return False
-        value_to_store = encrypted
-    else:
-        value_to_store = plaintext
-    try:
-        with current_app.app_context():
-            row = AppSetting.query.filter_by(key=key).first()
-            if row:
-                row.value = value_to_store
-            else:
-                db.session.add(AppSetting(key=key, value=value_to_store))
-            db.session.commit()
-            return True
-    except Exception as e:
-        import sys
-        print(f"[DEBUG] set_value exception: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        try:
-            db.session.rollback()
-        except Exception:
-            pass
-        return False
-
-
-def get_decrypted(key: str) -> Optional[str]:
-    """Get decrypted value for a sensitive key. Convenience alias for get_value for backward compat."""
-    return get_value(key)
-
-
-def set_encrypted(key: str, plaintext: str) -> bool:
-    """Store value (encrypted if sensitive). Convenience for backward compat."""
-    return set_value(key, plaintext)
-
-
-def delete_key(key: str) -> bool:
-    """Remove a setting. Returns True if deleted or didn't exist. Requires app context."""
-    if key not in ALLOWED_KEYS:
-        return False
-    from flask import current_app
-    from models.db import db, AppSetting
-    with current_app.app_context():
-        AppSetting.query.filter_by(key=key).delete()
-        try:
-            db.session.commit()
-            return True
-        except Exception:
-            db.session.rollback()
-            return False
+    return (v or "").strip() or None
 
 
 def get_setting_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
-    """Return app setting value if set, else os.environ.get(key, default). Use for agent/memory/embedding config.
-    When run outside Flask app context (e.g. standalone runner), falls back to os.environ only."""
-    if key not in ALLOWED_KEYS:
-        return os.environ.get(key, default)
-    try:
-        val = get_value(key)
-    except Exception:
-        return os.environ.get(key, default)
-    if val is not None and (val or key not in SENSITIVE_KEYS):
-        return val if val else None
-    return os.environ.get(key, default)
-
-
-def get_all_for_api() -> dict:
-    """Return dict for GET /api/settings: sensitive keys -> bool (is set), plain keys -> value or null. Requires app context."""
-    import sys
-    try:
-        from flask import current_app
-        from models.db import AppSetting
-        with current_app.app_context():
-            rows = {r.key: r.value for r in AppSetting.query.filter(AppSetting.key.in_(ALLOWED_KEYS)).all()}
-        out: dict = {}
-        for key in ALLOWED_KEYS:
-            if key in SENSITIVE_KEYS:
-                out[key] = bool(rows.get(key))
-            else:
-                out[key] = rows.get(key) or None
-        return out
-    except Exception as e:
-        print(f"[DEBUG] get_all_for_api exception: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        raise
-
-
-def get_masked_status() -> dict:
-    """Legacy: dict of key -> bool for sensitive keys only. Prefer get_all_for_api for full response."""
-    status = get_all_for_api()
-    return {k: status[k] for k in SENSITIVE_KEYS} if SENSITIVE_KEYS else {}
-
-
-def get_gh_env_for_user() -> dict:
-    """Env dict for gh CLI when doing UI actions. Uses the shared agent token."""
-    return get_gh_env_for_agent()
+    """Return value for key from environment."""
+    v = os.environ.get(key)
+    if v is not None:
+        v = (v or "").strip() or None
+    return v if v is not None else (default if default is not None else None)
 
 
 def get_gh_env_for_agent() -> dict:
-    """Env dict for gh/git when agent pushes and creates PRs. Merge with os.environ. Empty if no token set.
-    When run outside Flask (e.g. standalone runner), falls back to GITHUB_TOKEN/GH_TOKEN from os.environ."""
-    try:
-        token = get_value("github_agent_token")
-    except Exception:
-        token = None
-    if not token:
-        token = (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or "").strip() or None
+    """Env dict for gh/git when agent pushes and creates PRs."""
+    token = (
+        _env("github_agent_token")
+        or _env("GITHUB_TOKEN")
+        or _env("GH_TOKEN")
+        or _env("GITHUB_AGENT_TOKEN")
+    )
     if not token:
         return {}
     return {"GH_TOKEN": token, "GITHUB_TOKEN": token}

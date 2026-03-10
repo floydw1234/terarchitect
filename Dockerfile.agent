@@ -71,7 +71,7 @@ RUN pip install --no-cache-dir -r /app/requirements-agent.txt
 # Copy agent code into flat layout under /app (runner expects middle_agent, agent_runner, utils)
 COPY agent/middle_agent /app/middle_agent
 COPY agent/agent_runner /app/agent_runner
-COPY agent/utils/__init__.py agent/utils/app_settings.py agent/utils/app_settings_crypto.py /app/utils/
+COPY agent/utils/__init__.py agent/utils/app_settings.py /app/utils/
 
 ENV PYTHONPATH=/app
 # Do not set AGENT_WORKSPACE here: coordinator sets it only for local execution. In Docker we clone into a temp dir.

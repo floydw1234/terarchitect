@@ -338,37 +338,18 @@ export async function mergeReview(projectId: string, ticketId: string, mergeMeth
   await checkResponse(response);
 }
 
-/** App settings: sensitive keys are boolean (is set), plain keys are string | null. */
-export type AppSettingsResponse = Record<string, boolean | string | null>;
-
-export async function getSettings(): Promise<AppSettingsResponse> {
-  const response = await fetch(`${API_URL}/api/settings`);
-  return checkResponse<AppSettingsResponse>(response);
-}
-
-export interface SettingIssue {
+/** Execution readiness: required env vars set so a ticket can be run. */
+export interface ReadyMissing {
   key: string;
   label: string;
-  reason: string;
 }
 
-export interface SettingsCheckResponse {
+export interface ReadyResponse {
   ready: boolean;
-  missing_required: SettingIssue[];
-  warnings: SettingIssue[];
+  missing: ReadyMissing[];
 }
 
-export async function getSettingsCheck(): Promise<SettingsCheckResponse> {
-  const response = await fetch(`${API_URL}/api/settings/check`);
-  return checkResponse<SettingsCheckResponse>(response);
-}
-
-/** Body: include only keys to update. Empty string = clear that key. */
-export async function updateSettings(data: Record<string, string>): Promise<AppSettingsResponse> {
-  const response = await fetch(`${API_URL}/api/settings`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
-  return checkResponse<AppSettingsResponse>(response);
+export async function getExecutionReady(): Promise<ReadyResponse> {
+  const response = await fetch(`${API_URL}/api/ready`);
+  return checkResponse<ReadyResponse>(response);
 }

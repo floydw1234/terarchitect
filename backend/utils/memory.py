@@ -27,22 +27,42 @@ _cache_lock = threading.Lock()
 
 
 def get_hipporag_kwargs() -> Dict[str, Any]:
-    """Build HippoRAG constructor kwargs from app settings and environment. Memory defaults to Agent LLM URL and model when not set.
-    Includes _memory_api_key (popped before passing to HippoRAG) for cache key and env when creating instance."""
-    try:
-        from utils.app_settings import get_setting_or_env
-    except ImportError:
-        get_setting_or_env = lambda k, d=None: os.environ.get(k, d)
-    # Memory LLM: default to Agent's URL and model when not set. OpenAI client expects base_url to include /v1.
-    llm_url = (get_setting_or_env("MEMORY_LLM_BASE_URL") or get_setting_or_env("AGENT_LLM_URL") or "").strip().rstrip("/")
-    if llm_url and not llm_url.endswith("/v1"):
+    """Build HippoRAG constructor kwargs from environment.
+
+    This requires explicit MEMORY_* configuration in the backend environment:
+    - MEMORY_LLM_BASE_URL (OpenAI-compatible base URL, including /v1)
+    - MEMORY_LLM_MODEL (model name for OpenIE)
+    - MEMORY_EMBEDDING_MODEL (embedding model name)
+
+    Includes _memory_api_key (popped before passing to HippoRAG) for cache key and env when creating instance.
+    """
+    from utils.app_settings import get_setting_or_env
+    # Memory LLM: strict env-based configuration (no implicit defaults).
+    llm_url = (get_setting_or_env("MEMORY_LLM_BASE_URL") or "").strip().rstrip("/")
+    if not llm_url:
+        raise RuntimeError(
+            "MEMORY_LLM_BASE_URL is required for project memory. "
+            "Set it to an OpenAI-compatible base URL (including /v1), e.g. http://localhost:11434/v1."
+        )
+    if not llm_url.endswith("/v1"):
         llm_url = f"{llm_url}/v1"
-    llm_model = get_setting_or_env("MEMORY_LLM_MODEL") or get_setting_or_env("AGENT_MODEL") or "gpt-4o-mini"
-    emb_model = get_setting_or_env("MEMORY_EMBEDDING_MODEL", "text-embedding-3-small") or "text-embedding-3-small"
+
+    llm_model = (get_setting_or_env("MEMORY_LLM_MODEL") or "").strip()
+    if not llm_model:
+        raise RuntimeError(
+            "MEMORY_LLM_MODEL is required for project memory. "
+            "Set it to the model name exposed by your MEMORY_LLM_BASE_URL endpoint."
+        )
+
+    emb_model = (get_setting_or_env("MEMORY_EMBEDDING_MODEL") or "").strip()
+    if not emb_model:
+        raise RuntimeError(
+            "MEMORY_EMBEDDING_MODEL is required for project memory. "
+            "Set it to the embedding model name used by your embedding service (e.g. bge-large)."
+        )
     emb_url = (get_setting_or_env("MEMORY_EMBEDDING_BASE_URL") or get_setting_or_env("EMBEDDING_SERVICE_URL") or "").strip().rstrip("/")
     memory_api_key = (
         get_setting_or_env("MEMORY_LLM_API_KEY")
-        or get_setting_or_env("AGENT_API_KEY")
         or get_setting_or_env("openai_api_key")
         or ""
     ).strip() or ""

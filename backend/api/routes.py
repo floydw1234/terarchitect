@@ -13,22 +13,15 @@ import requests
 from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy import text, nullslast
 
-from models.db import db, Project, Graph, KanbanBoard, Ticket, Note, Setting, AppSetting, RAGEmbedding, ExecutionLog, PR, PRReviewComment, AgentJob
+from models.db import db, Project, Graph, KanbanBoard, Ticket, Note, RAGEmbedding, ExecutionLog, PR, PRReviewComment, AgentJob
 from utils.embedding_client import embed_single
 from utils.rag import upsert_embedding, delete_embeddings_for_source
 from utils.app_settings import (
-    get_all_for_api,
-    set_value,
-    delete_key,
-    ALLOWED_KEYS,
-    SENSITIVE_KEYS,
     get_gh_env_for_user,
     get_dashboard_git_env,
-    get_gh_env_for_agent,
-    get_agent_env,
-    get_setting_or_env,
+    get_value,
+    check_execution_readiness,
 )
-from utils.app_settings_crypto import is_encryption_available
 
 api_bp = Blueprint("api", __name__)
 
@@ -37,10 +30,10 @@ api_bp = Blueprint("api", __name__)
 # since the agent and user may share the same GitHub token.
 BOT_COMMENT_SIGNATURE = "<!-- terarchitect-bot -->"
 
-# Worker-facing API: auth via Bearer token. Set TERARCHITECT_WORKER_API_KEY (Settings or env) to require auth; if unset, no auth (dev).
+# Worker-facing API: auth via Bearer token. Set TERARCHITECT_WORKER_API_KEY in the backend env to require auth; if unset, no auth (dev).
 def _require_worker_auth():
     """Return (None, None) if authorized, else (response, status_code) to return."""
-    token = (get_setting_or_env("TERARCHITECT_WORKER_API_KEY") or "").strip()
+    token = (get_value("TERARCHITECT_WORKER_API_KEY") or "").strip()
     if not token:
         return None, None  # No key configured: allow (dev)
     auth = request.headers.get("Authorization") or ""
@@ -58,24 +51,6 @@ def _env_for_gh_user():
 
 # Cancel requested by ticket_id (set by UI; read by GET cancel-requested). Agent runs elsewhere (runner/container).
 _cancel_requested: dict = {}  # ticket_id (uuid) -> True
-
-def _get_project_setting(project_id, key, default=None):
-    row = Setting.query.filter_by(project_id=project_id, key=key).first()
-    if not row:
-        return default
-    return row.value if row.value is not None else default
-
-
-def _set_project_setting(project_id, key, value):
-    row = Setting.query.filter_by(project_id=project_id, key=key).first()
-    if value is None:
-        if row:
-            db.session.delete(row)
-        return
-    if row:
-        row.value = value
-    else:
-        db.session.add(Setting(project_id=project_id, key=key, value=value))
 
 
 def _bootstrap_project_memory(project: Project) -> None:
@@ -433,9 +408,11 @@ def ticket_detail(project_id, ticket_id):
                 return jsonify({
                     "error": "Add at least one node to the graph before moving a ticket to In Progress.",
                 }), 400
-            if not get_value("github_agent_token"):
+            ready, missing = check_execution_readiness()
+            if not ready:
+                missing_str = ", ".join(f"{label} ({key})" for key, label in missing)
                 return jsonify({
-                    "error": "GitHub agent token is not set. Go to Settings and add a GitHub agent token (classic PAT with repo scope) so the agent can push branches and open PRs.",
+                    "error": f"Cannot run: set these in .env and restart the backend: {missing_str}.",
                 }), 400
         if "column_id" in data:
             ticket.column_id = data["column_id"]
@@ -460,9 +437,11 @@ def ticket_detail(project_id, ticket_id):
         return jsonify(_ticket_to_json(ticket))
 
     if request.method == "DELETE":
+        # Clean up embeddings and any queued/running agent jobs that reference this ticket before delete.
         for c in ticket.comments:
             delete_embeddings_for_source(project_id, "ticket_comment", c.id)
         delete_embeddings_for_source(project_id, "ticket", ticket.id)
+        AgentJob.query.filter_by(ticket_id=ticket.id).delete()
         db.session.delete(ticket)
         db.session.commit()
         return jsonify({"message": "Ticket deleted"})
@@ -485,21 +464,9 @@ def ticket_logs(project_id, ticket_id):
     } for log in logs])
 
 
-# Keys sent to agent in worker-context (agent/worker/memory config). Sensitive values are decrypted.
-_AGENT_SETTINGS_KEYS = (
-    "AGENT_PROVIDER", "AGENT_LLM_URL", "AGENT_MODEL", "AGENT_API_KEY",
-    "WORKER_LLM_URL", "WORKER_MODEL", "WORKER_API_KEY", "WORKER_TIMEOUT_SEC", "MIDDLE_AGENT_DEBUG",
-    "github_agent_token",
-    "MEMORY_LLM_MODEL", "MEMORY_LLM_BASE_URL", "MEMORY_LLM_API_KEY",
-    "EMBEDDING_PROVIDER", "EMBEDDING_SERVICE_URL", "EMBEDDING_API_KEY",
-    "MEMORY_EMBEDDING_MODEL", "MEMORY_EMBEDDING_BASE_URL",
-    "openai_api_key",
-)
-
-
 @api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/worker-context", methods=["GET"])
 def worker_context(project_id, ticket_id):
-    """Phase 1: Worker-facing context. Same shape as build_worker_context(ticket) plus agent_settings; no project_path. Auth: Bearer token."""
+    """Phase 1: Worker-facing context. Same shape as build_worker_context(ticket); no project_path. Auth: Bearer token."""
     err, status = _require_worker_auth()
     if err is not None:
         return err, status
@@ -514,13 +481,12 @@ def worker_context(project_id, ticket_id):
     context.pop("project_path", None)
     context["repo_url"] = project.github_url or ""
     context["project_id"] = str(project_id)
-    context["agent_settings"] = {k: (get_setting_or_env(k) or "") for k in _AGENT_SETTINGS_KEYS}
     return jsonify(context)
 
 
 @api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/logs", methods=["POST"])
 def ticket_logs_append(project_id, ticket_id):
-    """Phase 1: Append an execution log entry (worker-facing). Body: session_id, step, summary, raw_output (optional). Auth: Bearer."""
+    """Phase 1: Append an execution log entry (worker-facing). Body: session_id, step, summary, raw_output (optional), success (optional, default True). Auth: Bearer."""
     err, status = _require_worker_auth()
     if err is not None:
         return err, status
@@ -530,6 +496,7 @@ def ticket_logs_append(project_id, ticket_id):
     step = (data.get("step") or "").strip() or "step"
     summary = (data.get("summary") or "").strip() or ""
     raw_output = data.get("raw_output")
+    success = data.get("success") if data.get("success") is not None else True
     if not session_id:
         return jsonify({"error": "session_id is required"}), 400
     log_entry = ExecutionLog(
@@ -539,7 +506,7 @@ def ticket_logs_append(project_id, ticket_id):
         step=step[:100],
         summary=summary,
         raw_output=raw_output,
-        success=True,
+        success=bool(success),
     )
     db.session.add(log_entry)
     db.session.commit()
@@ -866,13 +833,19 @@ def _job_to_response(job):
         out["pr_number"] = job.pr_number
         out["comment_body"] = job.comment_body or ""
         out["github_comment_id"] = job.github_comment_id
-    try:
-        agent_env = get_agent_env()
-        if agent_env:
-            out["agent_env"] = agent_env
-    except Exception:
-        pass
     return out
+
+
+@api_bp.route("/worker/projects", methods=["GET"])
+def worker_projects():
+    """Return all project IDs (and names) for coordinator discovery. Requires worker API auth."""
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
+    projects = Project.query.order_by(Project.created_at.asc()).all()
+    return jsonify({
+        "projects": [{"id": str(p.id), "name": p.name or "Untitled"} for p in projects],
+    }), 200
 
 
 @api_bp.route("/worker/jobs/start", methods=["POST"])
@@ -940,61 +913,15 @@ def worker_jobs_fail(job_id):
     return jsonify({"message": "Job failed", "job_id": str(job_id)})
 
 
-@api_bp.route("/settings", methods=["GET"])
-def app_settings_get():
-    """Return all app settings: sensitive keys as bool (is set), plain keys as value or null."""
-    return jsonify(get_all_for_api())
-
-
-@api_bp.route("/settings", methods=["PUT"])
-def app_settings_put():
-    """Update app settings. Body: any of ALLOWED_KEYS. Omit = no change, empty string = clear. Sensitive keys require TERARCHITECT_SECRET_KEY."""
-    import sys
-    try:
-        data = request.json or {}
-        print("[DEBUG] settings PUT keys in body:", list(data.keys()), file=sys.stderr, flush=True)
-        for key in ALLOWED_KEYS:
-            if key not in data:
-                continue
-            val = data[key]
-            print(f"[DEBUG] processing key={key!r} val type={type(val).__name__} len={len(str(val)) if val else 0}", file=sys.stderr, flush=True)
-            if val is None or (isinstance(val, str) and not val.strip()):
-                delete_key(key)
-                print(f"[DEBUG] deleted key {key}", file=sys.stderr, flush=True)
-            else:
-                plain = val if isinstance(val, str) else str(val)
-                if key in SENSITIVE_KEYS and not is_encryption_available():
-                    print("[DEBUG] 503: encryption not available for sensitive key", file=sys.stderr, flush=True)
-                    return jsonify({
-                        "error": (
-                            "TERARCHITECT_SECRET_KEY must be a 64-character hex string in .env to store secrets. "
-                            "Generate one with: python3 -c \"import secrets; print(secrets.token_hex(32))\""
-                        )
-                    }), 503
-                ok = set_value(key, plain)
-                print(f"[DEBUG] set_value({key!r}) -> {ok}", file=sys.stderr, flush=True)
-                if not ok:
-                    return jsonify({"error": f"Failed to save {key}"}), 500
-        print("[DEBUG] calling get_all_for_api()", file=sys.stderr, flush=True)
-        out = get_all_for_api()
-        print("[DEBUG] settings PUT success", file=sys.stderr, flush=True)
-        return jsonify(out)
-    except Exception as e:
-        print(f"[DEBUG] settings PUT exception: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        current_app.logger.exception("Settings PUT failed: %s", e)
-        return jsonify({"error": str(e)}), 500
-
-
-@api_bp.route("/settings/check", methods=["GET"])
-def app_settings_check():
-    """Return which required settings are missing and which are warnings.
-    Used by the frontend to show setup guidance without exposing secret values.
-    Response: { ready: bool, missing_required: [{key, label, reason}], warnings: [{key, label, reason}] }
-    """
-    from utils.settings_check import compute_settings_check
-    return jsonify(compute_settings_check())
+@api_bp.route("/ready", methods=["GET"])
+def execution_ready():
+    """Lightweight readiness check: are required env vars set to run a ticket?
+    Returns { ready: bool, missing: [{ key, label }] }. Frontend can use this to disable Run or show a warning."""
+    ready, missing = check_execution_readiness()
+    return jsonify({
+        "ready": ready,
+        "missing": [{"key": k, "label": l} for k, l in missing],
+    })
 
 
 @api_bp.route("/projects/<uuid:project_id>/notes", methods=["GET", "POST"])

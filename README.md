@@ -39,7 +39,7 @@ If you’ve ever wanted “Kanban → PRs” with guardrails, this is it.
 - **Coordinator**: Python (host process) + `requests`
 - **Agent image**: Python runner + **OpenCode** (server mode) + **Claude Code** (headless CLI) + Node 20 (for `npm test` in target repos) + Docker daemon (full DinD — each container has its own isolated daemon)
 
-LLM endpoints are configurable via Settings/env (Director model via `AGENT_LLM_URL`, Worker model via `WORKER_LLM_URL`, etc.). See `backend/README.md` and `docs/RUNBOOK.md`.
+LLM endpoints are configured via env (Director via `DIRECTOR_LLM_URL`, Worker via `WORKER_LLM_URL`, etc., set in coordinator/agent env). See `example.env` and `docs/RUNBOOK.md`.
 
 ---
 
@@ -62,7 +62,7 @@ Details: `backend/README.md` (Memory section).
 
 ## Worker modes + API integration
 
-Terarchitect supports two worker backends, selectable via **Settings → Worker → Worker mode**:
+Terarchitect supports two worker backends, selectable via **WORKER_MODE** in the coordinator/agent environment (`opencode` or `claude-code`):
 
 | Mode | How it works |
 |------|-------------|
@@ -72,7 +72,7 @@ Terarchitect supports two worker backends, selectable via **Settings → Worker 
 At the app boundary, the coordinator/agent use a small “worker API” surface (Bearer-authenticated when `TERARCHITECT_WORKER_API_KEY` is set):
 
 **Context + logs**
-- `GET /api/projects/<project_id>/tickets/<ticket_id>/worker-context` (includes `agent_settings`)
+- `GET /api/projects/<project_id>/tickets/<ticket_id>/worker-context` (ticket/project context only)
 - `POST /api/projects/<project_id>/tickets/<ticket_id>/logs` (append execution logs)
 - `POST /api/projects/<project_id>/tickets/<ticket_id>/complete` (mark ticket complete)
 
@@ -199,7 +199,7 @@ No mixing with your project’s Dockerfile. The agent image is built once and re
 - **PR review automation**: the app can poll PRs in review, enqueue “review jobs”, and let the agent address comments.
 - **Cancelable runs**: worker-facing cancel flag + polling endpoint so you can stop a run cleanly.
 - **Per-project execution mode**: run jobs in Docker (clone in container) or Local (run at a configured host path).
-- **Encrypted secrets (optional)**: sensitive settings can be stored encrypted at rest with `TERARCHITECT_SECRET_KEY`.
+- **Env-only config**: each service (backend, coordinator) uses a simple `.env` that fits its needs; no shared settings store. See `example.env`.
 - **Vector search + safety**: pgvector-backed embeddings with an ORM-safe approach (avoids accidentally selecting vector columns).
 - **Operator-friendly debugging**: scripts for requeueing tickets, dumping logs/memory, and smoke-testing OpenCode server/CLI.
 

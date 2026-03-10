@@ -36,13 +36,6 @@ const Navbar: React.FC<NavbarProps> = () => {
           >
             Projects
           </Button>
-          <Button
-            component={Link}
-            to="/settings"
-            color={location.pathname === '/settings' ? 'primary' : 'inherit'}
-          >
-            Settings
-          </Button>
         </Box>
       </Toolbar>
     </AppBar>

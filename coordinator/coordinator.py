@@ -1,10 +1,11 @@
 """
 Phase 4: Coordinator. Loop: claim job → run agent in Docker (or on host if execution_mode=local) → complete/fail.
+Loads coordinator/.env so DIRECTOR_*, WORKER_*, etc. are available when run from repo root.
 - Keeps a per-project image tag in state dir (COORDINATOR_STATE_DIR, default ~/.terarchitect/coordinator).
 - If docker run fails, job is marked failed and the Docker error is printed to stderr (no host fallback).
 - Docker agent containers reach host services (backend, vLLM, etc.) via host.docker.internal; coordinator
   rewrites localhost/127.0.0.1 in env URLs so this works on Mac, Windows (Docker Desktop), and Linux.
-Env: TERARCHITECT_API_URL, [TERARCHITECT_WORKER_API_KEY], [PROJECT_ID or PROJECT_IDS (comma; if omitted, claims from any project)],
+Env: TERARCHITECT_API_URL, [TERARCHITECT_WORKER_API_KEY], [PROJECT_ID or PROJECT_IDS (comma; if omitted, fetches project IDs from GET /api/worker/projects, or claims from any project if fetch fails)],
 AGENT_IMAGE (default terarchitect-agent), MAX_CONCURRENT_AGENTS (default 1), POLL_INTERVAL_SEC (default 10),
 AGENT_CACHE_VOLUME, COORDINATOR_STATE_DIR, COORDINATOR_REPO_ROOT (for direct agent run fallback).
 AGENT_DOCKER_MODE: "dind" (default) — run --privileged with an isolated dockerd inside each container;
@@ -21,7 +22,13 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from dotenv import load_dotenv
+
 import requests
+
+# Load .env from coordinator directory (so "python -m coordinator" from repo root sees coordinator/.env)
+_load_dir = Path(__file__).resolve().parent
+load_dotenv(_load_dir / ".env")
 
 
 def _env(key: str, default: Optional[str] = None) -> str:
@@ -87,6 +94,24 @@ def _base_url() -> str:
     return url.rstrip("/")
 
 
+
+# Env vars forwarded from coordinator -> agent runtime (docker/local).
+# Backend no longer provides agent_env in job payload.
+_COORDINATOR_AGENT_ENV_KEYS = (
+    "GITHUB_TOKEN", "GH_TOKEN", "GITHUB_AGENT_TOKEN", "github_agent_token",
+    "GIT_USER_NAME", "GIT_USER_EMAIL",
+    "DIRECTOR_PROVIDER", "DIRECTOR_LLM_URL", "DIRECTOR_MODEL", "DIRECTOR_API_KEY",
+    "WORKER_MODE", "WORKER_LLM_URL", "WORKER_MODEL", "WORKER_API_KEY", "WORKER_TIMEOUT_SEC",
+    "MIDDLE_AGENT_DEBUG",
+    "EMBEDDING_PROVIDER", "EMBEDDING_SERVICE_URL", "EMBEDDING_API_KEY",
+    "MEMORY_EMBEDDING_MODEL", "MEMORY_EMBEDDING_BASE_URL",
+    "MEMORY_LLM_MODEL", "MEMORY_LLM_BASE_URL", "MEMORY_LLM_API_KEY",
+    "OPENAI_API_KEY", "openai_api_key",
+    "TERARCHITECT_WORKER_API_KEY",
+    "OPENCODE_SERVER_URL", "OPENCODE_SERVER_USERNAME", "OPENCODE_SERVER_PASSWORD",
+    "BRAVE_API_KEY", "BRAVE_SEARCH_API_KEY",
+)
+
 def _headers() -> dict:
     token = _env("TERARCHITECT_WORKER_API_KEY")
     if not token:
@@ -94,19 +119,30 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def fetch_max_concurrent(base_url: str, fallback: int) -> int:
-    """Fetch MAX_CONCURRENT_AGENTS from the backend settings API. Returns fallback on any error or if unset.
-    Called each poll cycle so the value can be changed in the UI without restarting the coordinator."""
+def _max_concurrent(fallback: int = 1) -> int:
+    """Read MAX_CONCURRENT_AGENTS from coordinator environment. Set in .env or before starting."""
+    raw = _env("MAX_CONCURRENT_AGENTS", str(fallback)) or str(fallback)
     try:
-        r = requests.get(f"{base_url}/api/settings", headers=_headers(), timeout=10)
+        return max(1, int(raw))
+    except (ValueError, TypeError):
+        return max(1, fallback)
+
+
+def fetch_project_ids(base_url: str) -> List[str]:
+    """GET /api/worker/projects. Returns list of project id strings, or empty list on failure."""
+    try:
+        r = requests.get(
+            f"{base_url}/api/worker/projects",
+            headers=_headers(),
+            timeout=30,
+        )
         r.raise_for_status()
-        raw = r.json().get("MAX_CONCURRENT_AGENTS")
-        if raw is not None and str(raw).strip():
-            val = int(str(raw).strip())
-            return max(1, val)
-    except Exception:
-        pass
-    return fallback
+        data = r.json()
+        projects = data.get("projects") or []
+        return [str(p["id"]) for p in projects if p.get("id")]
+    except Exception as e:
+        print(f"[coordinator] fetch projects error: {e}", file=sys.stderr)
+        return []
 
 
 def claim_job(base_url: str, project_id: Optional[str] = None) -> Optional[dict]:
@@ -150,9 +186,49 @@ def mark_fail(base_url: str, job_id: str) -> None:
         print(f"[coordinator] fail error: {e}", file=sys.stderr)
 
 
+def post_failure_log(
+    base_url: str,
+    job: dict,
+    combined_output: str,
+    *,
+    exit_code: Optional[int] = None,
+    reason: str = "docker",
+) -> None:
+    """Post failure details to the ticket so the user sees the stacktrace in the UI."""
+    project_id = str(job.get("project_id", ""))
+    ticket_id = str(job.get("ticket_id", ""))
+    job_id = str(job.get("job_id", ""))
+    if not project_id or not ticket_id:
+        return
+    summary = f"Execution failed ({reason})"
+    if exit_code is not None:
+        summary += f" (exit {exit_code})"
+    session_id = f"coordinator-{job_id}"
+    payload = {
+        "session_id": session_id,
+        "step": "failed",
+        "summary": summary,
+        "raw_output": combined_output,
+        "success": False,
+    }
+    try:
+        r = requests.post(
+            f"{base_url}/api/projects/{project_id}/tickets/{ticket_id}/logs",
+            json=payload,
+            headers=_headers(),
+            timeout=30,
+        )
+        if r.ok:
+            print(f"[coordinator] posted failure log to ticket {ticket_id}", flush=True)
+        else:
+            print(f"[coordinator] could not post failure log: {r.status_code} {r.text[:200]}", file=sys.stderr)
+    except Exception as e:
+        print(f"[coordinator] post failure log error: {e}", file=sys.stderr)
+
+
 def job_to_env(job: dict, for_docker: bool = False) -> dict:
-    """Build env for container/host from job payload. Job may include agent_env from backend (Settings/DB).
-    When for_docker=True, only job + agent_env vars are included (no host os.environ dump)."""
+    """Build env for container/host from job payload.
+    When for_docker=True, only job vars + explicit coordinator-forwarded agent vars are included."""
     env = {} if for_docker else dict(os.environ)
     env["TICKET_ID"] = str(job.get("ticket_id", ""))
     env["PROJECT_ID"] = str(job.get("project_id", ""))
@@ -165,14 +241,11 @@ def job_to_env(job: dict, for_docker: bool = False) -> dict:
     # App URL: coordinator uses it to claim jobs; container needs to reach host
     if "TERARCHITECT_API_URL" not in env or not env["TERARCHITECT_API_URL"]:
         env["TERARCHITECT_API_URL"] = _env("TERARCHITECT_API_URL", "")
-    # Agent env from backend (Settings/DB) overrides coordinator env for those keys
-    for k, v in job.get("agent_env", {}).items():
-        if v is not None and str(v).strip():
-            env[k] = str(v).strip()
-    # Fallback when backend does not send agent_env (e.g. older backend)
-    for key in ("TERARCHITECT_WORKER_API_KEY", "GITHUB_TOKEN", "GH_TOKEN"):
-        if os.environ.get(key) and (key not in env or not env[key]):
-            env[key] = os.environ[key]
+
+    for key in _COORDINATOR_AGENT_ENV_KEYS:
+        val = os.environ.get(key)
+        if val is not None and str(val).strip() and (key not in env or not env[key]):
+            env[key] = str(val).strip()
     if job.get("kind") == "review":
         env["PR_NUMBER"] = str(job.get("pr_number", ""))
         env["COMMENT_BODY"] = str(job.get("comment_body", ""))
@@ -312,6 +385,11 @@ def _run_job(base_url: str, job_id: str, job: dict, default_image: str, project_
             mark_complete(base_url, job_id)
             print(f"[coordinator] job {job_id} completed (local)")
         else:
+            post_failure_log(
+                base_url, job,
+                f"Local run failed (exit {code}). Check coordinator logs for details.",
+                exit_code=code, reason="local",
+            )
             mark_fail(base_url, job_id)
             print(f"[coordinator] job {job_id} failed (local exit {code})")
         return
@@ -328,41 +406,46 @@ def _run_job(base_url: str, job_id: str, job: dict, default_image: str, project_
             mark_complete(base_url, job_id)
             print(f"[coordinator] job {job_id} completed (docker)")
             return
-        # Docker run failed; mark job failed and print error (no host fallback)
+        # Docker run failed; post failure to ticket so user sees stacktrace in UI, then mark job failed
         print(f"[coordinator] job {job_id} docker failed (exit {result.returncode})", flush=True)
         _print_docker_error(combined)
+        post_failure_log(base_url, job, combined, exit_code=result.returncode, reason="docker")
         mark_fail(base_url, job_id)
     except subprocess.TimeoutExpired:
+        post_failure_log(
+            base_url, job,
+            "Docker run timed out (coordinator did not receive exit from container).",
+            reason="docker_timeout",
+        )
         mark_fail(base_url, job_id)
         print(f"[coordinator] job {job_id} failed (docker timeout)", file=sys.stderr, flush=True)
     except Exception as e:
         err_msg = str(e)
         print(f"[coordinator] job {job_id} docker error: {e}", file=sys.stderr, flush=True)
         _print_docker_error(err_msg)
+        post_failure_log(base_url, job, f"Coordinator error starting or running container:\n{err_msg}", reason="coordinator_error")
         mark_fail(base_url, job_id)
 
 
 def main() -> None:
-    project_ids = _project_ids()
     base_url = _base_url()
+    project_ids = _project_ids()
+    if not project_ids:
+        project_ids = fetch_project_ids(base_url)
+        if project_ids:
+            print(f"[coordinator] fetched {len(project_ids)} project(s) from API", flush=True)
     default_image = _env("AGENT_IMAGE", "terarchitect-agent")
-    # env var is the startup default; the backend setting (set via UI) overrides it each poll cycle.
-    env_max_concurrent = max(1, int(_env("MAX_CONCURRENT_AGENTS", "1") or "1"))
     poll_interval = float(_env("POLL_INTERVAL_SEC", "10") or "10")
-
     running: List[threading.Thread] = []
     docker_mode = _env("AGENT_DOCKER_MODE", "dind").lower()
     scope = f"projects={project_ids}" if project_ids else "all projects"
-    # Fetch initial value (may differ from env if already set in the UI)
-    max_concurrent = fetch_max_concurrent(base_url, env_max_concurrent)
+    max_concurrent = _max_concurrent(1)
     print(f"[coordinator] started; scope={scope}, default_image={default_image}, max_concurrent={max_concurrent}, docker_mode={docker_mode}", flush=True)
     print(f"[coordinator] state_dir={_state_dir()}, repo_root={_repo_root()}", flush=True)
     while True:
-        # Reap finished threads
         running = [t for t in running if t.is_alive()]
 
-        # Re-read max_concurrent each cycle so UI changes take effect without restart
-        new_max = fetch_max_concurrent(base_url, env_max_concurrent)
+        new_max = _max_concurrent(1)
         if new_max != max_concurrent:
             print(f"[coordinator] max_concurrent changed: {max_concurrent} → {new_max}", flush=True)
             max_concurrent = new_max
