@@ -25,7 +25,7 @@ def create_app():
                 re.compile(r"http://127\.0\.0\.1:\d+"),
             ],
             "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-            "allow_headers": ["Content-Type"]
+            "allow_headers": ["Content-Type", "Authorization"]
         }
     })
 
@@ -60,9 +60,13 @@ def create_app():
     app.register_blueprint(embedding_bp)
 
     # Background thread: PR comment poll; new comments enqueue to agent_jobs. No in-process agent.
+    # Use an app-level attribute to ensure only one polling thread starts per process even if
+    # create_app() is called multiple times (e.g. during testing or Gunicorn preload).
     import threading
-    runner = threading.Thread(target=_run_pr_poll_loop, args=(app,), kwargs={"pr_poll_seconds": 600}, daemon=True)
-    runner.start()
+    if not getattr(app, "_pr_poll_started", False):
+        app._pr_poll_started = True
+        runner = threading.Thread(target=_run_pr_poll_loop, args=(app,), kwargs={"pr_poll_seconds": 600}, daemon=True)
+        runner.start()
 
     # Health check endpoint
     @app.route("/health")

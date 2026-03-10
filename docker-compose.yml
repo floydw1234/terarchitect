@@ -60,6 +60,8 @@ services:
       dockerfile: Dockerfile.frontend
     container_name: terarchitect-frontend
     environment:
+      # localhost:5010 is reachable from the browser on the host machine (port is exposed).
+      # The frontend is a client-side React app — this URL is used by the browser, not the container.
       - REACT_APP_API_URL=http://localhost:5010
     volumes:
       - ./frontend:/app

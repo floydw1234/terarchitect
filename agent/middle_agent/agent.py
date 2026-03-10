@@ -215,6 +215,10 @@ class MiddleAgent:
         self.worker_api_key = (get_setting_or_env("WORKER_API_KEY") or "").strip() or None
         self.worker_timeout_sec: int = int(get_setting_or_env("WORKER_TIMEOUT_SEC") or "3600")
 
+        # Active ticket context for intra-turn logging (OpenCode streaming). Set per process_ticket call.
+        self._active_project_id: Optional[uuid.UUID] = None
+        self._active_ticket_id: Optional[uuid.UUID] = None
+
     def _env_has_container_url(self, key: str) -> bool:
         """True if env has key with host.docker.internal (coordinator set container-safe URL; don't overwrite with backend localhost)."""
         return "host.docker.internal" in (os.environ.get(key) or "")
@@ -372,7 +376,8 @@ class MiddleAgent:
                 return fallback
             first_line = content.split("\n")[0].strip()
             return first_line[:200] if first_line else fallback
-        except Exception:
+        except Exception as e:
+            self._debug_log(f"Commit message generation failed: {e}")
             return fallback
 
     @staticmethod
@@ -404,8 +409,8 @@ class MiddleAgent:
                     capture_output=True,
                     timeout=10,
                 )
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
-            pass
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+            print(f"[MIDDLE_AGENT] _commit_if_changes failed: {e}", file=sys.stderr)
 
     @staticmethod
     def _extract_memory_passages(results: List[dict]) -> List[str]:
@@ -697,6 +702,10 @@ class MiddleAgent:
             self._apply_agent_settings(context["agent_settings"])
         self._reapply_container_urls_from_env()
 
+        # Store active IDs so _send_to_worker can post intra-turn logs (OpenCode streaming).
+        self._active_project_id = project_id
+        self._active_ticket_id = ticket_id
+
         session_id = str(uuid.uuid4())
         self._log(project_id, ticket_id, session_id, "session_started", f"Started worker session {session_id}")
         self._debug_log("Session started, loading context...")
@@ -720,6 +729,7 @@ class MiddleAgent:
             return
 
         try:
+            completion_summary: Optional[str] = None  # initialized here so _finalize always has a defined value
             base_save_dir = None  # Not used; memory via backend
             memory_kwargs = {}
             branch_name = self._ensure_ticket_branch(ticket, project_path, session_id, ticket_id)
@@ -863,34 +873,35 @@ class MiddleAgent:
                             conversation_history.append(response.get("output") or "")
                             self._trace_log(session_id, f"[Worker -> Director] Full plan response:\n{full_plan_out}", project_path)
                             self._debug_log("[Worker -> Director] Full plan response:\n" + (full_plan_out[:800] + "..." if len(full_plan_out) > 800 else full_plan_out))
-                    if not approved_plan_text:
-                        approved_plan_text = (agent_response.get("approved_plan_text") or "").strip() or latest_output[:8000]
-                    self._debug_log("Plan approved, entering execution")
-                    self._log(ticket.project_id, ticket_id, session_id, "plan_approved", "Plan approved, entering execution")
-                    break
-                    next_prompt = agent_response.get("next_prompt")
-                    if not next_prompt:
-                        raise AgentAPIError("Agent API returned no next_prompt during plan review")
-                    self._trace_log(session_id, f"[Director -> Worker] Plan-review turn {plan_turn + 1}:\n{next_prompt}", project_path)
-                    self._debug_log(f"[Director -> Worker] Plan-review turn {plan_turn + 1}:\n" + (next_prompt[:800] + "..." if len(next_prompt) > 800 else next_prompt))
-                    self._log(
-                        ticket.project_id, ticket_id, session_id,
-                        f"worker_plan_review_{plan_turn + 1}_prompt",
-                        f"Plan review feedback (turn {plan_turn + 1})",
-                        raw_output=next_prompt,
-                    )
-                    response = self._send_to_worker(next_prompt, session_id, project_path, resume=True)
-                    plan_review_out = response.get("output") or ""
-                    prompt_history.append(next_prompt)
-                    conversation_history.append(plan_review_out)
-                    self._trace_log(session_id, f"[Worker -> Director] Plan-review turn {plan_turn + 1} response:\n{plan_review_out}", project_path)
-                    self._debug_log(f"[Worker -> Director] Plan-review turn {plan_turn + 1} response:\n" + (plan_review_out[:800] + "..." if len(plan_review_out) > 800 else plan_review_out))
-                    self._log(
-                        ticket.project_id, ticket_id, session_id,
-                        f"worker_plan_review_{plan_turn + 1}",
-                        f"Plan review turn {plan_turn + 1} completed",
-                        raw_output=response.get("output"),
-                    )
+                        if not approved_plan_text:
+                            approved_plan_text = (agent_response.get("approved_plan_text") or "").strip() or latest_output[:8000]
+                        self._debug_log("Plan approved, entering execution")
+                        self._log(ticket.project_id, ticket_id, session_id, "plan_approved", "Plan approved, entering execution")
+                        break
+                    else:
+                        next_prompt = agent_response.get("next_prompt")
+                        if not next_prompt:
+                            raise AgentAPIError("Agent API returned no next_prompt during plan review")
+                        self._trace_log(session_id, f"[Director -> Worker] Plan-review turn {plan_turn + 1}:\n{next_prompt}", project_path)
+                        self._debug_log(f"[Director -> Worker] Plan-review turn {plan_turn + 1}:\n" + (next_prompt[:800] + "..." if len(next_prompt) > 800 else next_prompt))
+                        self._log(
+                            ticket.project_id, ticket_id, session_id,
+                            f"worker_plan_review_{plan_turn + 1}_prompt",
+                            f"Plan review feedback (turn {plan_turn + 1})",
+                            raw_output=next_prompt,
+                        )
+                        response = self._send_to_worker(next_prompt, session_id, project_path, resume=True)
+                        plan_review_out = response.get("output") or ""
+                        prompt_history.append(next_prompt)
+                        conversation_history.append(plan_review_out)
+                        self._trace_log(session_id, f"[Worker -> Director] Plan-review turn {plan_turn + 1} response:\n{plan_review_out}", project_path)
+                        self._debug_log(f"[Worker -> Director] Plan-review turn {plan_turn + 1} response:\n" + (plan_review_out[:800] + "..." if len(plan_review_out) > 800 else plan_review_out))
+                        self._log(
+                            ticket.project_id, ticket_id, session_id,
+                            f"worker_plan_review_{plan_turn + 1}",
+                            f"Plan review turn {plan_turn + 1} completed",
+                            raw_output=response.get("output"),
+                        )
 
                 # If plan was never approved (e.g. max_plan_review_turns exhausted), use plan file as fallback so execution still has a plan to follow.
                 if not approved_plan_text:
@@ -933,7 +944,8 @@ class MiddleAgent:
                 completion_summary=completion_summary,
             )
         finally:
-            pass  # no cleanup needed; cancel is via API
+            self._active_project_id = None
+            self._active_ticket_id = None
 
     def _run_pr_review_flow(
         self,
@@ -1060,6 +1072,9 @@ class MiddleAgent:
                 self.description = cur.get("description") or ""
         ticket = _TicketLike(project_id, ticket_id, context)
         session_id = str(uuid.uuid4())
+        # Store active IDs so _send_to_worker can post intra-turn logs (OpenCode streaming).
+        self._active_project_id = project_id
+        self._active_ticket_id = ticket_id
         self._log(project_id, ticket_id, session_id, "review_started", "Started PR review feedback session")
         if not self._validate_config(project_id, ticket_id, session_id):
             sys.exit(1)
@@ -1087,15 +1102,19 @@ class MiddleAgent:
         )
         self._debug_log("Posting reply to PR comment, then finalizing")
         pr_comment_body = self._generate_pr_comment_reply(comment_body, completion_summary or "")
-        self._finalize(
-            ticket,
-            session_id,
-            project_path=project_path,
-            completion_summary=completion_summary,
-            review_mode=True,
-            pr_number_for_comment=pr_number,
-            pr_comment_body=pr_comment_body,
-        )
+        try:
+            self._finalize(
+                ticket,
+                session_id,
+                project_path=project_path,
+                completion_summary=completion_summary,
+                review_mode=True,
+                pr_number_for_comment=pr_number,
+                pr_comment_body=pr_comment_body,
+            )
+        finally:
+            self._active_project_id = None
+            self._active_ticket_id = None
     @staticmethod
     def _ticket_summary(t: TicketLike, mark_current: bool = False) -> dict:
         """Minimal ticket payload for context (id, title, description, priority, column_id, status)."""
@@ -1231,14 +1250,22 @@ class MiddleAgent:
         session_id: str,
         project_path: Optional[str] = None,
         resume: bool = False,
+        # These are threaded through from process_ticket so intermediate logs
+        # can be posted while the worker is running (OpenCode streaming mode).
+        project_id: Optional["uuid.UUID"] = None,
+        ticket_id: Optional["uuid.UUID"] = None,
     ) -> dict:
         """Send a prompt to the configured worker. Dispatches to OpenCode (HTTP) or Claude Code (CLI) based on worker_mode."""
         if self.worker_mode == "claude-code":
             return self._call_claude_code_worker(prompt, session_id, project_path, resume)
+        # Use caller-supplied IDs or fall back to the instance-level active context
+        # set by process_ticket / process_ticket_review.
+        _pid = project_id or getattr(self, "_active_project_id", None)
+        _tid = ticket_id or getattr(self, "_active_ticket_id", None)
         # --- OpenCode HTTP server ---
         # Routes per https://opencode.ai/docs/server:
-        # POST /session (body: title), POST /session/:id/summarize (body: providerID, modelID),
-        # POST /session/:id/message (body: parts, model). Directory via query or x-opencode-directory header.
+        # POST /session (body: title), POST /session/:id/prompt_async (fire-and-forget),
+        # GET /event (SSE stream with session.idle to detect completion).
         base = self._opencode_server_url.rstrip("/")
         timeout_sec = self.worker_timeout_sec
         local_model_name = self.worker_model
@@ -1287,53 +1314,221 @@ class MiddleAgent:
                     msg += f" Response: {e.response.text[:500]}"
                 raise WorkerUnavailableError(msg, cause=e) from e
 
-        headers = {"Content-Type": "application/json"}
+        prompt_headers = {"Content-Type": "application/json"}
         if project_path and os.path.isdir(project_path):
-            headers["x-opencode-directory"] = project_path
-        # API expects model as object { providerID, modelID }, not a string.
+            prompt_headers["x-opencode-directory"] = project_path
         model_obj = {"providerID": self.worker_provider_id, "modelID": local_model_name}
+        prompt_body = {
+            "parts": [{"type": "text", "text": prompt}],
+            "model": model_obj,
+        }
+
+        # Fire the prompt asynchronously so we can stream progress via SSE.
         try:
-            r = requests.post(
-                f"{base}/session/{worker_session_id}/message",
-                json={
-                    "parts": [{"type": "text", "text": prompt}],
-                    "model": model_obj,
-                },
-                headers=headers,
+            r_async = requests.post(
+                f"{base}/session/{worker_session_id}/prompt_async",
+                json=prompt_body,
+                headers=prompt_headers,
                 auth=self._opencode_auth,
-                timeout=timeout_sec,
+                timeout=30,
+            )
+            # prompt_async returns 204 No Content on success.
+            if r_async.status_code not in (200, 201, 204):
+                # Fall back to synchronous /message if prompt_async is not supported.
+                self._debug_log(f"prompt_async returned {r_async.status_code}; falling back to synchronous /message")
+                raise requests.RequestException(f"prompt_async status {r_async.status_code}")
+        except requests.RequestException:
+            # Fallback: synchronous POST /message (no streaming logs, but still works).
+            self._debug_log("prompt_async unavailable; using synchronous POST /message (no intra-turn logs)")
+            try:
+                r_sync = requests.post(
+                    f"{base}/session/{worker_session_id}/message",
+                    json=prompt_body,
+                    headers=prompt_headers,
+                    auth=self._opencode_auth,
+                    timeout=timeout_sec,
+                )
+                r_sync.raise_for_status()
+                output = self._extract_opencode_output(r_sync.json())
+                self._worker_turn_count[session_id] = turn_count + 1
+                if session_id and project_path:
+                    self._trace_log(session_id, f"OpenCode sync response len={len(output)}", project_path)
+                return {"output": output, "error": "", "return_code": 0}
+            except requests.RequestException as e:
+                msg = f"OpenCode server unreachable (message): {e}. Is opencode serve running at {base}?"
+                if getattr(e, "response", None) is not None and e.response.text:
+                    msg += f" Response: {e.response.text[:500]}"
+                raise WorkerUnavailableError(msg, cause=e) from e
+
+        # --- Stream SSE /event until session.idle for this worker session ---
+        output = self._stream_opencode_until_idle(
+            base=base,
+            worker_session_id=worker_session_id,
+            timeout_sec=timeout_sec,
+            project_id=_pid,
+            ticket_id=_tid,
+            session_id=session_id,
+            project_path=project_path,
+        )
+        self._worker_turn_count[session_id] = turn_count + 1
+        if session_id and project_path:
+            self._trace_log(session_id, f"OpenCode streaming response len={len(output)}", project_path)
+        return {"output": output, "error": "", "return_code": 0}
+
+    @staticmethod
+    def _extract_opencode_output(data: Any) -> str:
+        """Extract text output from an OpenCode message response dict."""
+        if isinstance(data, list) and data:
+            data = data[-1]
+        if not isinstance(data, dict):
+            return ""
+        parts = data.get("parts") or []
+        if not isinstance(parts, list):
+            parts = []
+        text_bits = []
+        for p in parts:
+            if not isinstance(p, dict):
+                continue
+            pt = p.get("type")
+            if pt in ("text", "reasoning"):
+                text_bits.append((p.get("text") or "").strip())
+        return ("\n".join(t for t in text_bits if t)).strip()
+
+    def _stream_opencode_until_idle(
+        self,
+        base: str,
+        worker_session_id: str,
+        timeout_sec: int,
+        project_id: Optional["uuid.UUID"],
+        ticket_id: Optional["uuid.UUID"],
+        session_id: str,
+        project_path: Optional[str],
+    ) -> str:
+        """Subscribe to GET /event SSE stream and wait for session.idle for worker_session_id.
+        Posts intermediate tool-use log entries while the worker is active.
+        Returns the final text output from the completed assistant message."""
+        import time
+
+        event_url = f"{base}/event"
+        deadline = time.monotonic() + timeout_sec
+        last_log_time = time.monotonic()
+        log_interval = 15.0  # post a heartbeat log at most once per 15s
+        tool_calls_seen: List[str] = []
+
+        self._debug_log(f"SSE stream: waiting for session.idle on worker_session={worker_session_id}")
+        try:
+            with requests.get(
+                event_url,
+                stream=True,
+                auth=self._opencode_auth,
+                timeout=(10, timeout_sec),  # (connect, read)
+            ) as resp:
+                resp.raise_for_status()
+                event_type = ""
+                data_lines: List[str] = []
+
+                for raw_line in resp.iter_lines(decode_unicode=True):
+                    if time.monotonic() > deadline:
+                        self._debug_log(f"SSE stream: timeout after {timeout_sec}s")
+                        break
+
+                    if raw_line is None:
+                        continue
+                    line = raw_line.strip()
+
+                    if line.startswith("event:"):
+                        event_type = line[len("event:"):].strip()
+                        data_lines = []
+                    elif line.startswith("data:"):
+                        data_lines.append(line[len("data:"):].strip())
+                    elif line == "":
+                        # Blank line = end of one SSE event; dispatch it.
+                        raw_data = "\n".join(data_lines)
+                        data_lines = []
+
+                        try:
+                            payload = json.loads(raw_data) if raw_data else {}
+                        except json.JSONDecodeError:
+                            payload = {}
+
+                        # All events carry a properties object; session events have sessionID inside.
+                        props = payload.get("properties") or payload
+                        evt_session_id = (
+                            props.get("sessionID")
+                            or props.get("session_id")
+                            or (props.get("info") or {}).get("sessionID")
+                            or ""
+                        )
+
+                        if evt_session_id and evt_session_id != worker_session_id:
+                            # Event belongs to a different session; ignore.
+                            event_type = ""
+                            continue
+
+                        # Detect tool-call activity for intermediate logging.
+                        resolved_type = event_type or (payload.get("type") or "")
+                        if "tool" in resolved_type.lower() or "part" in resolved_type.lower():
+                            part = props.get("part") or props
+                            tool_name = (
+                                part.get("tool") or part.get("name")
+                                or part.get("toolName") or part.get("call", {}).get("name")
+                                or ""
+                            )
+                            if tool_name and tool_name not in tool_calls_seen:
+                                tool_calls_seen.append(tool_name)
+
+                        # Post a heartbeat log if tools have accumulated or enough time has passed.
+                        now = time.monotonic()
+                        if project_id and ticket_id and (now - last_log_time >= log_interval):
+                            tools_summary = ", ".join(tool_calls_seen[-5:]) if tool_calls_seen else "working…"
+                            self._log(
+                                project_id, ticket_id, session_id,
+                                "worker_activity",
+                                f"Worker active — recent tools: {tools_summary}",
+                            )
+                            last_log_time = now
+
+                        # session.idle = turn complete; fetch the final message and return.
+                        if "idle" in resolved_type.lower() and (not evt_session_id or evt_session_id == worker_session_id):
+                            self._debug_log(f"SSE stream: session.idle received for {worker_session_id}")
+                            return self._fetch_opencode_last_message(base, worker_session_id)
+
+                        event_type = ""
+
+        except requests.RequestException as e:
+            raise WorkerUnavailableError(
+                f"OpenCode SSE stream error: {e}. Is opencode serve running at {base}?",
+                cause=e,
+            ) from e
+
+        # Timed out or stream ended without idle; try to fetch whatever messages exist.
+        self._debug_log(f"SSE stream: ended without session.idle; fetching messages as fallback")
+        return self._fetch_opencode_last_message(base, worker_session_id)
+
+    def _fetch_opencode_last_message(self, base: str, worker_session_id: str) -> str:
+        """Fetch all messages for a session and return the text of the last assistant message."""
+        try:
+            r = requests.get(
+                f"{base}/session/{worker_session_id}/message",
+                auth=self._opencode_auth,
+                timeout=30,
             )
             r.raise_for_status()
-            data = r.json()
-            # API returns { info: Message, parts: Part[] }. Some servers may return array of message objects.
-            if isinstance(data, list) and data:
-                data = data[-1]
-            parts = data.get("parts") or []
-            if not isinstance(parts, list):
-                parts = []
-            # Collect text from "text" and "reasoning" parts (OpenCode SDK: TextPart, ReasoningPart).
-            text_bits = []
-            for p in parts:
-                if not isinstance(p, dict):
-                    continue
-                pt = p.get("type")
-                if pt == "text":
-                    text_bits.append((p.get("text") or "").strip())
-                elif pt == "reasoning":
-                    text_bits.append((p.get("text") or "").strip())
-            output = ("\n".join(t for t in text_bits if t)).strip()
-            if not output and parts and self.debug:
-                part_types = [p.get("type") for p in parts if isinstance(p, dict)]
-                self._debug_log(f"OpenCode message response empty; parts count={len(parts)}, types={part_types!r}, keys={list(data.keys())!r}")
-            self._worker_turn_count[session_id] = turn_count + 1
-            if session_id and project_path:
-                self._trace_log(session_id, f"OpenCode API response len={len(str(output))}", project_path)
-            return {"output": output or "", "error": "", "return_code": 0}
+            messages = r.json()
+            if not isinstance(messages, list):
+                messages = [messages]
+            # Find the last assistant message (role == "assistant").
+            for msg in reversed(messages):
+                info = msg.get("info") or {}
+                role = info.get("role") or ""
+                if role == "assistant":
+                    return self._extract_opencode_output(msg)
+            # No assistant message found; try extracting from last entry anyway.
+            if messages:
+                return self._extract_opencode_output(messages[-1])
         except requests.RequestException as e:
-            msg = f"OpenCode server unreachable (message): {e}. Is opencode serve running at {base}?"
-            if getattr(e, "response", None) is not None and e.response.text:
-                msg += f" Response: {e.response.text[:500]}"
-            raise WorkerUnavailableError(msg, cause=e) from e
+            self._debug_log(f"_fetch_opencode_last_message failed: {e}")
+        return ""
 
     def _summarize_director_messages(self, messages: List[Dict[str, str]]) -> str:
         """Call the agent API to summarize a chunk of Director conversation. Returns summary text."""
@@ -1379,7 +1574,9 @@ Output a single concise narrative. No JSON, no labels—just prose."""
         out = list(director_messages)
         new_user_msg = {"role": "user", "content": new_user_content}
         system_msg = {"role": "system", "content": system_content}
-        while True:
+        # Cap iterations: at most ceil(len(out) / chunk_size) rounds needed to reduce to one summary.
+        max_iterations = max(1, len(out) // _DIRECTOR_COMPACT_CHUNK_SIZE + 1) * 2
+        for _ in range(max_iterations):
             full = [system_msg] + out + [new_user_msg]
             if _count_tokens_for_messages(full) <= token_limit:
                 return out
@@ -1389,6 +1586,7 @@ Output a single concise narrative. No JSON, no labels—just prose."""
             summary = self._summarize_director_messages(chunk)
             summary_msg = {"role": "user", "content": "Previous conversation (summarized):\n\n" + summary}
             out = [summary_msg] + out[_DIRECTOR_COMPACT_CHUNK_SIZE:]
+        return out
 
     def _agent_assess(
         self,
@@ -1466,8 +1664,8 @@ Judge the plan. Respond in JSON only: plan_approved (true/false). If true, inclu
 Assess: Is the ticket complete? Respond in JSON only."""
         else:
             n = max(len(prompt_history), len(conversation_history))
-            prompt = prompt_history[n - 1] if n and n <= len(prompt_history) else ""
-            response = conversation_history[n - 1] if n and n <= len(conversation_history) else ""
+            prompt = prompt_history[-1] if prompt_history else ""
+            response = conversation_history[-1] if conversation_history else ""
             if is_plan_review:
                 user_msg_content = f"""{memory_block}New worker turn:
 
@@ -1845,9 +2043,9 @@ Write a clear, descriptive paragraph for the PR description explaining what was 
                 )
                 if review_mode and pr_number_for_comment is not None:
                     body = (pr_comment_body or completion_summary or "Addressed review feedback.").strip()
-                    body = body + "\n\n" + BOT_COMMENT_SIGNATURE
                     if len(body) > 60000:
                         body = body[:59997] + "..."
+                    body = body + "\n\n" + BOT_COMMENT_SIGNATURE
                     subprocess.run(
                         ["gh", "pr", "comment", str(pr_number_for_comment), "--body", body],
                         cwd=project_path,
@@ -1925,6 +2123,8 @@ def build_worker_context(ticket: Any) -> dict:
     from models.db import Project, Graph, Note, Ticket as TicketModel
 
     project = Project.query.get(ticket.project_id)
+    if project is None:
+        raise ValueError(f"Project {ticket.project_id} not found for ticket {ticket.id}")
     current_id = ticket.id
     context = {
         "project_name": project.name,

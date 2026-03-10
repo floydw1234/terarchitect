@@ -106,32 +106,33 @@ const RunningStrip: React.FC<RunningStripProps> = ({ tickets, projectId, onStop,
 
   const ticketIds = tickets.map((t) => t.id).join(',');
 
+  const fetchAll = useRef(async (ticketList: typeof tickets) => {
+    const updates: Record<string, ExecutionLogEntry[]> = {};
+    await Promise.all(
+      ticketList.map(async (t) => {
+        try {
+          updates[t.id] = await getTicketLogs(projectId, t.id);
+        } catch {
+          updates[t.id] = [];
+        }
+      })
+    );
+    setLogs((prev) => ({ ...prev, ...updates }));
+  });
+
   useEffect(() => {
     if (tickets.length === 0) {
       setLogs({});
       return;
     }
 
-    const fetchAll = async () => {
-      const updates: Record<string, ExecutionLogEntry[]> = {};
-      await Promise.all(
-        tickets.map(async (t) => {
-          try {
-            updates[t.id] = await getTicketLogs(projectId, t.id);
-          } catch {
-            updates[t.id] = [];
-          }
-        })
-      );
-      setLogs((prev) => ({ ...prev, ...updates }));
-    };
-
-    fetchAll();
-    intervalRef.current = setInterval(fetchAll, 10_000);
+    fetchAll.current(tickets);
+    const interval = logsModal ? 3_000 : 10_000;
+    intervalRef.current = setInterval(() => fetchAll.current(tickets), interval);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [ticketIds, projectId]); // ticketIds is a stable string derived from ticket IDs
+  }, [ticketIds, projectId, logsModal]); // logsModal included so interval speeds up when modal is open
 
   const handleStop = async (ticketId: string) => {
     setStopping((prev) => new Set(prev).add(ticketId));
@@ -371,6 +372,22 @@ const KanbanPage: React.FC = () => {
       .then((res) => setMissingRequired(res.missing_required ?? []))
       .catch(() => {}); // non-fatal — Run button will fall back to backend validation
   }, [projectId]);
+
+  // Poll ticket statuses while any ticket is in_progress so the Running strip
+  // and log poller stay current without a full page refresh.
+  const inProgressCount = tickets.filter((t) => t.column_id === 'in_progress').length;
+  useEffect(() => {
+    if (!projectId || inProgressCount === 0) return;
+    const id = setInterval(async () => {
+      try {
+        const updated = await getTickets(projectId);
+        setTickets(updated as Ticket[]);
+      } catch {
+        // non-fatal
+      }
+    }, 5_000);
+    return () => clearInterval(id);
+  }, [projectId, inProgressCount]);
 
   const fetchKanban = async () => {
     if (!projectId) return;

@@ -16,6 +16,7 @@ import platform
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -129,25 +130,41 @@ def claim_job(base_url: str, project_id: Optional[str] = None) -> Optional[dict]
 
 
 def mark_complete(base_url: str, job_id: str) -> None:
-    try:
-        requests.post(
-            f"{base_url}/api/worker/jobs/{job_id}/complete",
-            headers=_headers(),
-            timeout=30,
-        )
-    except Exception as e:
-        print(f"[coordinator] complete error: {e}", file=sys.stderr)
+    for attempt in range(3):
+        try:
+            r = requests.post(
+                f"{base_url}/api/worker/jobs/{job_id}/complete",
+                headers=_headers(),
+                timeout=30,
+            )
+            if r.status_code in (200, 409):
+                return
+            r.raise_for_status()
+            return
+        except Exception as e:
+            if attempt == 2:
+                print(f"[coordinator] complete error after 3 attempts: {e}", file=sys.stderr)
+            else:
+                time.sleep(2 ** attempt)
 
 
 def mark_fail(base_url: str, job_id: str) -> None:
-    try:
-        requests.post(
-            f"{base_url}/api/worker/jobs/{job_id}/fail",
-            headers=_headers(),
-            timeout=30,
-        )
-    except Exception as e:
-        print(f"[coordinator] fail error: {e}", file=sys.stderr)
+    for attempt in range(3):
+        try:
+            r = requests.post(
+                f"{base_url}/api/worker/jobs/{job_id}/fail",
+                headers=_headers(),
+                timeout=30,
+            )
+            if r.status_code in (200, 409):
+                return
+            r.raise_for_status()
+            return
+        except Exception as e:
+            if attempt == 2:
+                print(f"[coordinator] fail error after 3 attempts: {e}", file=sys.stderr)
+            else:
+                time.sleep(2 ** attempt)
 
 
 def job_to_env(job: dict, for_docker: bool = False) -> dict:
@@ -191,7 +208,13 @@ def job_to_env(job: dict, for_docker: bool = False) -> dict:
 # Env vars that point to host paths (e.g. Cursor/VS Code git askpass) and break git inside containers.
 _DOCKER_STRIP_ENV = frozenset({"GIT_ASKPASS", "SSH_ASKPASS"})
 
-_RUN_COMMAND_FILE = Path(__file__).resolve().parent / "run_command.txt"
+# Keys whose values should be masked in the reproduced shell command written to disk.
+_SECRET_ENV_KEYS = frozenset({
+    "TERARCHITECT_WORKER_API_KEY", "GH_TOKEN", "GITHUB_TOKEN",
+    "AGENT_API_KEY", "WORKER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+})
+
+_RUN_COMMAND_FILE = Path("/tmp") / "terarchitect_run_command.txt"
 
 
 def _write_run_command(job_id: str, mode: str, *, docker_args: Optional[List[str]] = None, local_cmd: Optional[List[str]] = None, local_env: Optional[Dict[str, str]] = None, cwd: Optional[str] = None) -> None:
@@ -202,15 +225,30 @@ def _write_run_command(job_id: str, mode: str, *, docker_args: Optional[List[str
         "",
     ]
     if docker_args is not None:
-        cmd_str = " ".join(shlex.quote(a) for a in docker_args)
+        # Redact --env-file paths so the run_command.txt file doesn't reference a deleted temp file
+        sanitized = []
+        skip_next = False
+        for arg in docker_args:
+            if skip_next:
+                sanitized.append("<secrets-env-file>")
+                skip_next = False
+            elif arg == "--env-file":
+                sanitized.append(arg)
+                skip_next = True
+            else:
+                sanitized.append(arg)
+        cmd_str = " ".join(shlex.quote(a) for a in sanitized)
         lines.append(cmd_str)
     elif local_cmd is not None and local_env is not None and cwd is not None:
         lines.append(f"# cwd: {cwd}")
         lines.append("")
         for k in sorted(local_env.keys()):
             v = (local_env.get(k) or "")
-            # Escape single quotes for shell: ' -> '\''
-            v = v.replace("'", "'\\''")
+            if k in _SECRET_ENV_KEYS:
+                v = "***"
+            else:
+                # Escape single quotes for shell: ' -> '\''
+                v = v.replace("'", "'\\''")
             lines.append(f"export {k}='{v}'")
         lines.append("")
         lines.append(" ".join(shlex.quote(a) for a in local_cmd))
@@ -223,31 +261,62 @@ def _write_run_command(job_id: str, mode: str, *, docker_args: Optional[List[str
         print(f"[coordinator] could not write run command file: {e}", file=sys.stderr, flush=True)
 
 
-def _docker_run_args(image: str, job: dict) -> List[str]:
-    """Build docker run args (env + image). Cross-platform: container reaches host via host.docker.internal.
-    Mac/Windows Docker Desktop provide it; on Linux we add --add-host=host.docker.internal:host-gateway.
-    When DOCKER_NETWORK is set (e.g. in compose), add --network so agent containers can reach the app.
-    Mounts AGENT_CACHE_VOLUME at /cache so pip and npm reuse packages across runs.
+def _docker_run_args(image: str, job: dict) -> tuple:
+    """Build docker run args (env + image). Returns (args, secret_env_path) where secret_env_path is a temp
+    file that must be deleted after docker run completes. Cross-platform: container reaches host via
+    host.docker.internal. Mac/Windows Docker Desktop provide it; on Linux we add
+    --add-host=host.docker.internal:host-gateway. When DOCKER_NETWORK is set (e.g. in compose), add
+    --network so agent containers can reach the app. Mounts AGENT_CACHE_VOLUME at /cache so pip and npm
+    reuse packages across runs.
 
     Docker isolation mode (AGENT_DOCKER_MODE):
       "dind" (default) — each agent container starts its own isolated dockerd (--privileged). No shared
         daemon, so concurrent agents never conflict on container names, networks, or ports.
       "dood" — legacy Docker-out-of-Docker: mounts the host socket. All agents share one daemon;
         set AGENT_MOUNT_DOCKER_SOCKET=0 together with DOCKER_HOST to use an external sidecar instead.
+
+    Secrets are written to a temp env-file (--env-file) instead of individual -e flags so they are not
+    visible in `ps aux` or Docker daemon logs.
     """
     env = job_to_env(job, for_docker=True)
     for key in _DOCKER_STRIP_ENV:
         env.pop(key, None)
+
+    # Split into secret vars (written to a temp file) and plain vars (passed as -e flags).
+    secret_env: dict = {}
+    plain_env: dict = {}
+    for k, v in env.items():
+        if k in _SECRET_ENV_KEYS:
+            secret_env[k] = v
+        else:
+            plain_env[k] = v
+
+    # Write secret vars to a temp file; caller must delete it after docker run.
+    # Use /tmp explicitly: on macOS tempfile.gettempdir() returns /var/folders/... which
+    # Docker Desktop does not share, but /tmp (→ /private/tmp) is always shared.
+    secret_env_path: Optional[str] = None
+    if secret_env:
+        fd, secret_env_path = tempfile.mkstemp(prefix="terarchitect_env_", suffix=".env", dir="/tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                for k, v in secret_env.items():
+                    f.write(f"{k}={v}\n")
+            os.chmod(secret_env_path, 0o600)
+        except Exception:
+            try:
+                os.unlink(secret_env_path)
+            except Exception:
+                pass
+            secret_env_path = None
+
     args = ["docker", "run", "--rm"]
     cache_volume = _env("AGENT_CACHE_VOLUME", "terarchitect-agent-cache")
     if cache_volume:
         args.extend(["-v", f"{cache_volume}:/cache"])
     docker_mode = _env("AGENT_DOCKER_MODE", "dind").lower()
     if docker_mode == "dind":
-        # True DinD: privileged so the container can run its own dockerd.
         args.append("--privileged")
     elif _env("AGENT_MOUNT_DOCKER_SOCKET", "1") != "0":
-        # Legacy DooD: mount the host Docker socket (shared daemon, potential conflicts).
         args.extend(["-v", "/var/run/docker.sock:/var/run/docker.sock"])
     network = _env("DOCKER_NETWORK")
     if network:
@@ -255,11 +324,13 @@ def _docker_run_args(image: str, job: dict) -> List[str]:
     api_url = env.get("TERARCHITECT_API_URL") or ""
     if "host.docker.internal" in api_url and platform.system() == "Linux":
         args.extend(["--add-host=host.docker.internal:host-gateway"])
-    for k, v in env.items():
+    if secret_env_path:
+        args.extend(["--env-file", secret_env_path])
+    for k, v in plain_env.items():
         if v is not None and v != "":
             args.extend(["-e", f"{k}={v}"])
     args.append(image)
-    return args
+    return args, secret_env_path
 
 
 def _run_agent_direct(job: dict, docker_error: str, base_url: str, job_id: str = "") -> int:
@@ -274,14 +345,19 @@ def _run_agent_direct(job: dict, docker_error: str, base_url: str, job_id: str =
     cmd = [sys.executable, "-m", "agent.agent_runner", sub]
     if job_id:
         _write_run_command(job_id, "local", local_cmd=cmd, local_env=full_env, cwd=str(repo_root))
+    timeout_sec_raw = _env("WORKER_TIMEOUT_SEC", "")
+    timeout_sec: Optional[float] = float(timeout_sec_raw) if timeout_sec_raw else None
     try:
         proc = subprocess.run(
             cmd,
             env=full_env,
             cwd=str(repo_root),
-            timeout=None,
+            timeout=timeout_sec,
         )
         return proc.returncode
+    except subprocess.TimeoutExpired:
+        print(f"[coordinator] direct run timed out after {timeout_sec}s for job {job_id}", file=sys.stderr)
+        return -1
     except FileNotFoundError:
         print(f"[coordinator] direct run failed: agent not found (is COORDINATOR_REPO_ROOT correct? {repo_root})", file=sys.stderr)
         return -1
@@ -316,7 +392,7 @@ def _run_job(base_url: str, job_id: str, job: dict, default_image: str, project_
             print(f"[coordinator] job {job_id} failed (local exit {code})")
         return
     image = project_images.get(project_id) or default_image
-    args = _docker_run_args(image, job)
+    args, secret_env_path = _docker_run_args(image, job)
     _write_run_command(job_id, "docker", docker_args=args)
     try:
         result = subprocess.run(args, capture_output=True, text=True, timeout=None)
@@ -340,6 +416,12 @@ def _run_job(base_url: str, job_id: str, job: dict, default_image: str, project_
         print(f"[coordinator] job {job_id} docker error: {e}", file=sys.stderr, flush=True)
         _print_docker_error(err_msg)
         mark_fail(base_url, job_id)
+    finally:
+        if secret_env_path:
+            try:
+                os.unlink(secret_env_path)
+            except Exception:
+                pass
 
 
 def main() -> None:
@@ -355,8 +437,24 @@ def main() -> None:
     scope = f"projects={project_ids}" if project_ids else "all projects"
     # Fetch initial value (may differ from env if already set in the UI)
     max_concurrent = fetch_max_concurrent(base_url, env_max_concurrent)
+    _project_start_idx = 0  # Round-robin start index for project claims
     print(f"[coordinator] started; scope={scope}, default_image={default_image}, max_concurrent={max_concurrent}, docker_mode={docker_mode}", flush=True)
     print(f"[coordinator] state_dir={_state_dir()}, repo_root={_repo_root()}", flush=True)
+
+    # Reset any jobs left in 'running' state from a previous crashed coordinator.
+    try:
+        r = requests.post(
+            f"{base_url}/api/worker/jobs/reset-stale",
+            json={"max_age_seconds": 0},
+            headers=_headers(),
+            timeout=15,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("reset", 0) > 0:
+                print(f"[coordinator] reset {data['reset']} stale running job(s) from previous session", flush=True)
+    except Exception as e:
+        print(f"[coordinator] could not reset stale jobs (backend may not be ready yet): {e}", file=sys.stderr)
     while True:
         # Reap finished threads
         running = [t for t in running if t.is_alive()]
@@ -371,9 +469,13 @@ def main() -> None:
         while len(running) < max_concurrent:
             job = None
             if project_ids:
-                for pid in project_ids:
+                # Round-robin through projects so no single project starves others
+                n = len(project_ids)
+                for i in range(n):
+                    pid = project_ids[(_project_start_idx + i) % n]
                     job = claim_job(base_url, pid)
                     if job is not None:
+                        _project_start_idx = (_project_start_idx + i + 1) % n
                         break
             else:
                 job = claim_job(base_url)

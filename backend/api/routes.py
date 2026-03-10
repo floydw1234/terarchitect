@@ -37,6 +37,22 @@ api_bp = Blueprint("api", __name__)
 # since the agent and user may share the same GitHub token.
 BOT_COMMENT_SIGNATURE = "<!-- terarchitect-bot -->"
 
+# Worker-facing route prefixes are already protected by _require_worker_auth (Bearer TERARCHITECT_WORKER_API_KEY).
+# All other routes are protected by _require_ui_auth (Bearer TERARCHITECT_UI_API_KEY) when that key is set.
+_WORKER_ROUTE_PREFIXES = ("/worker/", "/rag/")
+
+@api_bp.before_request
+def _ui_auth_check():
+    """Gate all non-worker UI routes when TERARCHITECT_UI_API_KEY is set."""
+    path = request.path  # e.g. /api/projects/...
+    # Strip the blueprint prefix (/api) for comparison
+    suffix = path[4:] if path.startswith("/api") else path
+    if any(suffix.startswith(p) for p in _WORKER_ROUTE_PREFIXES):
+        return  # Worker routes handle their own auth
+    err, status = _require_ui_auth()
+    if err is not None:
+        return err, status
+
 # Worker-facing API: auth via Bearer token. Set TERARCHITECT_WORKER_API_KEY (Settings or env) to require auth; if unset, no auth (dev).
 def _require_worker_auth():
     """Return (None, None) if authorized, else (response, status_code) to return."""
@@ -51,13 +67,28 @@ def _require_worker_auth():
     return None, None
 
 
+# UI-facing API: optional auth via Bearer token. Set TERARCHITECT_UI_API_KEY (env) to require auth; if unset, no auth (local dev).
+def _require_ui_auth():
+    """Return (None, None) if authorized, else (response, status_code) to return.
+    Keyed off TERARCHITECT_UI_API_KEY env var only (not DB settings, to avoid a bootstrap chicken-and-egg problem).
+    When the key is not set the check is skipped, preserving the local-dev experience."""
+    token = (os.environ.get("TERARCHITECT_UI_API_KEY") or "").strip()
+    if not token:
+        return None, None
+    auth = request.headers.get("Authorization") or ""
+    if not auth.startswith("Bearer "):
+        return jsonify({"error": "Missing or invalid Authorization header"}), 401
+    if auth[7:].strip() != token:
+        return jsonify({"error": "Invalid UI API token"}), 401
+    return None, None
+
+
 def _env_for_gh_user():
     """Env for gh CLI in UI context (PR comment, approve, merge, poll). Uses stored user token and dashboard git identity if set."""
     return {**os.environ, **get_gh_env_for_user(), **get_dashboard_git_env()}
 
 
-# Cancel requested by ticket_id (set by UI; read by GET cancel-requested). Agent runs elsewhere (runner/container).
-_cancel_requested: dict = {}  # ticket_id (uuid) -> True
+# Cancel requested by ticket_id is now stored in agent_jobs.cancel_requested column (DB-backed, process-safe).
 
 def _get_project_setting(project_id, key, default=None):
     row = Setting.query.filter_by(project_id=project_id, key=key).first()
@@ -125,10 +156,6 @@ def projects():
             execution_mode="local" if (data.get("execution_mode") or "").strip().lower() == "local" else "docker",
             project_path=data.get("project_path"),
         )
-        db.session.add(project)
-        db.session.commit()
-
-        # Initialize graph and kanban board for new project
         graph = Graph(project_id=project.id)
         default_columns = [
             {"id": "backlog", "title": "Backlog", "order": 0},
@@ -137,6 +164,7 @@ def projects():
             {"id": "done", "title": "Done", "order": 3},
         ]
         kanban_board = KanbanBoard(project_id=project.id, columns=default_columns)
+        db.session.add(project)
         db.session.add(graph)
         db.session.add(kanban_board)
         db.session.commit()
@@ -351,7 +379,7 @@ def _enqueue_ticket_job(ticket_id):
     existing = AgentJob.query.filter(
         AgentJob.ticket_id == ticket_id,
         AgentJob.status.in_(["pending", "running"]),
-    ).first()
+    ).with_for_update(skip_locked=True).first()
     if existing:
         current_app.logger.info("Skipping enqueue: ticket %s already has job %s", ticket_id, existing.id)
         return
@@ -438,7 +466,12 @@ def ticket_detail(project_id, ticket_id):
                     "error": "GitHub agent token is not set. Go to Settings and add a GitHub agent token (classic PAT with repo scope) so the agent can push branches and open PRs.",
                 }), 400
         if "column_id" in data:
-            ticket.column_id = data["column_id"]
+            new_col = data["column_id"]
+            kanban = KanbanBoard.query.filter_by(project_id=project_id).first()
+            valid_cols = {c["id"] for c in (kanban.columns or [])} if kanban else set()
+            if valid_cols and new_col not in valid_cols:
+                return jsonify({"error": f"Invalid column_id '{new_col}'"}), 400
+            ticket.column_id = new_col
         if "title" in data:
             ticket.title = data["title"]
         if "description" in data:
@@ -530,6 +563,9 @@ def ticket_logs_append(project_id, ticket_id):
     step = (data.get("step") or "").strip() or "step"
     summary = (data.get("summary") or "").strip() or ""
     raw_output = data.get("raw_output")
+    success = data.get("success", True)
+    if not isinstance(success, bool):
+        success = bool(success)
     if not session_id:
         return jsonify({"error": "session_id is required"}), 400
     log_entry = ExecutionLog(
@@ -539,7 +575,7 @@ def ticket_logs_append(project_id, ticket_id):
         step=step[:100],
         summary=summary,
         raw_output=raw_output,
-        success=True,
+        success=success,
     )
     db.session.add(log_entry)
     db.session.commit()
@@ -553,6 +589,8 @@ def ticket_complete(project_id, ticket_id):
     if err is not None:
         return err, status
     ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
+    if ticket.column_id != "in_progress":
+        return jsonify({"error": "Ticket is not in_progress; cannot mark complete"}), 409
     data = request.json or {}
     pr_url = (data.get("pr_url") or "").strip() or None
     pr_number = data.get("pr_number")
@@ -589,7 +627,12 @@ def ticket_cancel_requested(project_id, ticket_id):
     if err is not None:
         return err, status
     Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
-    return jsonify({"cancel_requested": _cancel_requested.get(ticket_id) is True})
+    job = AgentJob.query.filter(
+        AgentJob.ticket_id == ticket_id,
+        AgentJob.status.in_(["pending", "running"]),
+    ).order_by(AgentJob.created_at.desc()).first()
+    requested = bool(job and job.cancel_requested)
+    return jsonify({"cancel_requested": requested})
 
 
 @api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/review", methods=["GET"])
@@ -715,8 +758,8 @@ def project_review_list(project_id):
         .limit(50)
         .all()
     )
-    out = []
-    for pr_row, ticket in prs:
+
+    def _fetch_pr_state(pr_row, ticket):
         pr_state = "unknown"
         merged = False
         if slug:
@@ -736,7 +779,7 @@ def project_review_list(project_id):
                 pass
         created = pr_row.created_at
         ts = created.timestamp() if created else 0
-        out.append({
+        return {
             "id": str(ticket.id),
             "title": ticket.title,
             "pr_url": pr_row.pr_url,
@@ -744,7 +787,13 @@ def project_review_list(project_id):
             "pr_state": pr_state,
             "merged": merged,
             "_sort_ts": ts,
-        })
+        }
+
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(_fetch_pr_state, pr_row, ticket) for pr_row, ticket in prs]
+        out = [f.result() for f in concurrent.futures.as_completed(futures)]
+
     # Exclude closed PRs that were not merged (e.g. abandoned or closed without merge)
     out = [x for x in out if not (x["pr_state"] == "closed" and not x["merged"])]
     # Pending (open) first, then by most recent
@@ -840,9 +889,15 @@ def ticket_review_merge(project_id, ticket_id):
 
 @api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/cancel", methods=["POST"])
 def cancel_ticket_execution_api(project_id, ticket_id):
-    """Request cancellation. Set flag so GET cancel-requested returns true; runner/container will poll and exit."""
+    """Request cancellation. Sets cancel_requested on the running/pending job; agent polls and exits."""
     Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
-    _cancel_requested[ticket_id] = True
+    job = AgentJob.query.filter(
+        AgentJob.ticket_id == ticket_id,
+        AgentJob.status.in_(["pending", "running"]),
+    ).order_by(AgentJob.created_at.desc()).first()
+    if job:
+        job.cancel_requested = True
+        db.session.commit()
     return jsonify({"message": "Cancellation requested"}), 200
 
 
@@ -940,6 +995,32 @@ def worker_jobs_fail(job_id):
     return jsonify({"message": "Job failed", "job_id": str(job_id)})
 
 
+@api_bp.route("/worker/jobs/reset-stale", methods=["POST"])
+def worker_jobs_reset_stale():
+    """Phase 1: Reset jobs stuck in 'running' state (e.g. after coordinator restart). Auth: Bearer.
+    Body: optional {"max_age_seconds": N} — only reset running jobs older than N seconds (default 3600)."""
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
+    data = request.json or {}
+    try:
+        max_age = int(data.get("max_age_seconds", 3600))
+    except (TypeError, ValueError):
+        max_age = 3600
+    from datetime import datetime, timezone, timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=max_age)
+    stale = AgentJob.query.filter(
+        AgentJob.status == "running",
+        AgentJob.updated_at < cutoff,
+    ).all()
+    count = len(stale)
+    for job in stale:
+        job.status = "failed"
+    db.session.commit()
+    current_app.logger.info("Reset %d stale running jobs (older than %ds)", count, max_age)
+    return jsonify({"reset": count, "max_age_seconds": max_age})
+
+
 @api_bp.route("/settings", methods=["GET"])
 def app_settings_get():
     """Return all app settings: sensitive keys as bool (is set), plain keys as value or null."""
@@ -949,22 +1030,17 @@ def app_settings_get():
 @api_bp.route("/settings", methods=["PUT"])
 def app_settings_put():
     """Update app settings. Body: any of ALLOWED_KEYS. Omit = no change, empty string = clear. Sensitive keys require TERARCHITECT_SECRET_KEY."""
-    import sys
     try:
         data = request.json or {}
-        print("[DEBUG] settings PUT keys in body:", list(data.keys()), file=sys.stderr, flush=True)
         for key in ALLOWED_KEYS:
             if key not in data:
                 continue
             val = data[key]
-            print(f"[DEBUG] processing key={key!r} val type={type(val).__name__} len={len(str(val)) if val else 0}", file=sys.stderr, flush=True)
             if val is None or (isinstance(val, str) and not val.strip()):
                 delete_key(key)
-                print(f"[DEBUG] deleted key {key}", file=sys.stderr, flush=True)
             else:
                 plain = val if isinstance(val, str) else str(val)
                 if key in SENSITIVE_KEYS and not is_encryption_available():
-                    print("[DEBUG] 503: encryption not available for sensitive key", file=sys.stderr, flush=True)
                     return jsonify({
                         "error": (
                             "TERARCHITECT_SECRET_KEY must be a 64-character hex string in .env to store secrets. "
@@ -972,17 +1048,11 @@ def app_settings_put():
                         )
                     }), 503
                 ok = set_value(key, plain)
-                print(f"[DEBUG] set_value({key!r}) -> {ok}", file=sys.stderr, flush=True)
                 if not ok:
                     return jsonify({"error": f"Failed to save {key}"}), 500
-        print("[DEBUG] calling get_all_for_api()", file=sys.stderr, flush=True)
         out = get_all_for_api()
-        print("[DEBUG] settings PUT success", file=sys.stderr, flush=True)
         return jsonify(out)
     except Exception as e:
-        print(f"[DEBUG] settings PUT exception: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
         current_app.logger.exception("Settings PUT failed: %s", e)
         return jsonify({"error": str(e)}), 500
 
@@ -1086,7 +1156,10 @@ def rag_search():
     data = request.json or {}
     project_id = data.get("project_id")
     query = data.get("query")
-    limit = min(int(data.get("limit", 5)), 50)
+    try:
+        limit = min(int(data.get("limit", 5)), 50)
+    except (TypeError, ValueError):
+        limit = 5
     source_types = data.get("source_types", ["node", "edge", "note", "ticket", "ticket_comment"])
 
     if not query:
@@ -1283,6 +1356,7 @@ def _extract_test_names_from_patch(patch):
 
 def _repo_slug_from_github_url(url):
     """Extract owner/repo from https://github.com/owner/repo or similar. Returns None if not parseable."""
+    import re
     if not url or not isinstance(url, str):
         return None
     url = url.strip().rstrip("/")
@@ -1290,7 +1364,12 @@ def _repo_slug_from_github_url(url):
         return None
     path = url.split("github.com")[-1].strip("/")
     parts = path.split("/")
-    return "/".join(parts[:2]) if len(parts) >= 2 else None
+    if len(parts) < 2:
+        return None
+    slug = "/".join(parts[:2])
+    if not re.match(r'^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$', slug):
+        return None
+    return slug
 
 
 def _enqueue_review_job(ticket_id, comment_body, pr_number, project_id, github_comment_id):
@@ -1300,7 +1379,7 @@ def _enqueue_review_job(ticket_id, comment_body, pr_number, project_id, github_c
         AgentJob.kind == "review",
         AgentJob.pr_number == pr_number,
         AgentJob.status.in_(["pending", "running"]),
-    ).first()
+    ).with_for_update(skip_locked=True).first()
     if existing:
         current_app.logger.info("Skipping enqueue: ticket %s PR #%s already has job", ticket_id, pr_number)
         return
@@ -1334,6 +1413,38 @@ def _mark_pr_comment_addressed(project_id, pr_number, github_comment_id):
         except Exception:
             db.session.rollback()
 
+
+
+def _split_paginate_output(stdout: str) -> list:
+    """Parse `gh api --paginate` output into a list of JSON values.
+    gh --paginate writes one JSON array per page, concatenated without a separator.
+    This splits them by scanning for array boundaries and returns a flat list of all items."""
+    results = []
+    text = stdout.strip()
+    i = 0
+    while i < len(text):
+        if text[i] != "[":
+            i += 1
+            continue
+        depth = 0
+        j = i
+        while j < len(text):
+            if text[j] == "[":
+                depth += 1
+            elif text[j] == "]":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        parsed = json.loads(text[i:j + 1])
+                        results.append(parsed)
+                    except json.JSONDecodeError:
+                        pass
+                    i = j + 1
+                    break
+            j += 1
+        else:
+            break
+    return results if results else [json.loads(text)]
 
 
 def _poll_pr_review_comments():
@@ -1384,7 +1495,7 @@ def _poll_pr_review_comments():
         except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
             pass
 
-        # Check if PR was approved (latest review is APPROVED) -> move ticket to done
+        # Check if PR was approved (per-reviewer latest state is APPROVED, no blocking CHANGES_REQUESTED) -> move ticket to done
         try:
             r_reviews = subprocess.run(
                 ["gh", "api", f"repos/{slug}/pulls/{pr_number}/reviews", "--paginate"],
@@ -1394,11 +1505,23 @@ def _poll_pr_review_comments():
                 env=_env_for_gh_user(),
             )
             if r_reviews.returncode == 0 and r_reviews.stdout:
-                reviews = json.loads(r_reviews.stdout) if r_reviews.stdout else []
-                if isinstance(reviews, list) and reviews:
-                    # API returns in chronological order; last is most recent
-                    latest = reviews[-1]
-                    if latest.get("state") == "APPROVED":
+                # gh --paginate writes one JSON array per page concatenated; flatten into one list.
+                raw_stdout = r_reviews.stdout.strip()
+                reviews: list = []
+                for chunk in _split_paginate_output(raw_stdout):
+                    if isinstance(chunk, list):
+                        reviews.extend(chunk)
+                if reviews:
+                    # Build per-reviewer latest state; APPROVED only if no reviewer has CHANGES_REQUESTED pending
+                    latest_by_reviewer: dict = {}
+                    for rev in reviews:
+                        login = (rev.get("user") or {}).get("login") or "unknown"
+                        state = rev.get("state") or ""
+                        if state in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+                            latest_by_reviewer[login] = state
+                    has_approval = any(s == "APPROVED" for s in latest_by_reviewer.values())
+                    has_blocking = any(s == "CHANGES_REQUESTED" for s in latest_by_reviewer.values())
+                    if has_approval and not has_blocking:
                         ticket.column_id = "done"
                         ticket.status = "completed"
                         try:
@@ -1439,11 +1562,11 @@ def _poll_pr_review_comments():
                 )
                 continue
             try:
-                chunk = json.loads(r.stdout) if r.stdout else []
-            except json.JSONDecodeError:
+                for chunk in _split_paginate_output(r.stdout) if r.stdout else []:
+                    if isinstance(chunk, list):
+                        raw_comments.extend(chunk)
+            except (json.JSONDecodeError, Exception):
                 continue
-            if isinstance(chunk, list):
-                raw_comments.extend(chunk)
         # Normalize and upsert into pr_review_comments (id, body, author_login, created_at)
         from datetime import datetime as _dt
         for c in raw_comments:

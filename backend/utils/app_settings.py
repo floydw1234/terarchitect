@@ -69,51 +69,41 @@ def get_value(key: str) -> Optional[str]:
     """Get value for key (decrypted if sensitive, raw if plain). Returns None if missing or invalid. Requires app context."""
     if key not in ALLOWED_KEYS:
         return None
-    from flask import current_app
     from models.db import AppSetting
-    with current_app.app_context():
-        row = AppSetting.query.filter_by(key=key).first()
-        if not row or not row.value:
-            return None
-        if key in SENSITIVE_KEYS:
-            dec = decrypt_value(row.value)
-            return dec if dec else None
-        return row.value
+    row = AppSetting.query.filter_by(key=key).first()
+    if not row or not row.value:
+        return None
+    if key in SENSITIVE_KEYS:
+        dec = decrypt_value(row.value)
+        return dec if dec else None
+    return row.value
 
 
 def set_value(key: str, plaintext: str) -> bool:
     """Store value. Sensitive keys are encrypted (requires TERARCHITECT_SECRET_KEY). Plain keys stored as-is. Returns False if key not allowed or encryption required but unavailable."""
-    import sys
     if key not in ALLOWED_KEYS:
-        print(f"[DEBUG] set_value: key {key!r} not in ALLOWED_KEYS", file=sys.stderr, flush=True)
         return False
-    from flask import current_app
     from models.db import db, AppSetting
     if key in SENSITIVE_KEYS:
         if not is_encryption_available():
-            print("[DEBUG] set_value: encryption not available", file=sys.stderr, flush=True)
             return False
         encrypted = encrypt_value(plaintext)
         if not encrypted:
-            print("[DEBUG] set_value: encrypt_value returned None", file=sys.stderr, flush=True)
             return False
         value_to_store = encrypted
     else:
         value_to_store = plaintext
     try:
-        with current_app.app_context():
-            row = AppSetting.query.filter_by(key=key).first()
-            if row:
-                row.value = value_to_store
-            else:
-                db.session.add(AppSetting(key=key, value=value_to_store))
-            db.session.commit()
-            return True
+        row = AppSetting.query.filter_by(key=key).first()
+        if row:
+            row.value = value_to_store
+        else:
+            db.session.add(AppSetting(key=key, value=value_to_store))
+        db.session.commit()
+        return True
     except Exception as e:
         import sys
-        print(f"[DEBUG] set_value exception: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
+        print(f"[app_settings] set_value exception for key {key!r}: {type(e).__name__}: {e}", file=sys.stderr)
         try:
             db.session.rollback()
         except Exception:
@@ -135,16 +125,14 @@ def delete_key(key: str) -> bool:
     """Remove a setting. Returns True if deleted or didn't exist. Requires app context."""
     if key not in ALLOWED_KEYS:
         return False
-    from flask import current_app
     from models.db import db, AppSetting
-    with current_app.app_context():
-        AppSetting.query.filter_by(key=key).delete()
-        try:
-            db.session.commit()
-            return True
-        except Exception:
-            db.session.rollback()
-            return False
+    AppSetting.query.filter_by(key=key).delete()
+    try:
+        db.session.commit()
+        return True
+    except Exception:
+        db.session.rollback()
+        return False
 
 
 def get_setting_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
@@ -163,24 +151,15 @@ def get_setting_or_env(key: str, default: Optional[str] = None) -> Optional[str]
 
 def get_all_for_api() -> dict:
     """Return dict for GET /api/settings: sensitive keys -> bool (is set), plain keys -> value or null. Requires app context."""
-    import sys
-    try:
-        from flask import current_app
-        from models.db import AppSetting
-        with current_app.app_context():
-            rows = {r.key: r.value for r in AppSetting.query.filter(AppSetting.key.in_(ALLOWED_KEYS)).all()}
-        out: dict = {}
-        for key in ALLOWED_KEYS:
-            if key in SENSITIVE_KEYS:
-                out[key] = bool(rows.get(key))
-            else:
-                out[key] = rows.get(key) or None
-        return out
-    except Exception as e:
-        print(f"[DEBUG] get_all_for_api exception: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        raise
+    from models.db import AppSetting
+    rows = {r.key: r.value for r in AppSetting.query.filter(AppSetting.key.in_(ALLOWED_KEYS)).all()}
+    out: dict = {}
+    for key in ALLOWED_KEYS:
+        if key in SENSITIVE_KEYS:
+            out[key] = bool(rows.get(key))
+        else:
+            out[key] = rows.get(key) or None
+    return out
 
 
 def get_masked_status() -> dict:
