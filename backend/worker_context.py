@@ -72,6 +72,8 @@ def _relevant_subgraph(
 def build_worker_context(ticket: Ticket) -> dict:
     """Build worker-context dict from DB. Same shape as agent's build_worker_context."""
     project = Project.query.get(ticket.project_id)
+    if project is None:
+        raise ValueError(f"Project {ticket.project_id} not found")
     current_id = ticket.id
     context = {
         "project_name": project.name,
@@ -118,14 +120,11 @@ def build_worker_context(ticket: Ticket) -> dict:
             e.get("id"): "{} → {}".format(e.get("source_label", ""), e.get("target_label", ""))
             for e in full_enriched_edges
         }
-        exp_node_ids, exp_edge_ids = _expand_all_marker(
-            nodes, edges, ticket.associated_node_ids or [], ticket.associated_edge_ids or []
-        )
         context["current_ticket"]["associated_nodes_labeled"] = [
-            "{}: {}".format(node_label_by_id.get(nid, nid), nid) for nid in exp_node_ids
+            "{}: {}".format(node_label_by_id.get(nid, nid), nid) for nid in node_ids
         ]
         context["current_ticket"]["associated_edges_labeled"] = [
-            "{}: {}".format(edge_label_by_id.get(eid, eid), eid) for eid in exp_edge_ids
+            "{}: {}".format(edge_label_by_id.get(eid, eid), eid) for eid in edge_ids
         ]
     else:
         context["graph_relevant_to_current_ticket"] = {"nodes": [], "edges": []}

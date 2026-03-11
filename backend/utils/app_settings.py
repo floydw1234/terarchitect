@@ -21,10 +21,12 @@ def _env(key: str, default: Optional[str] = None) -> Optional[str]:
 
 
 def get_value(key: str) -> Optional[str]:
+    """Return value for key from environment (no DB-backed settings)."""
     return _env(key)
 
 
 def get_setting_or_env(key: str, default: Optional[str] = None) -> Optional[str]:
+    """Return env value for key, falling back to default when unset or empty."""
     v = os.environ.get(key)
     if v is not None:
         v = (v or "").strip() or None

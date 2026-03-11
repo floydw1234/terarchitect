@@ -70,6 +70,7 @@ class Ticket(db.Model):
     comments = db.relationship("TicketComment", backref="ticket", cascade="all, delete-orphan")
     execution_logs = db.relationship("ExecutionLog", backref="ticket", cascade="all, delete-orphan")
     pr = db.relationship("PR", backref="ticket", uselist=False, cascade="all, delete-orphan")
+    agent_jobs = db.relationship("AgentJob", backref="ticket", cascade="all, delete-orphan")
 
 
 class TicketComment(db.Model):
@@ -153,7 +154,9 @@ class AgentJob(db.Model):
     project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
     kind = db.Column(db.String(50), nullable=False)  # "ticket" | "review"
     status = db.Column(db.String(50), nullable=False, default="pending")  # pending | running | completed | failed
+    cancel_requested = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
+    updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
     # For kind=review
     pr_number = db.Column(db.Integer)
     comment_body = db.Column(db.Text)
