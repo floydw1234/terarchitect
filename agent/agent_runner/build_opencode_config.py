@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build OpenCode config JSON from WORKER_* env. Used by agent entrypoint so opencode serve
 starts with the terarchitect-proxy provider (OpenCode loads providers at startup; PATCH does not add them).
-Prints JSON to stdout; prints nothing if no worker settings are set.
+Prints JSON to stdout; prints nothing if no WORKER_* env are set.
 """
 import json
 import os

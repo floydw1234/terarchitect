@@ -20,7 +20,8 @@ def _make_agent(env_overrides: dict | None = None):
 
     env = {
         "WORKER_MODE": "opencode",  # explicit; tests override via env_overrides
-        "AGENT_LLM_URL": "http://localhost:8000",
+        "DIRECTOR_LLM_URL": "http://localhost:11434",
+        "DIRECTOR_MODEL": "test-model",
         "WORKER_LLM_URL": "http://localhost:8080/v1",
         "WORKER_MODEL": "gpt-4o",
         "WORKER_API_KEY": "dummy",
@@ -45,16 +46,6 @@ class TestWorkerModeInit(unittest.TestCase):
 
     def test_invalid_mode_falls_back_to_claude_code(self):
         agent = _make_agent({"WORKER_MODE": "unknown-mode"})
-        self.assertEqual(agent.worker_mode, "claude-code")
-
-    def test_apply_agent_settings_updates_worker_mode(self):
-        agent = _make_agent({"WORKER_MODE": "opencode"})
-        agent._apply_agent_settings({"WORKER_MODE": "claude-code"})
-        self.assertEqual(agent.worker_mode, "claude-code")
-
-    def test_apply_agent_settings_rejects_invalid_mode(self):
-        agent = _make_agent({"WORKER_MODE": "opencode"})
-        agent._apply_agent_settings({"WORKER_MODE": "bad-value"})
         self.assertEqual(agent.worker_mode, "claude-code")
 
 

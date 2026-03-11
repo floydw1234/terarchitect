@@ -1,0 +1,22 @@
+{
+  "WORKER_MODE": "claude-code",
+
+  "WORKER_MODEL": "claude-opus-4-5",
+  "WORKER_LLM_URL": " ",
+  "WORKER_API_KEY": " ",
+
+  "DIRECTOR_PROVIDER": "custom",
+  "DIRECTOR_LLM_URL": "http://localhost:11434",
+  "DIRECTOR_MODEL": "qwen3.5:35b",
+  "DIRECTOR_API_KEY": "dummy",
+
+  "EMBEDDING_PROVIDER": "custom",
+  "EMBEDDING_SERVICE_URL": "http://localhost:9090/v1",
+  "EMBEDDING_API_KEY": "dummy",
+  "MEMORY_EMBEDDING_MODEL": "bge-large",
+
+  "FRONTEND_LLM_URL": " ",
+  "FRONTEND_LLM_MODEL": " ",
+  "FRONTEND_LLM_API_KEY": " "
+}
+

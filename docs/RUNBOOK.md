@@ -12,7 +12,7 @@ This runbook describes how to run the Terarchitect app, coordinator, and agent i
 | **Coordinator** | **Host-side Python app** (not a Docker container). It claims jobs via `POST /api/worker/jobs/start`, runs `docker run ... terarchitect-agent` for each job, and calls `POST .../complete` or `.../fail` when the container exits. Must run on a host that has Docker. |
 | **Agent image** | Single Docker image (`terarchitect-agent`). One container per job: clones repo, runs Director + worker (OpenCode, Aider, Claude Code, Gemini, or Codex), pushes and opens PR, exits. |
 
-**Execution mode (per project):** In project settings you can choose **Docker** (default: coordinator runs agent in a container, repo is cloned at runtime) or **Local** (coordinator runs the agent on the host at a configured project path; no clone).
+**Execution mode (per project):** In the project’s execution settings in the UI you can choose **Docker** (default: coordinator runs agent in a container, repo is cloned at runtime) or **Local** (coordinator runs the agent on the host at a configured project path; no clone).
 
 ---
 
@@ -49,7 +49,7 @@ DATABASE_URL=postgresql://terarchitect:terarchitect@localhost:5433/terarchitect 
 - **App (frontend):** http://localhost:3000  
 - **API:** http://localhost:5010  
 
-Set `DATABASE_URL`, `TERARCHITECT_WORKER_API_KEY` (optional), and any memory/embedding env as needed. See `backend/README.md` for full env list.
+Set `DATABASE_URL`, `TERARCHITECT_WORKER_API_KEY` (optional), and backend-owned env (GitHub token, embedding, memory LLM). See `backend/README.md` and `example.env`.
 
 ---
 
@@ -95,7 +95,7 @@ See comments in `coordinator/terarchitect-coordinator.service` for details.
 ### Coordinator env
 
 - **TERARCHITECT_API_URL** — App base URL. When the coordinator runs on the same host as the app, use `http://localhost:5010`. Agent **containers** must reach the app: set `TERARCHITECT_API_URL=http://host.docker.internal:5010` so the coordinator passes that into each container (on Linux the coordinator adds `--add-host=host.docker.internal:host-gateway` when the URL contains `host.docker.internal`).
-- **PROJECT_ID** or **PROJECT_IDS** — Comma-separated UUIDs of projects this coordinator should claim jobs for.
+- **PROJECT_ID** or **PROJECT_IDS** — Optional. Comma-separated UUIDs to restrict which projects this coordinator serves. If unset, the coordinator fetches all project IDs from `GET /api/worker/projects` at startup (or claims from any project if the fetch fails).
 - **GITHUB_TOKEN** — Passed to the container for git clone/push and `gh pr create`.
 - **AGENT_IMAGE** — Default `terarchitect-agent`. Override if you use a different tag.
 - **MAX_CONCURRENT_AGENTS** — Default 1. Increase to run multiple jobs in parallel.
@@ -128,7 +128,7 @@ The image includes the Director, standalone runner, OpenCode (HTTP server starte
 
 Set `AGENT_DOCKER_MODE=dood` on the coordinator to revert to the old socket-mount behaviour.
 
-OpenCode worker env (`WORKER_LLM_URL`, `WORKER_MODEL`, `WORKER_API_KEY`) can be set in the app Settings (sent via worker-context) or passed by the coordinator into the container.
+OpenCode worker env (`WORKER_LLM_URL`, `WORKER_MODEL`, `WORKER_API_KEY`) must be set in the **coordinator** environment; the coordinator forwards them into the container.
 
 ---
 
@@ -148,7 +148,7 @@ OpenCode worker env (`WORKER_LLM_URL`, `WORKER_MODEL`, `WORKER_API_KEY`) can be 
 
 ## 5. Worker types and env
 
-See **docs/PHASE1_WORKER_API.md** → Phase 5 for OpenCode and required env. The app sends agent settings (from Settings UI) in the worker-context response; the container can override with env.
+See **docs/PHASE1_WORKER_API.md** → Phase 5 for OpenCode and required env. Agent config (Director/Worker URLs and keys) is not sent by the app; set it in the coordinator env so it is forwarded to the container.
 
 ---
 

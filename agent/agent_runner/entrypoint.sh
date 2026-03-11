@@ -48,6 +48,9 @@ if [ "$_worker_mode" != "claude-code" ]; then
       export OPENCODE_CONFIG_CONTENT="$_oc_config"
     fi
   fi
+  # Enable OpenCode's built-in websearch tool (Exa-backed) for the worker.
+  # No API key required; OPENCODE_ENABLE_EXA activates the websearch tool.
+  export OPENCODE_ENABLE_EXA="${OPENCODE_ENABLE_EXA:-1}"
   opencode serve --port "$_oc_port" --hostname 127.0.0.1 &
   _i=0
   while [ $_i -lt 30 ]; do

@@ -9,7 +9,7 @@ Optional: OPENCODE_SERVER_PASSWORD, OPENCODE_SERVER_USERNAME (default opencode) 
 Optional: OPENCODE_MODEL=provider/model to use a specific model (else we try GET /config/providers for defaults).
 Optional: OPENCODE_MESSAGE_TIMEOUT=120 (seconds for POST .../message; increase if LLM is slow).
 
-Provider-from-settings (simulates agent docker):
+Provider from WORKER_* env (simulates agent docker):
   Set WORKER_LLM_URL, WORKER_MODEL, WORKER_API_KEY (and optionally OPENCODE_PROVIDER_ID, default terarchitect-proxy).
 
   OpenCode loads providers at startup; PATCH /config does not add new providers to the runtime. So you must either:
@@ -47,8 +47,8 @@ def load_dotenv(path: Path) -> None:
 
 
 def build_provider_config_from_settings() -> dict | None:
-    """Build OpenCode config { provider, model } from WORKER_* env (agent-style settings).
-    Returns None if no worker settings are set (caller keeps server's existing config).
+    """Build OpenCode config { provider, model } from WORKER_* env.
+    Returns None if no WORKER_* env are set (caller keeps server's existing config).
     """
     base_url = (os.environ.get("WORKER_LLM_URL") or "").strip().rstrip("/")
     raw_model = (os.environ.get("WORKER_MODEL") or "").strip()
@@ -161,13 +161,13 @@ def main() -> None:
             print(f"Response: {e.response.text[:500]}")
         sys.exit(1)
 
-    # 1b. Use provider from settings: either we started server with it, or PATCH (then verify server has it).
+    # 1b. Use provider from WORKER_* env: either we started server with it, or PATCH (then verify server has it).
     if provider_config:
         if not started_server:
             try:
                 r = session.patch(f"{base}/config", json=provider_config, timeout=10)
                 r.raise_for_status()
-                print("PATCH /config OK (provider from WORKER_* settings)")
+                print("PATCH /config OK (provider from WORKER_* env)")
             except requests.RequestException as e:
                 print(f"PATCH /config failed: {e}")
                 if getattr(e, "response", None) is not None and e.response is not None:

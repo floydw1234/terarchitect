@@ -2,11 +2,11 @@
 OpenAI-compatible embedding client.
 Points at any OpenAI-compatible embedding endpoint: real OpenAI, vLLM, Ollama, LiteLLM, etc.
 
-Settings (via Settings UI or env):
-  EMBEDDING_SERVICE_URL  — base URL of the embedding service, e.g. https://api.openai.com/v1
-                           Leave blank to use OpenAI directly (https://api.openai.com/v1).
-  EMBEDDING_API_KEY      — API key (Bearer token). For real OpenAI this is your sk-... key.
-  MEMORY_EMBEDDING_MODEL — default model name, e.g. text-embedding-3-small.
+Environment variables:
+  EMBEDDING_SERVICE_URL  — base URL of the OpenAI-compatible embedding service, including /v1
+    (e.g. https://api.openai.com/v1 or http://localhost:9009/v1). The client calls {base_url}/embeddings.
+  EMBEDDING_API_KEY / OPENAI_API_KEY / openai_api_key — API key.
+  MEMORY_EMBEDDING_MODEL — default model name, e.g. text-embedding-3-small or bge-large.
 """
 import os
 from typing import List
@@ -17,17 +17,8 @@ from openai import OpenAI
 
 def _get_client() -> OpenAI:
     """Build an OpenAI client pointed at EMBEDDING_SERVICE_URL (or real OpenAI if unset)."""
-    try:
-        from utils.app_settings import get_setting_or_env
-        base_url = (get_setting_or_env("EMBEDDING_SERVICE_URL") or "").strip().rstrip("/") or None
-        api_key = (get_setting_or_env("EMBEDDING_API_KEY") or "").strip() or None
-        if not api_key:
-            api_key = (get_setting_or_env("openai_api_key") or "").strip() or None
-    except Exception:
-        base_url = (os.environ.get("EMBEDDING_SERVICE_URL") or "").strip().rstrip("/") or None
-        api_key = (os.environ.get("EMBEDDING_API_KEY") or "").strip() or None
-
-    # Fall back to OPENAI_API_KEY / openai_api_key so real OpenAI works out of the box
+    base_url = (os.environ.get("EMBEDDING_SERVICE_URL") or "").strip().rstrip("/") or None
+    api_key = (os.environ.get("EMBEDDING_API_KEY") or "").strip() or None
     if not api_key:
         api_key = (os.environ.get("OPENAI_API_KEY") or os.environ.get("openai_api_key") or "").strip() or None
 
@@ -46,11 +37,7 @@ def _get_client() -> OpenAI:
 
 
 def _default_model() -> str:
-    try:
-        from utils.app_settings import get_setting_or_env
-        return (get_setting_or_env("MEMORY_EMBEDDING_MODEL") or "text-embedding-3-small").strip()
-    except Exception:
-        return (os.environ.get("MEMORY_EMBEDDING_MODEL") or "text-embedding-3-small").strip()
+    return (os.environ.get("MEMORY_EMBEDDING_MODEL") or "text-embedding-3-small").strip()
 
 
 def embed(

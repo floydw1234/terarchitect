@@ -44,7 +44,6 @@ def create_app():
             "pool_pre_ping": True,
             "pool_recycle": 300,
         },
-        AGENT_LLM_URL="",
         MEMORY_SAVE_DIR=memory_save_dir,
     )
 

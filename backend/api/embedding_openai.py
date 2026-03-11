@@ -3,7 +3,7 @@ OpenAI-compatible embeddings endpoint — forwards to the configured embedding s
 POST /v1/embeddings with {"input": ["text1", ...], "model": "text-embedding-3-small"}
 -> calls the embedding client (which speaks OpenAI format), returns {"data": [{"embedding": [...]}, ...]}.
 
-Configure via Settings UI or env:
+Configure via environment variables:
   EMBEDDING_SERVICE_URL  — base URL (e.g. https://api.openai.com/v1 or a local vLLM endpoint)
   EMBEDDING_API_KEY      — Bearer token / API key
   MEMORY_EMBEDDING_MODEL — default model when none is specified in the request

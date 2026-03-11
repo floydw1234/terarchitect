@@ -45,7 +45,7 @@ base_url = os.environ.get("OPENCODE_BASE_URL", "http://localhost:8080/v1")
 api_key = os.environ.get("OPENCODE_API_KEY", "dummy")
 model = os.environ.get(
     "OPENCODE_MODEL",
-    f"{provider_id}/{os.environ.get('AGENT_MODEL', 'Qwen/Qwen3-Coder-Next-FP8')}",
+    f"{provider_id}/{os.environ.get('DIRECTOR_MODEL', 'Qwen/Qwen3-Coder-Next-FP8')}",
 )
 local_model_name = model[len(provider_id) + 1 :] if model.startswith(f"{provider_id}/") else model
 

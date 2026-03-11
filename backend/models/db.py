@@ -26,7 +26,6 @@ class Project(db.Model):
     notes = db.relationship("Note", backref="project", cascade="all, delete-orphan")
     execution_logs = db.relationship("ExecutionLog", backref="project", cascade="all, delete-orphan")
     prs = db.relationship("PR", backref="project", cascade="all, delete-orphan")
-    settings = db.relationship("Setting", backref="project", cascade="all, delete-orphan")
     # No cascade, noload: embedding column is pgvector (OID 16397); ORM must never SELECT it (unknown to ARRAY(Float)).
     rag_embeddings = db.relationship("RAGEmbedding", backref="project", cascade="save-update", lazy="noload")
 
@@ -143,31 +142,6 @@ class PRReviewComment(db.Model):
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
 
     __table_args__ = (db.UniqueConstraint("project_id", "pr_number", "github_comment_id", name="_pr_review_comment_uniq"),)
-
-
-class Setting(db.Model):
-    __tablename__ = "settings"
-
-    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
-    project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
-    key = db.Column(db.String(255), nullable=False)
-    value = db.Column(JSONB)
-    created_at = db.Column(db.TIMESTAMP, default=db.func.now())
-    updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
-
-    __table_args__ = (db.UniqueConstraint("project_id", "key", name="_project_setting_key"),)
-
-
-class AppSetting(db.Model):
-    """App-level key/value for tokens and API keys. Values stored encrypted when TERARCHITECT_SECRET_KEY is set."""
-
-    __tablename__ = "app_settings"
-
-    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
-    key = db.Column(db.String(255), nullable=False, unique=True)
-    value = db.Column(db.Text, nullable=False)  # encrypted or plaintext
-    created_at = db.Column(db.TIMESTAMP, default=db.func.now())
-    updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
 
 
 class AgentJob(db.Model):

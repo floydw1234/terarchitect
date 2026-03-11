@@ -23,22 +23,22 @@ flask run --host=0.0.0.0 --port=5010
 
 ## Environment Variables (.env in backend/)
 
+The backend uses **only** these env vars. Director/Worker/OpenCode URLs and keys are **not** read by the backend; they belong in the coordinator (and agent) env. See `example.env` for who needs what.
+
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL (default: `postgresql://terarchitect:terarchitect@localhost:5433/terarchitect`, port 5433 to avoid conflict with other Postgres on 5432) |
-| `AGENT_LLM_URL` | Base URL for the Director LLM (e.g. https://api.openai.com or http://your-host:8000). No default — must be explicitly configured. Agent API is `{AGENT_LLM_URL}/v1/chat/completions`. |
-| `AGENT_MODEL` | Model name for agent API |
-| `AGENT_API_KEY` | API key (optional for vLLM) |
-| `WORKER_LLM_URL` | OpenCode worker LLM API base URL (default: http://localhost:8080/v1) |
-| `WORKER_MODEL` | Worker model string; leave unset to use Agent model |
-| `WORKER_API_KEY` | API key for worker OpenAI-compatible provider (default: `dummy`) |
-| `WORKER_TIMEOUT_SEC` | Worker run timeout in seconds (default: `3600`) |
-| `MIDDLE_AGENT_DEBUG` | Set to `1` to log agent activity |
-| `MEMORY_SAVE_DIR` | Directory for HippoRAG project memory (default: `/tmp/terarchitect`; not configurable via UI) |
-| `MEMORY_LLM_MODEL` | LLM for HippoRAG OpenIE (default: `gpt-4o-mini`) |
-| `MEMORY_EMBEDDING_MODEL` | Embedding model name (default: `text-embedding-3-small`). Any model supported by your endpoint. |
-| `MEMORY_LLM_BASE_URL` | Optional LLM base URL for OpenIE (leave blank to use OpenAI directly via `OPENAI_API_KEY`). |
-| `MEMORY_EMBEDDING_BASE_URL` | Optional embedding base URL (leave blank to use OpenAI directly, or set to any OpenAI-compatible endpoint). |
+| `github_agent_token` / `GITHUB_TOKEN` / `GH_TOKEN` | GitHub PAT for UI actions and for passing to the agent (clone, PR). At least one required for execution readiness. |
+| `GIT_USER_NAME`, `GIT_USER_EMAIL` | Git identity for agent commits (optional). |
+| `TERARCHITECT_WORKER_API_KEY` | Optional. When set, worker API endpoints require Bearer token auth. |
+| `MEMORY_SAVE_DIR` | Directory for HippoRAG project memory (default: `/tmp/terarchitect`). |
+| `MEMORY_EMBEDDING_MODEL` | Embedding model name (required for execution readiness). |
+| `MEMORY_LLM_MODEL` | LLM for HippoRAG OpenIE (default: `gpt-4o-mini`). |
+| `MEMORY_LLM_BASE_URL`, `MEMORY_LLM_API_KEY` | Optional LLM base URL and key for OpenIE (leave blank to use OpenAI via `OPENAI_API_KEY`). |
+| `MEMORY_EMBEDDING_BASE_URL` | Optional embedding base URL (leave blank to use OpenAI or backend `/v1/embeddings`). |
+| `EMBEDDING_PROVIDER` | `openai` (default) or `custom`. For `custom`, set `EMBEDDING_SERVICE_URL` and `EMBEDDING_API_KEY`. |
+| `EMBEDDING_SERVICE_URL`, `EMBEDDING_API_KEY` | Used when `EMBEDDING_PROVIDER=custom` or by the `/v1/embeddings` route. |
+| `openai_api_key` / `OPENAI_API_KEY` | Used for embeddings when provider is OpenAI, and for memory LLM when `MEMORY_LLM_BASE_URL` is unset. |
 
 ## Project memory (HippoRAG)
 
