@@ -186,6 +186,153 @@ class TestClaudeCodeWorkerDispatch(unittest.TestCase):
             cmd = mock_run.call_args[0][0]
             self.assertNotIn("--model", cmd)
 
+    def test_claude_code_base_tools_include_todo_and_webfetch(self):
+        agent = _make_agent({"WORKER_MODE": "claude-code", "WORKER_API_KEY": "sk-ant-test"})
+        with patch("subprocess.run", return_value=self._mock_success()) as mock_run:
+            agent._call_claude_code_worker("prompt", "sess1", project_path=None, resume=False)
+            cmd = mock_run.call_args[0][0]
+            tools_idx = cmd.index("--allowedTools")
+            tools_str = cmd[tools_idx + 1]
+            for tool in ("TodoWrite", "TodoRead", "WebFetch"):
+                self.assertIn(tool, tools_str)
+
+    def test_claude_code_extra_tools_appended(self):
+        agent = _make_agent({
+            "WORKER_MODE": "claude-code",
+            "WORKER_API_KEY": "sk-ant-test",
+            "CLAUDE_CODE_EXTRA_TOOLS": "mcp__brave__search,mcp__github__create_issue",
+        })
+        with patch("subprocess.run", return_value=self._mock_success()) as mock_run:
+            agent._call_claude_code_worker("prompt", "sess1", project_path=None, resume=False)
+            cmd = mock_run.call_args[0][0]
+            tools_idx = cmd.index("--allowedTools")
+            tools_str = cmd[tools_idx + 1]
+            self.assertIn("mcp__brave__search", tools_str)
+            self.assertIn("mcp__github__create_issue", tools_str)
+
+    def test_claude_code_extra_tools_empty_by_default(self):
+        agent = _make_agent({"WORKER_MODE": "claude-code", "WORKER_API_KEY": "sk-ant-test"})
+        self.assertEqual(agent.worker_extra_tools, [])
+
+
+class TestDirectorProviderAutoUrl(unittest.TestCase):
+    """DIRECTOR_LLM_URL should be auto-inferred from DIRECTOR_PROVIDER for known providers."""
+
+    def _make(self, provider: str, explicit_url: str = ""):
+        return _make_agent({
+            "DIRECTOR_PROVIDER": provider,
+            "DIRECTOR_LLM_URL": explicit_url,
+            "DIRECTOR_MODEL": "test-model",
+        })
+
+    def test_openai_provider_infers_url(self):
+        agent = self._make("openai")
+        self.assertIn("api.openai.com", agent.director_api_url)
+
+    def test_anthropic_provider_infers_url(self):
+        agent = self._make("anthropic")
+        self.assertIn("api.anthropic.com", agent.director_api_url)
+
+    def test_groq_provider_infers_url(self):
+        agent = self._make("groq")
+        self.assertIn("api.groq.com", agent.director_api_url)
+
+    def test_together_provider_infers_url(self):
+        agent = self._make("together")
+        self.assertIn("together.xyz", agent.director_api_url)
+
+    def test_mistral_provider_infers_url(self):
+        agent = self._make("mistral")
+        self.assertIn("api.mistral.ai", agent.director_api_url)
+
+    def test_deepseek_provider_infers_url(self):
+        agent = self._make("deepseek")
+        self.assertIn("api.deepseek.com", agent.director_api_url)
+
+    def test_xai_provider_infers_url(self):
+        agent = self._make("xai")
+        self.assertIn("api.x.ai", agent.director_api_url)
+
+    def test_gemini_provider_infers_url(self):
+        agent = self._make("gemini")
+        self.assertIn("generativelanguage.googleapis.com", agent.director_api_url)
+
+    def test_google_alias_same_as_gemini(self):
+        self.assertEqual(self._make("google").director_api_url, self._make("gemini").director_api_url)
+
+    def test_unknown_provider_leaves_url_empty(self):
+        agent = self._make("custom")
+        self.assertEqual(agent.director_api_url, "")
+
+    def test_explicit_url_overrides_known_provider(self):
+        agent = self._make("openai", explicit_url="http://my-proxy:8080")
+        self.assertIn("my-proxy:8080", agent.director_api_url)
+        self.assertNotIn("api.openai.com", agent.director_api_url)
+
+
+class TestDirectorRequestJsonMode(unittest.TestCase):
+    """_director_request should include json_mode fields in the payload for both API styles."""
+
+    def _make_gpt5_agent(self):
+        return _make_agent({
+            "DIRECTOR_PROVIDER": "openai",
+            "DIRECTOR_LLM_URL": "",
+            "DIRECTOR_MODEL": "gpt-5",
+            "DIRECTOR_API_KEY": "sk-test",
+        })
+
+    def _make_gpt4o_agent(self):
+        return _make_agent({
+            "DIRECTOR_PROVIDER": "openai",
+            "DIRECTOR_LLM_URL": "",
+            "DIRECTOR_MODEL": "gpt-4o",
+            "DIRECTOR_API_KEY": "sk-test",
+        })
+
+    def _mock_responses_api(self, text: str):
+        mock = MagicMock()
+        mock.raise_for_status = MagicMock()
+        mock.json.return_value = {
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}]
+        }
+        return mock
+
+    def _mock_chat_completions(self, text: str):
+        mock = MagicMock()
+        mock.raise_for_status = MagicMock()
+        mock.json.return_value = {"choices": [{"message": {"content": text}}]}
+        return mock
+
+    def test_gpt5_uses_responses_api_with_json_format(self):
+        agent = self._make_gpt5_agent()
+        with patch("requests.post", return_value=self._mock_responses_api('{"ok": true}')) as mock_post:
+            agent._director_request([{"role": "user", "content": "test"}], json_mode=True)
+            payload = mock_post.call_args[1]["json"]
+            self.assertIn("text", payload)
+            self.assertEqual(payload["text"]["format"]["type"], "json_object")
+            self.assertIn("/v1/responses", mock_post.call_args[0][0])
+
+    def test_gpt5_no_json_mode_omits_text_format(self):
+        agent = self._make_gpt5_agent()
+        with patch("requests.post", return_value=self._mock_responses_api("plain text")) as mock_post:
+            agent._director_request([{"role": "user", "content": "test"}], json_mode=False)
+            payload = mock_post.call_args[1]["json"]
+            self.assertNotIn("text", payload)
+
+    def test_chat_completions_json_mode_sets_response_format(self):
+        agent = self._make_gpt4o_agent()
+        with patch("requests.post", return_value=self._mock_chat_completions('{"ok": true}')) as mock_post:
+            agent._director_request([{"role": "user", "content": "test"}], json_mode=True)
+            payload = mock_post.call_args[1]["json"]
+            self.assertEqual(payload["response_format"], {"type": "json_object"})
+
+    def test_chat_completions_no_json_mode_omits_response_format(self):
+        agent = self._make_gpt4o_agent()
+        with patch("requests.post", return_value=self._mock_chat_completions("plain text")) as mock_post:
+            agent._director_request([{"role": "user", "content": "test"}], json_mode=False)
+            payload = mock_post.call_args[1]["json"]
+            self.assertNotIn("response_format", payload)
+
 
 if __name__ == "__main__":
     unittest.main()

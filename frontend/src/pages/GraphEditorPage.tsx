@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Box, Typography, Button, Paper, TextField, Dialog, DialogTitle, DialogContent, DialogActions, FormControl, InputLabel, Select, MenuItem } from '@mui/material';
-import { getGraph, updateGraph } from '../utils/api';
+import { getGraph, updateGraph, generateGraph } from '../utils/api';
 
 interface NodeData {
   label: string;
@@ -68,6 +68,8 @@ const GraphEditorPage: React.FC = () => {
   const [nodes, setNodes] = useState<GraphNode[]>([]);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
   const [loading, setLoading] = useState(true);
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [editingEdgeId, setEditingEdgeId] = useState<string | null>(null);
@@ -243,6 +245,31 @@ const GraphEditorPage: React.FC = () => {
     }
   };
 
+  const handleGenerateGraph = async () => {
+    if (!projectId) return;
+    setGenerating(true);
+    setGenerateError(null);
+    try {
+      const result = await generateGraph(projectId);
+      setNodes(
+        Array.isArray(result.nodes)
+          ? (result.nodes as Partial<GraphNode>[]).map(normalizeNode)
+          : []
+      );
+      setEdges(
+        Array.isArray(result.edges)
+          ? (result.edges as Partial<GraphEdge>[]).map(normalizeEdge)
+          : []
+      );
+    } catch (error: any) {
+      const msg = error?.message || 'Failed to generate graph';
+      setGenerateError(msg);
+      console.error('Failed to generate graph:', error);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   if (loading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
@@ -261,6 +288,16 @@ const GraphEditorPage: React.FC = () => {
           <Button component={Link} to={`/projects/${projectId}/kanban`} color="primary">
             Kanban Board
           </Button>
+          {nodes.length === 0 && (
+            <Button
+              variant="contained"
+              color="secondary"
+              onClick={handleGenerateGraph}
+              disabled={generating}
+            >
+              {generating ? 'Generating…' : '✦ Generate from Repo'}
+            </Button>
+          )}
           <Button variant="contained" color="primary" onClick={handleAddNode}>
             Add Node
           </Button>
@@ -275,6 +312,13 @@ const GraphEditorPage: React.FC = () => {
           </Button>
         </Box>
       </Box>
+      {generateError && (
+        <Box sx={{ mb: 1, px: 1, py: 0.5, bgcolor: 'error.dark', borderRadius: 1 }}>
+          <Typography variant="body2" color="error.contrastText">
+            {generateError}
+          </Typography>
+        </Box>
+      )}
 
       <Paper
         sx={{
@@ -288,6 +332,13 @@ const GraphEditorPage: React.FC = () => {
         <Typography variant="body2" color="textSecondary" sx={{ p: 1, flexShrink: 0 }}>
           Drag nodes to move. Double-click a node to edit; double-click an edge (the line) to edit its label and protocol. Shift+click nodes to select; “Connect selected” adds an edge.
         </Typography>
+        {generating && (
+          <Box sx={{ px: 2, py: 1, bgcolor: 'action.hover', flexShrink: 0 }}>
+            <Typography variant="body2" color="text.secondary">
+              Cloning repo and analysing with LLM — this may take up to 5 minutes...
+            </Typography>
+          </Box>
+        )}
         <Box
           ref={containerRef}
           sx={{

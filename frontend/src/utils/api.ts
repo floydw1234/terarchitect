@@ -1,7 +1,22 @@
 /**
  * API Utility for Terarchitect Frontend
  */
-export const API_URL = 'http://localhost:5010';
+
+// Derive the backend URL from the browser's current hostname at runtime.
+// This means the frontend works regardless of whether you access it locally,
+// via LAN IP, SSH port-forward, or any other hostname — no rebuild required.
+// REACT_APP_API_URL can still override this (e.g. for a separate backend host).
+function resolveApiUrl(): string {
+  if (process.env.REACT_APP_API_URL) {
+    return process.env.REACT_APP_API_URL.replace(/\/$/, '');
+  }
+  if (typeof window !== 'undefined') {
+    return `${window.location.protocol}//${window.location.hostname}:5010`;
+  }
+  return 'http://localhost:5010';
+}
+
+export const API_URL = resolveApiUrl();
 
 export type ProjectExecutionMode = 'docker' | 'local';
 
@@ -33,6 +48,7 @@ export interface Ticket {
   associated_edge_ids?: string[];
   priority: string;
   status: string;
+  failed_count?: number;
   created_at?: string;
   updated_at?: string;
   pr_url?: string | null;
@@ -125,6 +141,29 @@ export async function updateGraph(projectId: string, data: { nodes: any[]; edges
     body: JSON.stringify(data),
   });
   return checkResponse<{ version: number }>(response);
+}
+
+export interface GenerateGraphResponse {
+  nodes: unknown[];
+  edges: unknown[];
+  version: number;
+  node_count: number;
+  edge_count: number;
+}
+
+export async function generateGraph(projectId: string): Promise<GenerateGraphResponse> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 360_000); // 6 min
+  try {
+    const response = await fetch(`${API_URL}/api/projects/${projectId}/graph/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+    });
+    return checkResponse<GenerateGraphResponse>(response);
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 export interface KanbanResponse {

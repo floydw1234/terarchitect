@@ -17,13 +17,25 @@ from models.db import db
 def create_app():
     app = Flask(__name__)
 
-    # Configure CORS - allow localhost on any port for development
+    # Configure CORS - allow localhost and any origins specified via CORS_ORIGINS env var.
+    # CORS_ORIGINS is comma-separated. Special value "ANY_PORT_3000" allows the frontend
+    # (port 3000) from any hostname, which covers local, LAN, port-forward access.
+    _base_origins: list = [
+        re.compile(r"http://localhost:\d+"),
+        re.compile(r"http://127\.0\.0\.1:\d+"),
+    ]
+    _cors_env = (os.environ.get("CORS_ORIGINS") or "").strip()
+    for entry in _cors_env.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if entry == "ANY_PORT_3000":
+            _base_origins.append(re.compile(r"https?://.+:3000"))
+        else:
+            _base_origins.append(entry)
     CORS(app, resources={
         r"/api/*": {
-            "origins": [
-                re.compile(r"http://localhost:\d+"),
-                re.compile(r"http://127\.0\.0\.1:\d+"),
-            ],
+            "origins": _base_origins,
             "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
             "allow_headers": ["Content-Type", "Authorization"]
         }

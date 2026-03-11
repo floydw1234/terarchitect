@@ -5,6 +5,7 @@ WORKDIR /app
 # Install system dependencies: PostgreSQL client, curl (for gh), and GitHub CLI for PR review/merge/comment
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    git \
     postgresql-client \
     curl \
     ca-certificates \

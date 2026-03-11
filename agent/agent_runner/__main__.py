@@ -82,7 +82,12 @@ def run_ticket() -> None:
     base_url = _env("TERARCHITECT_API_URL")
     ticket_id_str = _env("TICKET_ID")
     project_id_str = _env("PROJECT_ID")
-    github_token = _env("GITHUB_TOKEN", required=False) or os.environ.get("GH_TOKEN", "").strip()
+    github_token = (
+        _env("GITHUB_TOKEN", required=False)
+        or os.environ.get("GH_TOKEN", "").strip()
+        or os.environ.get("GITHUB_AGENT_TOKEN", "").strip()
+        or os.environ.get("github_agent_token", "").strip()
+    )
     auth_token = (os.environ.get("TERARCHITECT_WORKER_API_KEY") or "").strip() or None
 
     try:
@@ -137,7 +142,12 @@ def run_review() -> None:
     project_id_str = _env("PROJECT_ID")
     pr_number_str = _env("PR_NUMBER")
     comment_body = _env("COMMENT_BODY", required=False) or ""
-    github_token = _env("GITHUB_TOKEN", required=False) or os.environ.get("GH_TOKEN", "").strip()
+    github_token = (
+        _env("GITHUB_TOKEN", required=False)
+        or os.environ.get("GH_TOKEN", "").strip()
+        or os.environ.get("GITHUB_AGENT_TOKEN", "").strip()
+        or os.environ.get("github_agent_token", "").strip()
+    )
     auth_token = (os.environ.get("TERARCHITECT_WORKER_API_KEY") or "").strip() or None
 
     try:

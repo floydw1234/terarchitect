@@ -160,6 +160,20 @@ DIRECTOR_CONTEXT_TOKEN_LIMIT_PLAN_REVIEW = 80_000
 # If first plan-review payload is too large, summarize planning history first.
 PLAN_REVIEW_INITIAL_FULL_CONVERSATION_TOKEN_LIMIT = 12_000
 
+
+def _director_prompt_is_stuck(prompt_history: list, next_prompt: str, threshold: int = 3) -> bool:
+    """Return True if the last `threshold` prompts are all identical to `next_prompt`.
+    Used to detect director feedback loops where the worker keeps ignoring instructions."""
+    if len(prompt_history) < threshold:
+        return False
+    last_n = prompt_history[-threshold:]
+    # Strip the "Work VERY slowly" prefix we add so we compare the real content.
+    def _core(p: str) -> str:
+        prefix = "Work VERY slowly: modify one file at a time, verify each change before proceeding.\n\n"
+        return p[len(prefix):] if p.startswith(prefix) else p
+    core_next = _core(next_prompt)
+    return all(_core(p) == core_next for p in last_n)
+
 # Number of Director messages to summarize at once (2 user + 2 assistant = 2 full turns).
 _DIRECTOR_COMPACT_CHUNK_SIZE = 4
 
@@ -215,10 +229,32 @@ class MiddleAgent:
         self.debug = (get_setting_or_env("MIDDLE_AGENT_DEBUG") or "1").lower() not in ("0", "false", "no", "off")
 
         # Director API (LLM used to assess completion and decide next prompts).
-        # DIRECTOR_LLM_URL and DIRECTOR_MODEL must be provided via environment (no built-in defaults).
+        # DIRECTOR_LLM_URL can be omitted for known providers — it will be inferred from DIRECTOR_PROVIDER.
         self.director_provider = (get_setting_or_env("DIRECTOR_PROVIDER") or "custom").strip().lower()
+
+        # Well-known provider base URLs (value is the chat-completions endpoint).
+        _KNOWN_PROVIDER_URLS: dict[str, str] = {
+            "openai": "https://api.openai.com/v1/chat/completions",
+            "anthropic": "https://api.anthropic.com/v1/messages",
+            "google": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            "groq": "https://api.groq.com/openai/v1/chat/completions",
+            "together": "https://api.together.xyz/v1/chat/completions",
+            "togetherai": "https://api.together.xyz/v1/chat/completions",
+            "mistral": "https://api.mistral.ai/v1/chat/completions",
+            "perplexity": "https://api.perplexity.ai/chat/completions",
+            "deepseek": "https://api.deepseek.com/v1/chat/completions",
+            "xai": "https://api.x.ai/v1/chat/completions",
+            "fireworks": "https://api.fireworks.ai/inference/v1/chat/completions",
+        }
+
         vllm_base = (get_setting_or_env("DIRECTOR_LLM_URL") or "").strip().rstrip("/")
-        self.director_api_url = f"{vllm_base}/v1/chat/completions" if vllm_base else ""
+        if vllm_base:
+            self.director_api_url = f"{vllm_base}/v1/chat/completions"
+        elif self.director_provider in _KNOWN_PROVIDER_URLS:
+            self.director_api_url = _KNOWN_PROVIDER_URLS[self.director_provider]
+        else:
+            self.director_api_url = ""
         self.director_model = (get_setting_or_env("DIRECTOR_MODEL") or "").strip()
         self.director_api_key = (get_setting_or_env("DIRECTOR_API_KEY") or "").strip() or None
 
@@ -234,6 +270,10 @@ class MiddleAgent:
         self.worker_model = raw_worker_model  # no default — must be explicitly configured
         self.worker_api_key = (get_setting_or_env("WORKER_API_KEY") or "").strip() or None
         self.worker_timeout_sec: int = int(get_setting_or_env("WORKER_TIMEOUT_SEC") or "3600")
+        # Extra tools appended to the claude-code --allowedTools list.
+        # Comma-separated; supports mcp__ tool names e.g. "mcp__brave__search,mcp__github__create_issue"
+        raw_extra = (get_setting_or_env("CLAUDE_CODE_EXTRA_TOOLS") or "").strip()
+        self.worker_extra_tools: list[str] = [t.strip() for t in raw_extra.split(",") if t.strip()]
 
         # Active ticket context for intra-turn logging (OpenCode streaming). Set per process_ticket call.
         self._active_project_id: Optional[uuid.UUID] = None
@@ -261,7 +301,7 @@ class MiddleAgent:
                 "Set DIRECTOR_LLM_URL to your Ollama URL (e.g. http://localhost:11434) in coordinator/.env and restart."
             )
         if not self.director_api_url:
-            errors.append("DIRECTOR_LLM_URL is not set — Director LLM has no URL. Set DIRECTOR_PROVIDER=openai or provide DIRECTOR_LLM_URL.")
+            errors.append("DIRECTOR_LLM_URL is not set — Director LLM has no URL. Set DIRECTOR_PROVIDER to a known provider (openai, anthropic, groq, etc.) or provide DIRECTOR_LLM_URL explicitly.")
         if not self.director_model:
             errors.append("DIRECTOR_MODEL is not set — Director LLM has no model to use.")
         if self.worker_mode == "claude-code":
@@ -280,6 +320,125 @@ class MiddleAgent:
             self._log(project_id, ticket_id, session_id, "misconfigured", msg)
             return False
         return True
+
+    # Models that use the newer /v1/responses API instead of /v1/chat/completions.
+    _RESPONSES_API_MODELS = {"gpt-5", "o3", "o4-mini", "o3-mini"}
+
+    def _director_request(
+        self,
+        messages: list[dict],
+        *,
+        max_tokens: int = 1024,
+        temperature: float = 0.2,
+        timeout: int = 300,
+        json_mode: bool = False,
+    ) -> str:
+        """POST to the Director LLM and return the text content.
+
+        Automatically uses the /v1/responses endpoint (with `input`) for models
+        like gpt-5 that have dropped /v1/chat/completions, and falls back to the
+        standard /v1/chat/completions (with `messages`) for everything else.
+
+        json_mode=True enforces structured JSON output via the appropriate API field.
+        """
+        headers = {"Content-Type": "application/json"}
+        if self.director_api_key:
+            headers["Authorization"] = f"Bearer {self.director_api_key}"
+
+        use_responses_api = (
+            self.director_model in self._RESPONSES_API_MODELS
+            or self.director_api_url.rstrip("/").endswith("/v1/responses")
+        )
+
+        if use_responses_api:
+            # /v1/responses style: system message becomes a top-level `instructions` field.
+            instructions = next(
+                (m["content"] for m in messages if m.get("role") == "system"), ""
+            )
+            input_messages = [m for m in messages if m.get("role") != "system"]
+            url = self.director_api_url.replace("/v1/chat/completions", "/v1/responses")
+            if not url.rstrip("/").endswith("/v1/responses"):
+                url = self.director_api_url.rsplit("/", 1)[0].rstrip("/") + "/responses"
+            payload: dict = {
+                "model": self.director_model,
+                "input": input_messages,
+                "max_output_tokens": max_tokens,
+            }
+            if instructions:
+                payload["instructions"] = instructions
+            if json_mode:
+                payload["text"] = {"format": {"type": "json_object"}}
+        else:
+            url = self.director_api_url
+            payload = {
+                "model": self.director_model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
+
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            raise AgentAPIError(
+                f"Director API request failed: {url} - {e}",
+                cause=e,
+            ) from e
+
+        try:
+            data = resp.json()
+            if use_responses_api:
+                # /v1/responses: output is a list of content blocks.
+                # Structure: { output: [ { type: "message", content: [ { type: "output_text", text: "..." } ] } ] }
+
+                # Check for incomplete responses (e.g. max_output_tokens hit) before parsing output.
+                status = data.get("status", "")
+                if status == "incomplete":
+                    reason = (data.get("incomplete_details") or {}).get("reason", "unknown")
+                    raise AgentAPIError(
+                        f"Director API response was incomplete (reason: {reason}). "
+                        f"Increase max_output_tokens or reduce context size.",
+                        cause=None,
+                    )
+
+                output_items = data.get("output") or []
+                for item in output_items:
+                    item_type = item.get("type")
+                    if item_type == "message":
+                        for block in item.get("content") or []:
+                            if block.get("type") == "output_text":
+                                text = block.get("text", "")
+                                if isinstance(text, str):
+                                    return text
+                    elif item_type == "text":
+                        text = item.get("text", "")
+                        if isinstance(text, str) and text:
+                            return text
+                # Fallback: check top-level text or output_text fields.
+                for key in ("output_text", "text"):
+                    val = data.get(key)
+                    if isinstance(val, str) and val:
+                        return val
+                # Nothing found — raise with full response for debugging.
+                import json as _json
+                raise AgentAPIError(
+                    f"Director API (/v1/responses) returned unrecognised structure. Keys: {list(data.keys())}. "
+                    f"Full response (truncated): {_json.dumps(data)[:800]}",
+                    cause=None,
+                )
+            else:
+                content = data.get("choices", [{}])[0].get("message", {}).get("content") or ""
+                return content if isinstance(content, str) else str(content)
+        except AgentAPIError:
+            raise
+        except (KeyError, IndexError, TypeError) as e:
+            raise AgentAPIError(
+                f"Director API returned invalid response format: {e}",
+                cause=e,
+            ) from e
 
     def _debug_log(self, msg: str) -> None:
         if self.debug:
@@ -342,29 +501,18 @@ class MiddleAgent:
                 diff = diff[:6000] + "\n... (truncated)" if len(diff) > 6000 else diff
             if not diff:
                 return fallback
-            headers = {"Content-Type": "application/json"}
-            if self.director_api_key:
-                headers["Authorization"] = f"Bearer {self.director_api_key}"
-            resp = requests.post(
-                self.director_api_url,
-                json={
-                    "model": self.director_model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "You generate a single-line commit message in imperative mood (e.g. 'Add user login', 'Fix null check in parser'). Output only the message, no quotes, no explanation.",
-                        },
-                        {"role": "user", "content": "Generate a commit message for these changes:\n\n" + diff},
-                    ],
-                    "max_tokens": 80,
-                    "temperature": 0.2,
-                },
-                headers=headers,
+            content = self._director_request(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You generate a single-line commit message in imperative mood (e.g. 'Add user login', 'Fix null check in parser'). Output only the message, no quotes, no explanation.",
+                    },
+                    {"role": "user", "content": "Generate a commit message for these changes:\n\n" + diff},
+                ],
+                max_tokens=80,
+                temperature=0.2,
                 timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            content = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+            ).strip()
             if not content:
                 return fallback
             first_line = content.split("\n")[0].strip()
@@ -551,6 +699,7 @@ class MiddleAgent:
             if agent_response.get("complete") and not is_first_execution_turn:
                 self._debug_log(f"{prefix}Task complete")
                 completion_summary = agent_response.get("summary", "Task completed")
+                self._cleanup_after_completion(session_id, project_path, ticket_id)
                 self._index_completion_memory(
                     ticket=ticket,
                     summary=completion_summary,
@@ -575,6 +724,11 @@ class MiddleAgent:
                 )
             if not next_prompt:
                 raise AgentAPIError("Director API returned no next_prompt when task is incomplete")
+            if _director_prompt_is_stuck(prompt_history, next_prompt):
+                raise AgentAPIError(
+                    "Director is stuck: same prompt sent 3 times in a row with no progress. "
+                    "Aborting to avoid infinite loop."
+                )
             if "assess: is the ticket complete" not in next_prompt.lower():
                 if "one file at a time" not in next_prompt.lower() and "slowly" not in next_prompt.lower():
                     next_prompt = "Work VERY slowly: modify one file at a time, verify each change before proceeding.\n\n" + next_prompt
@@ -1032,6 +1186,11 @@ class MiddleAgent:
             next_prompt = agent_response.get("next_prompt")
             if not next_prompt:
                 raise AgentAPIError("Director API returned no next_prompt when task is incomplete")
+            if _director_prompt_is_stuck(prompt_history, next_prompt):
+                raise AgentAPIError(
+                    "Director is stuck: same prompt sent 3 times in a row with no progress. "
+                    "Aborting to avoid infinite loop."
+                )
             if "assess: is the ticket complete" not in next_prompt.lower():
                 if "one file at a time" not in next_prompt.lower() and "slowly" not in next_prompt.lower():
                     next_prompt = "Work VERY slowly: modify one file at a time, verify each change before proceeding.\n\n" + next_prompt
@@ -1181,6 +1340,34 @@ class MiddleAgent:
             out.append(copy)
         return out
 
+    def _cleanup_after_completion(self, session_id: str, project_path: str, ticket_id) -> None:
+        """Send a final worker prompt to delete the plan file and remove fluff tests.
+
+        This runs after the director signals complete. Failures are logged but never
+        propagate — we don't want to mark a successful run as failed over cleanup."""
+        try:
+            plan_rel = os.path.join("plan", f"{ticket_id}_task_plan.md")
+            cleanup_prompt = (
+                f"The ticket is done. Please do two quick cleanup tasks, then stop:\n\n"
+                f"1. Delete the plan file `{plan_rel}` if it exists "
+                f"(use Bash: `rm -f {plan_rel}`). No need to remove it from git history.\n\n"
+                f"2. Review any test files that were added or modified during this ticket. "
+                f"Delete any tests that are obviously useless — e.g. tests that only check "
+                f"`assert True`, have no assertions at all, only test that a function returns "
+                f"without any meaningful check, or are empty/placeholder tests. "
+                f"Do NOT remove tests that assert real behavior. "
+                f"If all tests look meaningful, leave them alone.\n\n"
+                f"Do not make any other code changes."
+            )
+            self._debug_log("[Cleanup] Sending post-completion cleanup prompt")
+            self._log(project_path, ticket_id, session_id, "cleanup_prompt", "Post-completion cleanup", raw_output=cleanup_prompt)
+            response = self._send_to_worker(cleanup_prompt, session_id, project_path, resume=True)
+            out = (response.get("output") or "")[:500]
+            self._debug_log(f"[Cleanup] Done: {out}")
+            self._log(project_path, ticket_id, session_id, "cleanup_done", "Cleanup complete", raw_output=out)
+        except Exception as e:
+            self._debug_log(f"[Cleanup] Cleanup step failed (non-fatal): {e}")
+
     def _call_claude_code_worker(
         self,
         prompt: str,
@@ -1190,7 +1377,10 @@ class MiddleAgent:
     ) -> dict:
         """Invoke Claude Code CLI in headless mode (-p flag) as the worker.
         Uses WORKER_API_KEY as ANTHROPIC_API_KEY. Sessions are continued via --resume <session_id>."""
-        cmd = ["claude", "-p", prompt, "--output-format", "json", "--allowedTools", "Bash,Read,Edit,Write,MultiEdit,Glob,Grep,LS"]
+        base_tools = ["Bash", "Read", "Edit", "Write", "MultiEdit", "Glob", "Grep", "LS",
+                      "TodoWrite", "TodoRead", "WebFetch"]
+        allowed_tools = ",".join(base_tools + self.worker_extra_tools)
+        cmd = ["claude", "-p", prompt, "--output-format", "json", "--allowedTools", allowed_tools]
         if self.worker_model:
             cmd.extend(["--model", self.worker_model])
         worker_session_id = self._worker_sessions.get(session_id)
@@ -1534,28 +1724,17 @@ class MiddleAgent:
         )
         system = """You are summarizing a conversation between the Director (an agent that assesses worker output and decides the next prompt) and the system.
 Preserve: project/ticket context if present, completion decisions (complete vs not), key next prompts given to the worker, and worker outcomes.
-Output a single concise narrative. No JSON, no labels—just prose."""
-        headers = {"Content-Type": "application/json"}
-        if self.director_api_key:
-            headers["Authorization"] = f"Bearer {self.director_api_key}"
+Output a single concise narrative under 200 words. No JSON, no labels—just prose."""
         try:
-            resp = requests.post(
-                self.director_api_url,
-                json={
-                    "model": self.director_model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": formatted},
-                    ],
-                    "max_tokens": 2048,
-                    "temperature": 0.2,
-                },
-                headers=headers,
+            return self._director_request(
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": formatted},
+                ],
+                max_tokens=2048,
+                temperature=0.2,
                 timeout=120,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
+            ).strip()
         except Exception as e:
             self._debug_log(f"Summarization API call failed: {e}, using truncation")
             return formatted[:4000] + "\n\n[... truncated ...]" if len(formatted) > 4000 else formatted
@@ -1650,7 +1829,11 @@ Output a single concise narrative. No JSON, no labels—just prose."""
 {memory_block}Conversation for plan review:
 {convo_for_review}
 
-Judge the plan. Respond in JSON only: plan_approved (true/false). If true, include approved_plan_text as a concise execution checklist for the next phase (not a verbatim full-file dump). If false, include next_prompt with concise, actionable fixes (no code fences)."""
+Judge the plan. Respond in JSON only with:
+- plan_approved (true/false)
+- feedback (2-4 sentences max: what is good or what is wrong — be specific, no fluff)
+
+If false, also include next_prompt with the actionable fixes to send the worker (bullet points ok, no code fences, no preamble)."""
             else:
                 user_msg_content = f"""{setup_hint}{plan_block}Context:
 {json.dumps(context, indent=2)}
@@ -1672,9 +1855,22 @@ Assess: Is the ticket complete? Respond in JSON only."""
 ### Turn {n} - Worker response:
 {response}
 
-Judge the plan. Respond in JSON only: plan_approved (true/false). If true, include approved_plan_text as a concise execution checklist. If false, include next_prompt with concise actionable fixes (no code fences)."""
+Judge the plan. Respond in JSON only with:
+- plan_approved (true/false)
+- feedback (2-4 sentences max: what is good or what is wrong — be specific, no fluff)
+
+If false, also include next_prompt with the actionable fixes to send the worker (bullet points ok, no code fences, no preamble)."""
             else:
-                user_msg_content = f"""{setup_hint}{plan_block}{memory_block}New worker turn:
+                # Re-anchor key context on every subsequent turn so it survives compaction.
+                pr_comment = (context.get("pr_review_comment") or "").strip()
+                ticket_info = context.get("current_ticket") or {}
+                anchor = ""
+                if pr_comment:
+                    anchor = (
+                        f"Reminder — original PR review comment to address:\n{pr_comment[:800]}\n\n"
+                        f"Ticket: {ticket_info.get('title', '')}\n\n"
+                    )
+                user_msg_content = f"""{setup_hint}{plan_block}{memory_block}{anchor}New worker turn (turn {n} of this session):
 
 ### Turn {n} - Prompt to Worker:
 {prompt}
@@ -1682,7 +1878,8 @@ Judge the plan. Respond in JSON only: plan_approved (true/false). If true, inclu
 ### Turn {n} - Worker response:
 {response}
 
-Assess: Is the ticket complete? Respond in JSON only."""
+Assess: Is the ticket complete? Respond in JSON only.
+If the worker has been stuck on the same sub-step for 3+ turns, escalate: either simplify the ask, skip it, or call it done if it is a minor nit."""
 
         new_user_msg = {"role": "user", "content": user_msg_content}
         token_limit = (
@@ -1698,10 +1895,6 @@ Assess: Is the ticket complete? Respond in JSON only."""
         )
         messages_for_api = [{"role": "system", "content": system_content}] + compacted + [new_user_msg]
 
-        headers = {"Content-Type": "application/json"}
-        if self.director_api_key:
-            headers["Authorization"] = f"Bearer {self.director_api_key}"
-
         if session_id:
             self._trace_log(
                 session_id,
@@ -1715,34 +1908,11 @@ Assess: Is the ticket complete? Respond in JSON only."""
             )
 
         try:
-            resp = requests.post(
-                self.director_api_url,
-                json={
-                    "model": self.director_model,
-                    "messages": messages_for_api,
-                    "max_tokens": 1024,
-                    "temperature": 0.2,
-                },
-                headers=headers,
-                timeout=300,
-            )
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            raise AgentAPIError(
-                f"Director API request failed: {self.director_api_url} - {e}",
-                cause=e,
-            ) from e
+            content = self._director_request(messages_for_api, timeout=300, json_mode=True, max_tokens=8192)
+        except AgentAPIError:
+            raise
 
-        try:
-            data = resp.json()
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
-        except (KeyError, IndexError, TypeError) as e:
-            raise AgentAPIError(
-                f"Director API returned invalid response format: {e}",
-                cause=e,
-            ) from e
-
-        self._debug_log(f"Director API response: {content[:300]}...")
+        self._debug_log(f"Director API response ({len(content)} chars): {content[:500]}")
         if session_id:
             self._trace_log(
                 session_id,
@@ -1819,28 +1989,15 @@ The implementation work produced this summary:
 {completion_summary or "(No summary)"}
 \"\"\"
 
-Write a short direct reply to the reviewer (2–5 sentences) that answers their question or addresses their point. If they asked a specific question (e.g. "Do we update X on the backend?"), answer it directly (e.g. "Yes, we update X in ..." or "No; I've added that in ..."). Do not post a generic "ticket completed" summary. Output only the reply text, no preamble or labels."""
+Write a short direct reply to the reviewer (2–5 sentences) that answers their question or addresses their point. If they asked a specific question (e.g. "Do we update X on the backend?"), answer it directly (e.g. "Yes, we update X in ..." or "No; I've added that in ..."). Do not post a generic "ticket completed" summary. Output only the reply text, no preamble or labels. Maximum 100 words."""
 
-        headers = {"Content-Type": "application/json"}
-        if self.director_api_key:
-            headers["Authorization"] = f"Bearer {self.director_api_key}"
         try:
-            resp = requests.post(
-                self.director_api_url,
-                json={
-                    "model": self.director_model,
-                    "messages": [
-                        {"role": "user", "content": user_msg},
-                    ],
-                    "max_tokens": 512,
-                    "temperature": 0.2,
-                },
-                headers=headers,
+            content = self._director_request(
+                messages=[{"role": "user", "content": user_msg}],
+                max_tokens=512,
+                temperature=0.2,
                 timeout=60,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            content = (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
+            ).strip()
             if content:
                 return content
         except Exception as e:
@@ -1953,28 +2110,17 @@ Ticket description: {ticket_description or "(none)"}
 
 Summary of what was done: {completion_summary}
 
-Write a clear, descriptive paragraph for the PR description explaining what was accomplished: files changed, behavior added or fixed, and any notable decisions. Plain text only, no markdown headers. Keep it under 400 words."""
-        headers = {"Content-Type": "application/json"}
-        if self.director_api_key:
-            headers["Authorization"] = f"Bearer {self.director_api_key}"
+Write a clear, descriptive paragraph for the PR description explaining what was accomplished: files changed, behavior added or fixed, and any notable decisions. Plain text only, no markdown headers. Maximum 200 words."""
         try:
-            resp = requests.post(
-                self.director_api_url,
-                json={
-                    "model": self.director_model,
-                    "messages": [
-                        {"role": "system", "content": "You write concise, accurate PR descriptions for code changes. Output only the paragraph, no labels or prefixes."},
-                        {"role": "user", "content": user_content},
-                    ],
-                    "max_tokens": 512,
-                    "temperature": 0.3,
-                },
-                headers=headers,
+            content = self._director_request(
+                messages=[
+                    {"role": "system", "content": "You write concise, accurate PR descriptions for code changes. Output only the paragraph, no labels or prefixes."},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=2048,
+                temperature=0.3,
                 timeout=60,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            content = (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
+            ).strip()
             return content if content else None
         except Exception as e:
             self._debug_log(f"PR description generation failed: {e}")

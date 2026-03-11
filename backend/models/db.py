@@ -64,6 +64,7 @@ class Ticket(db.Model):
     associated_edge_ids = db.Column(JSONB, default=[])
     priority = db.Column(db.String(50), default="medium")
     status = db.Column(db.String(50), default="todo")
+    failed_count = db.Column(db.Integer, default=0, nullable=False)
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
 

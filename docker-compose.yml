@@ -17,12 +17,17 @@ services:
     container_name: terarchitect-backend
     ports:
       - "5010:5010"
+    env_file:
+      - ./backend/.env
     environment:
       # Bridge network: reach postgres by service name on its internal port
       DATABASE_URL: postgresql://terarchitect:terarchitect@postgres:5432/terarchitect
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
       MEMORY_SAVE_DIR: /tmp/terarchitect
+      # CORS: allow the frontend (port 3000) from any hostname.
+      # This covers localhost, LAN IPs, SSH port-forwards, etc.
+      CORS_ORIGINS: "ANY_PORT_3000"
       # All LLM/embedding/GitHub settings are configured via the Settings UI (stored in DB).
       # See Settings → Director, Worker, Embeddings sections.
     depends_on:
@@ -60,9 +65,11 @@ services:
       dockerfile: Dockerfile.frontend
     container_name: terarchitect-frontend
     environment:
-      # localhost:5010 is reachable from the browser on the host machine (port is exposed).
-      # The frontend is a client-side React app — this URL is used by the browser, not the container.
-      - REACT_APP_API_URL=http://localhost:5010
+      # No REACT_APP_API_URL needed — the frontend derives the backend URL from
+      # window.location.hostname at runtime, so it works for any access method
+      # (local, LAN, SSH port-forward, etc.) without a rebuild.
+      # Set REACT_APP_API_URL here only if the backend is on a different host entirely.
+      - REACT_APP_API_URL=
     volumes:
       - ./frontend:/app
       - /app/node_modules

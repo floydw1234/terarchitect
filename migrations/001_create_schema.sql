@@ -46,6 +46,7 @@ CREATE TABLE tickets (
     associated_edge_ids JSONB DEFAULT '[]',
     priority VARCHAR(50) DEFAULT 'medium',
     status VARCHAR(50) DEFAULT 'todo',
+    failed_count INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -79,6 +80,7 @@ CREATE TABLE execution_logs (
     session_id VARCHAR(255),
     step VARCHAR(100),
     summary TEXT,
+    raw_output TEXT,
     input_tokens INTEGER,
     output_tokens INTEGER,
     success BOOLEAN DEFAULT TRUE,

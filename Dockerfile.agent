@@ -74,6 +74,8 @@ COPY agent/agent_runner /app/agent_runner
 COPY agent/utils/__init__.py agent/utils/app_settings.py /app/utils/
 
 ENV PYTHONPATH=/app
+# Allow --dangerously-skip-permissions inside root containers (CI/DinD environments).
+ENV CLAUDE_SKIP_PERMISSIONS_CHECK=1
 # Do not set AGENT_WORKSPACE here: coordinator sets it only for local execution. In Docker we clone into a temp dir.
 
 RUN chmod +x /app/agent_runner/entrypoint.sh

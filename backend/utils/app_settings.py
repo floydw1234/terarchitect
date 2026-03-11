@@ -60,6 +60,25 @@ def get_gh_env_for_agent() -> dict:
     return {"GH_TOKEN": token, "GITHUB_TOKEN": token}
 
 
+def get_frontend_llm_settings() -> dict:
+    """Return FRONTEND_LLM_* settings, falling back to DIRECTOR_* when unset.
+    Returns dict with keys: url, model, api_key. Values may be None if unconfigured."""
+    url = _env("FRONTEND_LLM_URL") or _env("DIRECTOR_LLM_URL")
+    model = _env("FRONTEND_LLM_MODEL") or _env("DIRECTOR_MODEL")
+    api_key = _env("FRONTEND_LLM_API_KEY") or _env("DIRECTOR_API_KEY") or _env("openai_api_key") or _env("OPENAI_API_KEY")
+    return {"url": url, "model": model, "api_key": api_key}
+
+
+def get_github_token() -> str | None:
+    """Return the configured GitHub token (any of the accepted env var names)."""
+    return (
+        _env("github_agent_token")
+        or _env("GITHUB_TOKEN")
+        or _env("GH_TOKEN")
+        or _env("GITHUB_AGENT_TOKEN")
+    )
+
+
 def check_execution_readiness() -> Tuple[bool, List[MissingRequired]]:
     """Backend-side readiness before moving ticket to In Progress.
 

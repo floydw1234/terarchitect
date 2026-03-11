@@ -375,11 +375,11 @@ const KanbanPage: React.FC = () => {
       .catch(() => {});
   }, []);
 
-  // Poll ticket statuses while any ticket is in_progress so the Running strip
+  // Poll ticket statuses while any ticket is in_progress or in_review so the Running strip
   // and log poller stay current without a full page refresh.
-  const inProgressCount = tickets.filter((t) => t.column_id === 'in_progress').length;
+  const activeCount = tickets.filter((t) => t.column_id === 'in_progress' || t.column_id === 'in_review').length;
   useEffect(() => {
-    if (!projectId || inProgressCount === 0) return;
+    if (!projectId || activeCount === 0) return;
     const id = setInterval(async () => {
       try {
         const updated = await getTickets(projectId);
@@ -389,7 +389,7 @@ const KanbanPage: React.FC = () => {
       }
     }, 5_000);
     return () => clearInterval(id);
-  }, [projectId, inProgressCount]);
+  }, [projectId, activeCount]);
 
   const fetchKanban = async () => {
     if (!projectId) return;
@@ -677,7 +677,7 @@ const KanbanPage: React.FC = () => {
     );
   }
 
-  const inProgressTickets = tickets.filter((t) => t.column_id === 'in_progress');
+  const inProgressTickets = tickets.filter((t) => t.column_id === 'in_progress' || t.column_id === 'in_review');
   const boardColumns = columns.filter((c) => BOARD_COLUMN_IDS.has(c.id));
 
   return (
@@ -1272,6 +1272,15 @@ const TicketCard: React.FC<TicketCardProps> = ({
             color={PRIORITY_COLOR[ticket.priority] ?? 'default'}
             sx={{ height: 16, fontSize: '0.6rem' }}
           />
+          {(ticket.failed_count ?? 0) > 0 && (
+            <Chip
+              label={`Failed ${ticket.failed_count}×`}
+              size="small"
+              color="error"
+              variant="outlined"
+              sx={{ height: 16, fontSize: '0.6rem' }}
+            />
+          )}
           {ticket.pr_url && (
             <>
               <Typography
