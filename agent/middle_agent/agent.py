@@ -1259,6 +1259,7 @@ class MiddleAgent:
             memory_kwargs=memory_kwargs,
         )
         self._debug_log("Posting reply to PR comment, then finalizing")
+        self._cleanup_after_completion(session_id, project_path, ticket.id)
         pr_comment_body = self._generate_pr_comment_reply(comment_body, completion_summary or "")
         try:
             self._finalize(
@@ -2081,13 +2082,13 @@ If false, also include next_prompt with the actionable fixes to send the worker 
         user_msg = f"""A reviewer left this comment on a PR:
 
 \"\"\"
-{comment_body}
+{comment_body[:3000]}
 \"\"\"
 
 The implementation work produced this summary:
 
 \"\"\"
-{completion_summary or "(No summary)"}
+{(completion_summary or "(No summary)")[:1000]}
 \"\"\"
 
 Write a short direct reply to the reviewer (2–5 sentences) that answers their question or addresses their point. If they asked a specific question (e.g. "Do we update X on the backend?"), answer it directly (e.g. "Yes, we update X in ..." or "No; I've added that in ..."). Do not post a generic "ticket completed" summary. Output only the reply text, no preamble or labels. Maximum 100 words."""

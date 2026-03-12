@@ -1949,7 +1949,22 @@ def _poll_pr_review_comments():
             .first()
         )
         if next_comment:
-            if _is_approval_comment(next_comment.body):
+            # Skip comments that are pure blockquotes (user forwarded a bot comment without
+            # adding their own feedback — every non-empty line starts with '>').
+            body_lines = [l for l in (next_comment.body or "").splitlines() if l.strip()]
+            if body_lines and all(l.lstrip().startswith(">") for l in body_lines):
+                from datetime import datetime as _dt
+                next_comment.addressed_at = _dt.utcnow()
+                next_comment.updated_at = _dt.utcnow()
+                try:
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                current_app.logger.info(
+                    "PR #%s comment %s is a pure quote-forward — skipping agent",
+                    pr_number, next_comment.github_comment_id,
+                )
+            elif _is_approval_comment(next_comment.body):
                 # Pure approval — mark addressed and skip firing the agent.
                 from datetime import datetime as _dt
                 next_comment.addressed_at = _dt.utcnow()
