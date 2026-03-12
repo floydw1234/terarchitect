@@ -76,7 +76,7 @@ def create_app():
     import threading
     if not getattr(app, "_pr_poll_started", False):
         app._pr_poll_started = True
-        runner = threading.Thread(target=_run_pr_poll_loop, args=(app,), kwargs={"pr_poll_seconds": 600}, daemon=True)
+        runner = threading.Thread(target=_run_pr_poll_loop, args=(app,), kwargs={"pr_poll_seconds": 10}, daemon=True)
         runner.start()
 
     # Health check endpoint

@@ -175,6 +175,7 @@ const RunningStrip: React.FC<RunningStripProps> = ({ tickets, projectId, onStop,
             const ticketLogs = logs[ticket.id] ?? [];
             const lastLog = ticketLogs[ticketLogs.length - 1];
             const isStopping = stopping.has(ticket.id);
+            const isReview = ticket.running_job_kind === 'review';
             return (
               <Box
                 key={ticket.id}
@@ -188,11 +189,17 @@ const RunningStrip: React.FC<RunningStripProps> = ({ tickets, projectId, onStop,
                   flexWrap: 'wrap',
                 }}
               >
-                <CircularProgress size={12} thickness={6} color="primary" sx={{ flexShrink: 0 }} />
+                <CircularProgress size={12} thickness={6} color={isReview ? 'secondary' : 'primary'} sx={{ flexShrink: 0 }} />
                 <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography variant="body2" fontWeight={600} noWrap>
-                    {ticket.title}
-                  </Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap' }}>
+                    <Typography variant="body2" fontWeight={600} noWrap>
+                      {ticket.title}
+                    </Typography>
+                    {isReview && (
+                      <Chip label="Responding to PR" size="small" color="secondary" variant="outlined"
+                        sx={{ height: 16, fontSize: '0.6rem', flexShrink: 0 }} />
+                    )}
+                  </Box>
                   {lastLog ? (
                     <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>
                       <strong>{lastLog.step}</strong>
@@ -210,7 +217,7 @@ const RunningStrip: React.FC<RunningStripProps> = ({ tickets, projectId, onStop,
                       <ListAltIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
-                  <Tooltip title={isStopping ? 'Stopping…' : 'Stop and return to Backlog'}>
+                  <Tooltip title={isStopping ? 'Stopping…' : ticket.running_job_kind === 'review' ? 'Stop and return to In Review' : 'Stop and return to Backlog'}>
                     <span>
                       <IconButton
                         size="small"
@@ -334,6 +341,7 @@ const KanbanPage: React.FC = () => {
   const [editTitle, setEditTitle] = useState('');
   const [editDescription, setEditDescription] = useState('');
   const [editPriority, setEditPriority] = useState<string>('medium');
+  const [editColumnId, setEditColumnId] = useState<string>('backlog');
   const [editNodeIds, setEditNodeIds] = useState<string[]>([]);
   const [editEdgeIds, setEditEdgeIds] = useState<string[]>([]);
   const [editAllNodesAndEdges, setEditAllNodesAndEdges] = useState(false);
@@ -375,11 +383,13 @@ const KanbanPage: React.FC = () => {
       .catch(() => {});
   }, []);
 
-  // Poll ticket statuses while any ticket is in_progress or in_review so the Running strip
+  // Poll ticket statuses while any ticket is actively running so the Running strip
   // and log poller stay current without a full page refresh.
-  const activeCount = tickets.filter((t) => t.column_id === 'in_progress' || t.column_id === 'in_review').length;
+  // Also poll at a slower rate unconditionally so is_running stays fresh after jobs start.
+  const activeCount = tickets.filter((t) => t.is_running).length;
   useEffect(() => {
-    if (!projectId || activeCount === 0) return;
+    if (!projectId) return;
+    const interval = activeCount > 0 ? 5_000 : 15_000;
     const id = setInterval(async () => {
       try {
         const updated = await getTickets(projectId);
@@ -387,7 +397,7 @@ const KanbanPage: React.FC = () => {
       } catch {
         // non-fatal
       }
-    }, 5_000);
+    }, interval);
     return () => clearInterval(id);
   }, [projectId, activeCount]);
 
@@ -481,8 +491,10 @@ const KanbanPage: React.FC = () => {
     if (!projectId) return;
     try {
       await cancelTicketExecution(projectId, ticketId);
-      // Move back to backlog so the ticket leaves the Running strip
-      const updated = await updateTicket(projectId, ticketId, { column_id: 'backlog' });
+      // Review jobs (in_review) stay in in_review; ticket jobs go back to backlog.
+      const ticket = tickets.find((t) => t.id === ticketId);
+      const targetColumn = ticket?.column_id === 'in_review' ? 'in_review' : 'backlog';
+      const updated = await updateTicket(projectId, ticketId, { column_id: targetColumn });
       setTickets((prev) => prev.map((t) => (t.id === ticketId ? updated : t)));
     } catch (error) {
       console.error('Failed to stop ticket:', error);
@@ -505,6 +517,7 @@ const KanbanPage: React.FC = () => {
     setEditTitle(ticket.title);
     setEditDescription(ticket.description || '');
     setEditPriority(ticket.priority);
+    setEditColumnId(ticket.column_id);
     const nodeIds = ticket.associated_node_ids ?? [];
     const edgeIds = ticket.associated_edge_ids ?? [];
     const isAll = nodeIds.length === 1 && nodeIds[0] === '*';
@@ -520,6 +533,7 @@ const KanbanPage: React.FC = () => {
         title: editTitle.trim(),
         description: editDescription.trim() || undefined,
         priority: editPriority,
+        column_id: editColumnId,
         associated_node_ids: editAllNodesAndEdges ? ['*'] : editNodeIds,
         associated_edge_ids: editAllNodesAndEdges ? ['*'] : editEdgeIds,
       });
@@ -677,7 +691,7 @@ const KanbanPage: React.FC = () => {
     );
   }
 
-  const inProgressTickets = tickets.filter((t) => t.column_id === 'in_progress' || t.column_id === 'in_review');
+  const inProgressTickets = tickets.filter((t) => t.is_running);
   const boardColumns = columns.filter((c) => BOARD_COLUMN_IDS.has(c.id));
 
   return (
@@ -903,6 +917,19 @@ const KanbanPage: React.FC = () => {
                     <MenuItem value="low">Low</MenuItem>
                     <MenuItem value="medium">Medium</MenuItem>
                     <MenuItem value="high">High</MenuItem>
+                  </Select>
+                </FormControl>
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Status</InputLabel>
+                  <Select
+                    value={editColumnId}
+                    label="Status"
+                    onChange={(e) => setEditColumnId(e.target.value)}
+                  >
+                    <MenuItem value="backlog">Backlog</MenuItem>
+                    <MenuItem value="in_progress">In Progress</MenuItem>
+                    <MenuItem value="in_review">In Review</MenuItem>
+                    <MenuItem value="done">Done</MenuItem>
                   </Select>
                 </FormControl>
                 <FormControlLabel

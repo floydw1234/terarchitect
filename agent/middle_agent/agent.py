@@ -1117,7 +1117,6 @@ class MiddleAgent:
             "project_path": project_path,
             "current_ticket": context.get("current_ticket"),
             "graph_relevant_to_current_ticket": context.get("graph_relevant_to_current_ticket"),
-            "pr_review_comment": comment_body,
         }
         task_instruction = (
             get_worker_review_prompt_prefix()
@@ -1140,9 +1139,12 @@ class MiddleAgent:
             ticket.project_id, ticket_id, session_id,
             "worker_turn_0_prompt", "Review prompt sent to worker", raw_output=task_instruction,
         )
+        self._debug_log(f"[Director -> Worker] PR review turn 0:\n" + (task_instruction[:800] + "..." if len(task_instruction) > 800 else task_instruction))
         response = self._send_to_worker(task_instruction, session_id, project_path, resume=False)
-        self._log(ticket.project_id, ticket_id, session_id, "worker_turn_0", "Review prompt sent", raw_output=response.get("output"))
-        conversation_history: List[str] = [response.get("output") or ""]
+        turn0_out = response.get("output") or ""
+        self._debug_log(f"[Worker -> Director] PR review turn 0 response:\n" + (turn0_out[:800] + "..." if len(turn0_out) > 800 else turn0_out))
+        self._log(ticket.project_id, ticket_id, session_id, "worker_turn_0", "Review prompt sent", raw_output=turn0_out)
+        conversation_history: List[str] = [turn0_out]
         prompt_history: List[str] = [task_instruction]
         director_messages: List[Dict[str, str]] = []
         completion_summary: Optional[str] = None
@@ -1191,17 +1193,17 @@ class MiddleAgent:
                     "Director is stuck: same prompt sent 3 times in a row with no progress. "
                     "Aborting to avoid infinite loop."
                 )
-            if "assess: is the ticket complete" not in next_prompt.lower():
-                if "one file at a time" not in next_prompt.lower() and "slowly" not in next_prompt.lower():
-                    next_prompt = "Work VERY slowly: modify one file at a time, verify each change before proceeding.\n\n" + next_prompt
             self._log(
                 ticket.project_id, ticket_id, session_id,
                 f"worker_turn_{turn + 1}_prompt", f"Director prompt (turn {turn + 1})", raw_output=next_prompt,
             )
+            self._debug_log(f"[Director -> Worker] PR review turn {turn + 1}:\n" + (next_prompt[:800] + "..." if len(next_prompt) > 800 else next_prompt))
             response = self._send_to_worker(next_prompt, session_id, project_path, resume=True)
+            worker_out = response.get("output") or ""
             prompt_history.append(next_prompt)
-            conversation_history.append(response.get("output") or "")
-            self._log(ticket.project_id, ticket_id, session_id, f"worker_turn_{turn + 1}", "Turn completed", raw_output=response.get("output"))
+            conversation_history.append(worker_out)
+            self._debug_log(f"[Worker -> Director] PR review turn {turn + 1} response:\n" + (worker_out[:800] + "..." if len(worker_out) > 800 else worker_out))
+            self._log(ticket.project_id, ticket_id, session_id, f"worker_turn_{turn + 1}", "Turn completed", raw_output=worker_out)
         return completion_summary
 
     def process_ticket_review(
@@ -1391,35 +1393,97 @@ class MiddleAgent:
             env["ANTHROPIC_API_KEY"] = self.worker_api_key
         cwd = project_path if (project_path and os.path.isdir(project_path)) else None
         self._debug_log(f"Claude Code CLI: cwd={cwd!r}, resume={worker_session_id!r}")
+
+        _pid = getattr(self, "_active_project_id", None)
+        _tid = getattr(self, "_active_ticket_id", None)
+
         try:
-            r = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
                 cwd=cwd,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=self.worker_timeout_sec,
                 env=env,
             )
-        except subprocess.TimeoutExpired as e:
-            raise WorkerUnavailableError(
-                f"Claude Code timed out after {self.worker_timeout_sec}s",
-                cause=e,
-            ) from e
         except FileNotFoundError as e:
             raise WorkerUnavailableError(
                 "claude CLI not found. Install Claude Code (npm install -g @anthropic-ai/claude-code) in the agent image.",
                 cause=e,
             ) from e
-        if r.returncode != 0:
-            err_detail = (r.stderr or r.stdout or "")[:1000]
+
+        stdout_lines: list = []
+        stderr_lines: list = []
+
+        import threading
+        import time as _time
+
+        def _read_stderr():
+            for line in proc.stderr:
+                stderr_lines.append(line)
+
+        stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
+        stderr_thread.start()
+
+        deadline = _time.monotonic() + self.worker_timeout_sec
+        last_log_time = _time.monotonic()
+        LOG_INTERVAL = 10  # post an intermediate log every 10 seconds of activity
+
+        for line in proc.stdout:
+            if _time.monotonic() > deadline:
+                proc.kill()
+                raise WorkerUnavailableError(
+                    f"Claude Code timed out after {self.worker_timeout_sec}s",
+                    cause=None,
+                )
+            stdout_lines.append(line)
+            # Post intermediate log roughly every LOG_INTERVAL seconds so the UI shows activity.
+            now = _time.monotonic()
+            if _pid and _tid and session_id and (now - last_log_time) >= LOG_INTERVAL:
+                try:
+                    # Try to extract a meaningful snippet from the latest JSON line.
+                    snippet = ""
+                    raw = line.strip()
+                    if raw:
+                        try:
+                            obj = json.loads(raw)
+                            if isinstance(obj, dict):
+                                snippet = (
+                                    obj.get("content") or
+                                    obj.get("text") or
+                                    obj.get("message") or ""
+                                )
+                                if isinstance(snippet, list):
+                                    snippet = " ".join(
+                                        p.get("text", "") for p in snippet
+                                        if isinstance(p, dict) and p.get("type") == "text"
+                                    )
+                                snippet = str(snippet)[:200]
+                        except (json.JSONDecodeError, TypeError):
+                            snippet = raw[:200]
+                    self._backend.log(
+                        _pid, _tid, session_id,
+                        "worker_activity",
+                        f"Worker active…{(' — ' + snippet) if snippet else ''}",
+                    )
+                except Exception:
+                    pass
+                last_log_time = now
+
+        proc.wait()
+        stderr_thread.join(timeout=5)
+
+        if proc.returncode != 0:
+            err_detail = ("".join(stderr_lines) or "".join(stdout_lines) or "")[:1000]
             raise WorkerUnavailableError(
-                f"Claude Code exited with code {r.returncode}: {err_detail}",
+                f"Claude Code exited with code {proc.returncode}: {err_detail}",
                 cause=None,
             )
+        stdout = "".join(stdout_lines)
         try:
-            data = json.loads(r.stdout)
+            data = json.loads(stdout)
         except (json.JSONDecodeError, ValueError):
-            return {"output": r.stdout.strip(), "error": "", "return_code": 0}
+            return {"output": stdout.strip(), "error": "", "return_code": 0}
         new_session_id = (data.get("session_id") or "").strip()
         if new_session_id:
             self._worker_sessions[session_id] = new_session_id
@@ -1783,8 +1847,21 @@ Output a single concise narrative under 200 words. No JSON, no labels—just pro
         director_messages = director_messages or []
         is_plan_review = phase == "plan_review"
         is_execution = phase == "execution"
+        is_review = bool((context or {}).get("pr_review_comment"))
         if is_plan_review:
             system_content = get_agent_system_prompt() + "\n\n" + get_agent_plan_review_instructions()
+        elif is_review:
+            system_content = get_agent_system_prompt() + (
+                "\n\n--- PR REVIEW MODE ---\n"
+                "You are assessing a PR review response, not a fresh ticket implementation. "
+                "The worker has already done the work. Your job is to check whether the review issues are addressed and tests pass — not to micromanage process. "
+                "If the worker shows pytest output with passing tests and describes the fixes, accept it and mark complete. "
+                "Only push back if: (a) the test output is clearly missing or fabricated (e.g. no numbers, no test names), "
+                "(b) a blocking issue from the review comment is explicitly not mentioned, or "
+                "(c) tests are shown as failing. "
+                "Do NOT demand step-by-step TDD re-runs if the worker already shows green tests. "
+                "Trust passing pytest output. Be efficient — unnecessary back-and-forth wastes everyone's time."
+            )
         else:
             system_content = get_agent_system_prompt()
         memory_block = f"{memories}\n\n" if memories else ""
@@ -1835,13 +1912,23 @@ Judge the plan. Respond in JSON only with:
 
 If false, also include next_prompt with the actionable fixes to send the worker (bullet points ok, no code fences, no preamble)."""
             else:
+                pr_comment_first = (context.get("pr_review_comment") or "").strip()
+                if pr_comment_first:
+                    assess_first = (
+                        "Assess: Has the worker addressed the review comment with real test evidence?\n"
+                        "Mark complete if all issues are addressed AND the worker provided actual pytest output (pass counts). "
+                        "Do NOT require step-by-step process. Only send next_prompt if something is genuinely missing or broken.\n"
+                        "Respond in JSON only."
+                    )
+                else:
+                    assess_first = "Assess: Is the ticket complete? Respond in JSON only."
                 user_msg_content = f"""{setup_hint}{plan_block}Context:
 {json.dumps(context, indent=2)}
 
 {memory_block}Full conversation with Worker:
 {full_conversation}
 
-Assess: Is the ticket complete? Respond in JSON only."""
+{assess_first}"""
         else:
             n = max(len(prompt_history), len(conversation_history))
             prompt = prompt_history[-1] if prompt_history else ""
@@ -1864,11 +1951,26 @@ If false, also include next_prompt with the actionable fixes to send the worker 
                 # Re-anchor key context on every subsequent turn so it survives compaction.
                 pr_comment = (context.get("pr_review_comment") or "").strip()
                 ticket_info = context.get("current_ticket") or {}
+                is_review = bool(pr_comment)
                 anchor = ""
                 if pr_comment:
                     anchor = (
-                        f"Reminder — original PR review comment to address:\n{pr_comment[:800]}\n\n"
+                        f"Reminder — original PR review comment to address:\n{pr_comment}\n\n"
                         f"Ticket: {ticket_info.get('title', '')}\n\n"
+                    )
+                if is_review:
+                    assess_instruction = (
+                        "Assess: Has the worker addressed the review comment with real test evidence?\n"
+                        "Mark complete if: all issues from the review comment are addressed AND the worker provided actual pytest output (pass counts, not just prose). "
+                        "Do NOT require step-by-step process — the worker may address everything in one shot. "
+                        "Only send next_prompt if something is genuinely missing or broken (e.g. no test output, a review issue not addressed, tests failing). "
+                        "If stuck on the same sub-step for 3+ turns, simplify the ask or accept it as done if it is a minor nit.\n"
+                        "Respond in JSON only."
+                    )
+                else:
+                    assess_instruction = (
+                        "Assess: Is the ticket complete? Respond in JSON only.\n"
+                        "If the worker has been stuck on the same sub-step for 3+ turns, escalate: either simplify the ask, skip it, or call it done if it is a minor nit."
                     )
                 user_msg_content = f"""{setup_hint}{plan_block}{memory_block}{anchor}New worker turn (turn {n} of this session):
 
@@ -1878,8 +1980,7 @@ If false, also include next_prompt with the actionable fixes to send the worker 
 ### Turn {n} - Worker response:
 {response}
 
-Assess: Is the ticket complete? Respond in JSON only.
-If the worker has been stuck on the same sub-step for 3+ turns, escalate: either simplify the ask, skip it, or call it done if it is a minor nit."""
+{assess_instruction}"""
 
         new_user_msg = {"role": "user", "content": user_msg_content}
         token_limit = (
@@ -2081,9 +2182,10 @@ Write a short direct reply to the reviewer (2–5 sentences) that answers their 
             return None
 
     def _checkout_ticket_branch(self, ticket: TicketLike, project_path: str) -> bool:
-        """Checkout existing branch ticket-{ticket.id}. Returns True if successful."""
+        """Checkout existing branch ticket-{ticket.id}, fetching from remote first if needed."""
         branch_name = f"ticket-{ticket.id}"
         try:
+            # First try local checkout (works if branch already exists locally).
             r = subprocess.run(
                 ["git", "checkout", branch_name],
                 cwd=project_path,
@@ -2091,7 +2193,29 @@ Write a short direct reply to the reviewer (2–5 sentences) that answers their 
                 text=True,
                 timeout=10,
             )
-            return r.returncode == 0
+            if r.returncode == 0:
+                return True
+            # Branch not found locally — fetch with explicit refspec so origin/<branch> tracking ref is created.
+            # Plain `git fetch origin <branch>` only updates FETCH_HEAD, not origin/<branch>.
+            self._debug_log(f"Branch {branch_name} not local, fetching from origin…")
+            subprocess.run(
+                ["git", "fetch", "origin", f"{branch_name}:refs/remotes/origin/{branch_name}"],
+                cwd=project_path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            r2 = subprocess.run(
+                ["git", "checkout", "-b", branch_name, f"origin/{branch_name}"],
+                cwd=project_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if r2.returncode == 0:
+                return True
+            self._debug_log(f"Checkout branch {branch_name} failed: {r2.stderr or r2.stdout}")
+            return False
         except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
             self._debug_log(f"Checkout branch error: {e}")
             return False
@@ -2169,14 +2293,18 @@ Write a clear, descriptive paragraph for the PR description explaining what was 
                     env=gh_env,
                 )
                 if (r.stdout or "").strip():
-                    subprocess.run(
+                    commit_r = subprocess.run(
                         ["git", "commit", "-m", commit_message],
                         cwd=project_path,
                         capture_output=True,
+                        text=True,
                         timeout=10,
                         env=gh_env,
                     )
-                subprocess.run(
+                    self._debug_log(f"git commit exit={commit_r.returncode} stdout={commit_r.stdout[:200]} stderr={commit_r.stderr[:200]}")
+                else:
+                    self._debug_log("git status: no changes to commit, skipping commit step")
+                push_r = subprocess.run(
                     ["git", "push", "-u", "origin", branch_name],
                     cwd=project_path,
                     capture_output=True,
@@ -2184,12 +2312,15 @@ Write a clear, descriptive paragraph for the PR description explaining what was 
                     timeout=60,
                     env=gh_env,
                 )
+                self._debug_log(f"git push exit={push_r.returncode} stdout={push_r.stdout[:200]} stderr={push_r.stderr[:200]}")
+                if push_r.returncode != 0:
+                    self._debug_log(f"WARNING: git push failed — PR comment will still be posted but code may not be pushed")
                 if review_mode and pr_number_for_comment is not None:
                     body = (pr_comment_body or completion_summary or "Addressed review feedback.").strip()
                     if len(body) > 60000:
                         body = body[:59997] + "..."
-                    body = body + "\n\n" + BOT_COMMENT_SIGNATURE
-                    subprocess.run(
+                    body = "**[from terarchitect]** " + body + "\n\n" + BOT_COMMENT_SIGNATURE
+                    comment_r = subprocess.run(
                         ["gh", "pr", "comment", str(pr_number_for_comment), "--body", body],
                         cwd=project_path,
                         capture_output=True,
@@ -2197,6 +2328,7 @@ Write a clear, descriptive paragraph for the PR description explaining what was 
                         timeout=30,
                         env=gh_env,
                     )
+                    self._debug_log(f"gh pr comment exit={comment_r.returncode} stderr={comment_r.stderr[:200]}")
                 elif not review_mode:
                     body = f"Ticket: {ticket.title}\n\n{(ticket.description or '')[:500]}"
                     pr_desc = self._generate_pr_description(

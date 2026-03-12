@@ -49,19 +49,33 @@ def _clone_repo(repo_url: str, dest: str, token: Optional[str]) -> bool:
 
 def _checkout_branch(dest: str, ticket_id: str) -> bool:
     branch = f"ticket-{ticket_id}"
+    # Try local checkout first.
     r = subprocess.run(
-        ["git", "checkout", "-b", branch],
-        cwd=dest,
-        capture_output=True,
-        text=True,
-        timeout=10,
+        ["git", "checkout", branch],
+        cwd=dest, capture_output=True, text=True, timeout=10,
     )
-    if r.returncode != 0:
-        # Branch may already exist
-        r2 = subprocess.run(["git", "checkout", branch], cwd=dest, capture_output=True, text=True, timeout=10)
-        if r2.returncode != 0:
-            print(f"git checkout {branch} failed: {r2.stderr or r2.stdout}", file=sys.stderr)
-            return False
+    if r.returncode == 0:
+        return True
+    # Fetch with explicit refspec so origin/<branch> tracking ref is created.
+    # Plain `git fetch origin <branch>` only updates FETCH_HEAD, not origin/<branch>.
+    subprocess.run(
+        ["git", "fetch", "origin", f"{branch}:refs/remotes/origin/{branch}"],
+        cwd=dest, capture_output=True, text=True, timeout=30,
+    )
+    r2 = subprocess.run(
+        ["git", "checkout", "-b", branch, f"origin/{branch}"],
+        cwd=dest, capture_output=True, text=True, timeout=10,
+    )
+    if r2.returncode == 0:
+        return True
+    # Branch doesn't exist on remote either (first run) — create fresh from HEAD.
+    r3 = subprocess.run(
+        ["git", "checkout", "-b", branch],
+        cwd=dest, capture_output=True, text=True, timeout=10,
+    )
+    if r3.returncode != 0:
+        print(f"git checkout {branch} failed: {r3.stderr or r3.stdout}", file=sys.stderr)
+        return False
     return True
 
 

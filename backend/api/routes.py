@@ -728,6 +728,9 @@ def _ticket_to_json(t):
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
     }
+    running_job = AgentJob.query.filter_by(ticket_id=t.id, status="running").first()
+    out["is_running"] = running_job is not None
+    out["running_job_kind"] = running_job.kind if running_job else None
     if t.pr:
         out["pr_url"] = t.pr.pr_url
         out["pr_number"] = t.pr.pr_number
@@ -1297,11 +1300,16 @@ def worker_jobs_fail(job_id):
     if job.status != "running":
         return jsonify({"error": "Job not running", "status": job.status}), 409
     job.status = "failed"
-    # Move ticket back to backlog and track failure count so the UI can show a badge.
+    # Move ticket back to the appropriate column and track failure count.
+    # Review jobs: ticket stays in in_review (it was already there, still needs addressing).
+    # Ticket jobs: ticket goes back to backlog.
     if job.ticket_id:
         ticket = Ticket.query.filter_by(id=job.ticket_id).first()
         if ticket:
-            ticket.column_id = "backlog"
+            if job.kind == "review":
+                ticket.column_id = "in_review"
+            else:
+                ticket.column_id = "backlog"
             ticket.failed_count = (ticket.failed_count or 0) + 1
     db.session.commit()
     return jsonify({"message": "Job failed", "job_id": str(job_id)})
@@ -1331,7 +1339,10 @@ def worker_jobs_reset_stale():
         if job.ticket_id:
             ticket = Ticket.query.filter_by(id=job.ticket_id).first()
             if ticket:
-                ticket.column_id = "backlog"
+                if job.kind == "review":
+                    ticket.column_id = "in_review"
+                else:
+                    ticket.column_id = "backlog"
                 ticket.failed_count = (ticket.failed_count or 0) + 1
     db.session.commit()
     current_app.logger.info("Reset %d stale running jobs (older than %ds)", count, max_age)
@@ -1901,19 +1912,24 @@ def _poll_pr_review_comments():
         except Exception:
             db.session.rollback()
             continue
-        # Mark bot-posted comments as addressed so we never respond to our own replies.
-        # We identify bot comments by the BOT_COMMENT_SIGNATURE embedded in the body,
-        # which is more reliable than login-based filtering when agent and user share a token.
-        our_comments = PRReviewComment.query.filter(
+        # Mark comments we should never respond to as addressed:
+        #   1. Comments with our bot signature (agent's own replies).
+        #   2. Comments posted by any GitHub bot account (login ends with "[bot]"),
+        #      e.g. claude[bot], orca-security-us[bot], github-actions[bot].
+        from sqlalchemy import or_
+        bot_comments = PRReviewComment.query.filter(
             PRReviewComment.project_id == project.id,
             PRReviewComment.pr_number == pr_number,
-            PRReviewComment.body.contains(BOT_COMMENT_SIGNATURE),
             PRReviewComment.addressed_at.is_(None),
+            or_(
+                PRReviewComment.body.contains(BOT_COMMENT_SIGNATURE),
+                PRReviewComment.author_login.like("%[bot]"),
+            ),
         ).all()
-        for row in our_comments:
+        for row in bot_comments:
             row.addressed_at = _dt.utcnow()
             row.updated_at = _dt.utcnow()
-        if our_comments:
+        if bot_comments:
             try:
                 db.session.commit()
             except Exception:

@@ -49,6 +49,8 @@ export interface Ticket {
   priority: string;
   status: string;
   failed_count?: number;
+  is_running?: boolean;
+  running_job_kind?: string | null;
   created_at?: string;
   updated_at?: string;
   pr_url?: string | null;
