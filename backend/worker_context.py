@@ -4,6 +4,7 @@ Backend-only; no dependency on the agent package.
 """
 from typing import List, Tuple
 
+from uuid import UUID
 from models.db import Project, Graph, Note, Ticket
 
 
@@ -130,6 +131,21 @@ def build_worker_context(ticket: Ticket) -> dict:
         context["graph_relevant_to_current_ticket"] = {"nodes": [], "edges": []}
         context["current_ticket"]["associated_nodes_labeled"] = []
         context["current_ticket"]["associated_edges_labeled"] = []
+
+    dep_ids = ticket.depends_on_ticket_ids or []
+    if dep_ids:
+        dep_tickets = Ticket.query.filter(Ticket.id.in_([UUID(str(d)) for d in dep_ids])).all()
+        context["current_ticket"]["depends_on"] = [
+            {
+                "id": str(d.id),
+                "title": d.title,
+                "column_id": d.column_id,
+                "completed": d.column_id == "done",
+            }
+            for d in dep_tickets
+        ]
+    else:
+        context["current_ticket"]["depends_on"] = []
 
     notes = Note.query.filter_by(project_id=ticket.project_id).all()
     context["notes"] = [{"title": n.title, "content": n.content, "node_id": n.node_id} for n in notes]

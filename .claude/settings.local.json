@@ -23,7 +23,10 @@
       "Bash(curl -s -X POST http://localhost:5010/api/projects -H \"Content-Type: application/json\" -d '{\"\"name\"\":\"\"Test Project 2\"\",\"\"description\"\":\"\"Testing github_url\"\",\"\"project_path\"\":\"\"/home/user/test\"\",\"\"github_url\"\":\"\"https://github.com/test/repo\"\"}')",
       "Bash(python3 -m json.tool)",
       "Bash(curl -s -X DELETE http://localhost:5010/api/projects/7484f317-148e-4ae8-a5d3-8f0ee769f8e7)",
-      "Bash(docker exec -i terarchitect-postgres psql -U terarchitect -d terarchitect -c \"SELECT column_name, data_type FROM information_schema.columns WHERE table_name = ''projects'' ORDER BY ordinal_position;\")"
+      "Bash(docker exec -i terarchitect-postgres psql -U terarchitect -d terarchitect -c \"SELECT column_name, data_type FROM information_schema.columns WHERE table_name = ''projects'' ORDER BY ordinal_position;\")",
+      "Bash(psql:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker ps:*)"
     ]
   }
 }

@@ -658,6 +658,7 @@ def tickets(project_id):
             associated_edge_ids=data.get("associated_edge_ids", []),
             priority=data.get("priority", "medium"),
             status=data.get("status", "todo"),
+            depends_on_ticket_ids=data.get("depends_on_ticket_ids", []),
         )
         db.session.add(ticket)
         db.session.commit()
@@ -683,6 +684,18 @@ def _enqueue_ticket_job(ticket_id):
     else:
         if not (project.github_url or "").strip():
             current_app.logger.info("Skipping enqueue: ticket %s project has no GitHub URL", ticket_id)
+            return
+    dep_ids = ticket.depends_on_ticket_ids or []
+    if dep_ids:
+        blocking = Ticket.query.filter(
+            Ticket.id.in_(dep_ids),
+            Ticket.column_id != "done",
+        ).first()
+        if blocking:
+            current_app.logger.info(
+                "Skipping enqueue: ticket %s blocked by dependency %s (%s)",
+                ticket_id, blocking.id, blocking.title,
+            )
             return
     existing = AgentJob.query.filter(
         AgentJob.ticket_id == ticket_id,
@@ -725,6 +738,7 @@ def _ticket_to_json(t):
         "priority": t.priority,
         "status": t.status,
         "failed_count": t.failed_count or 0,
+        "depends_on_ticket_ids": t.depends_on_ticket_ids or [],
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
     }
@@ -779,6 +793,18 @@ def ticket_detail(project_id, ticket_id):
                 return jsonify({
                     "error": f"Cannot run: set these in .env and restart the backend: {missing_str}.",
                 }), 400
+            dep_ids = ticket.depends_on_ticket_ids or []
+            if dep_ids:
+                blocking = Ticket.query.filter(
+                    Ticket.id.in_(dep_ids),
+                    Ticket.column_id != "done",
+                ).all()
+                if blocking:
+                    titles = ", ".join(f'"{b.title}"' for b in blocking[:3])
+                    suffix = f" (+{len(blocking) - 3} more)" if len(blocking) > 3 else ""
+                    return jsonify({
+                        "error": f"Blocked by unfinished tickets: {titles}{suffix}. Complete those first.",
+                    }), 400
         if "column_id" in data:
             new_col = data["column_id"]
             kanban = KanbanBoard.query.filter_by(project_id=project_id).first()
@@ -798,12 +824,35 @@ def ticket_detail(project_id, ticket_id):
             ticket.associated_node_ids = data["associated_node_ids"]
         if "associated_edge_ids" in data:
             ticket.associated_edge_ids = data["associated_edge_ids"]
+        if "depends_on_ticket_ids" in data:
+            ticket.depends_on_ticket_ids = data["depends_on_ticket_ids"]
         db.session.commit()
         content = ((ticket.title or "") + " " + (ticket.description or "")).strip()
         if content:
             upsert_embedding(project_id, "ticket", ticket.id, content)
         if moved_to_in_progress:
             _enqueue_ticket_job(ticket.id)
+        # Cascade: when a ticket reaches done, auto-enqueue backlog tickets that depended on it
+        # and whose remaining dependencies are now all satisfied.
+        if data.get("column_id") == "done":
+            done_ticket_id = str(ticket.id)
+            candidates = Ticket.query.filter(
+                Ticket.project_id == project_id,
+                Ticket.column_id == "backlog",
+            ).all()
+            for candidate in candidates:
+                dep_ids = [str(d) for d in (candidate.depends_on_ticket_ids or [])]
+                if done_ticket_id not in dep_ids:
+                    continue
+                still_blocking = Ticket.query.filter(
+                    Ticket.id.in_(dep_ids),
+                    Ticket.column_id != "done",
+                ).count()
+                if still_blocking == 0:
+                    current_app.logger.info(
+                        "Auto-enqueuing ticket %s: all dependencies now done", candidate.id
+                    )
+                    _enqueue_ticket_job(candidate.id)
         return jsonify(_ticket_to_json(ticket))
 
     if request.method == "DELETE":

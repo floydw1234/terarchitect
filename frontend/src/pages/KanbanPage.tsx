@@ -32,6 +32,7 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import StopIcon from '@mui/icons-material/Stop';
 import ListAltIcon from '@mui/icons-material/ListAlt';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
+import BlockIcon from '@mui/icons-material/Block';
 import {
   getKanban,
   getTickets,
@@ -333,6 +334,7 @@ const KanbanPage: React.FC = () => {
   const [newTicketNodeIds, setNewTicketNodeIds] = useState<string[]>([]);
   const [newTicketEdgeIds, setNewTicketEdgeIds] = useState<string[]>([]);
   const [newTicketAllNodesAndEdges, setNewTicketAllNodesAndEdges] = useState(false);
+  const [newTicketDependsOn, setNewTicketDependsOn] = useState<string[]>([]);
   const [addTicketLoading, setAddTicketLoading] = useState(false);
   const [addTicketError, setAddTicketError] = useState<string | null>(null);
 
@@ -345,6 +347,7 @@ const KanbanPage: React.FC = () => {
   const [editNodeIds, setEditNodeIds] = useState<string[]>([]);
   const [editEdgeIds, setEditEdgeIds] = useState<string[]>([]);
   const [editAllNodesAndEdges, setEditAllNodesAndEdges] = useState(false);
+  const [editDependsOn, setEditDependsOn] = useState<string[]>([]);
 
   // Graph options
   const [graphNodes, setGraphNodes] = useState<GraphNodeOption[]>([]);
@@ -524,6 +527,7 @@ const KanbanPage: React.FC = () => {
     setEditAllNodesAndEdges(isAll);
     setEditNodeIds(isAll ? [] : nodeIds);
     setEditEdgeIds(isAll ? [] : edgeIds);
+    setEditDependsOn(ticket.depends_on_ticket_ids ?? []);
   };
 
   const handleSaveTicket = async () => {
@@ -536,6 +540,7 @@ const KanbanPage: React.FC = () => {
         column_id: editColumnId,
         associated_node_ids: editAllNodesAndEdges ? ['*'] : editNodeIds,
         associated_edge_ids: editAllNodesAndEdges ? ['*'] : editEdgeIds,
+        depends_on_ticket_ids: editDependsOn,
       });
       setTickets((prev) => prev.map((t) => (t.id === editTicket.id ? updated : t)));
       setEditTicket(null);
@@ -557,6 +562,7 @@ const KanbanPage: React.FC = () => {
         status: 'todo',
         associated_node_ids: newTicketAllNodesAndEdges ? ['*'] : newTicketNodeIds,
         associated_edge_ids: newTicketAllNodesAndEdges ? ['*'] : newTicketEdgeIds,
+        depends_on_ticket_ids: newTicketDependsOn,
       });
       setTickets((prev) => [...prev, data]);
       setNewTicketTitle('');
@@ -565,6 +571,7 @@ const KanbanPage: React.FC = () => {
       setNewTicketNodeIds([]);
       setNewTicketEdgeIds([]);
       setNewTicketAllNodesAndEdges(false);
+      setNewTicketDependsOn([]);
       setCreateTicketOpen(false);
     } catch (error) {
       setAddTicketError(error instanceof Error ? error.message : 'Failed to add ticket');
@@ -580,6 +587,7 @@ const KanbanPage: React.FC = () => {
     setNewTicketNodeIds([]);
     setNewTicketEdgeIds([]);
     setNewTicketAllNodesAndEdges(false);
+    setNewTicketDependsOn([]);
     setAddTicketError(null);
     setCreateTicketOpen(true);
   };
@@ -691,6 +699,15 @@ const KanbanPage: React.FC = () => {
     );
   }
 
+  const isTicketBlocked = (ticket: Ticket): boolean => {
+    const deps = ticket.depends_on_ticket_ids ?? [];
+    if (deps.length === 0) return false;
+    return deps.some((depId) => {
+      const dep = tickets.find((t) => t.id === depId);
+      return !dep || dep.column_id !== 'done';
+    });
+  };
+
   const inProgressTickets = tickets.filter((t) => t.is_running);
   const boardColumns = columns.filter((c) => BOARD_COLUMN_IDS.has(c.id));
 
@@ -764,6 +781,8 @@ const KanbanPage: React.FC = () => {
                       projectId={projectId!}
                       graphNodes={graphNodes}
                       missingRequired={missingRequired}
+                      isBlocked={isTicketBlocked(ticket)}
+                      allTickets={tickets}
                       onEdit={openEditTicket}
                       onRun={handleRunTicket}
                       onApprove={handleApproveTicket}
@@ -861,6 +880,23 @@ const KanbanPage: React.FC = () => {
                   <MenuItem key={edge.id} value={edge.id}>{edge.label}</MenuItem>
                 ))}
                 {graphEdges.length === 0 && <MenuItem disabled>No edges in graph yet</MenuItem>}
+              </Select>
+            </FormControl>
+            <FormControl size="small" fullWidth>
+              <InputLabel>Depends on (runs after)</InputLabel>
+              <Select
+                multiple
+                value={newTicketDependsOn}
+                label="Depends on (runs after)"
+                onChange={(e) => setNewTicketDependsOn(typeof e.target.value === 'string' ? [] : e.target.value)}
+                renderValue={(selected) =>
+                  (selected as string[]).map((id) => tickets.find((t) => t.id === id)?.title ?? id).join(', ') || 'None'
+                }
+              >
+                {tickets.length === 0 && <MenuItem disabled>No other tickets yet</MenuItem>}
+                {tickets.map((t) => (
+                  <MenuItem key={t.id} value={t.id}>{t.title}</MenuItem>
+                ))}
               </Select>
             </FormControl>
             <Collapse in={!!addTicketError}>
@@ -977,6 +1013,23 @@ const KanbanPage: React.FC = () => {
                       <MenuItem key={e.id} value={e.id}>{e.label}</MenuItem>
                     ))}
                     {graphEdges.length === 0 && <MenuItem disabled>No edges in graph yet</MenuItem>}
+                  </Select>
+                </FormControl>
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Depends on (runs after)</InputLabel>
+                  <Select
+                    multiple
+                    value={editDependsOn}
+                    label="Depends on (runs after)"
+                    onChange={(e) => setEditDependsOn(typeof e.target.value === 'string' ? [] : e.target.value)}
+                    renderValue={(selected) =>
+                      (selected as string[]).map((id) => tickets.find((t) => t.id === id)?.title ?? id).join(', ') || 'None'
+                    }
+                  >
+                    {tickets.filter((t) => t.id !== editTicket.id).map((t) => (
+                      <MenuItem key={t.id} value={t.id}>{t.title}</MenuItem>
+                    ))}
+                    {tickets.length <= 1 && <MenuItem disabled>No other tickets yet</MenuItem>}
                   </Select>
                 </FormControl>
               </Box>
@@ -1228,6 +1281,8 @@ interface TicketCardProps {
   projectId: string;
   graphNodes: GraphNodeOption[];
   missingRequired: ReadyMissing[];
+  isBlocked: boolean;
+  allTickets: Ticket[];
   onEdit: (ticket: Ticket) => void;
   onRun: (ticket: Ticket) => void;
   onApprove: (ticket: Ticket) => void;
@@ -1240,6 +1295,8 @@ const TicketCard: React.FC<TicketCardProps> = ({
   projectId,
   graphNodes,
   missingRequired,
+  isBlocked,
+  allTickets,
   onEdit,
   onRun,
   onApprove,
@@ -1299,6 +1356,24 @@ const TicketCard: React.FC<TicketCardProps> = ({
             color={PRIORITY_COLOR[ticket.priority] ?? 'default'}
             sx={{ height: 16, fontSize: '0.6rem' }}
           />
+          {isBlocked && columnId === 'backlog' && (() => {
+            const blockingTitles = (ticket.depends_on_ticket_ids ?? [])
+              .map((id) => allTickets.find((t) => t.id === id))
+              .filter((t) => t && t.column_id !== 'done')
+              .map((t) => t!.title);
+            return (
+              <Tooltip title={`Waiting on: ${blockingTitles.join(', ')}`}>
+                <Chip
+                  icon={<BlockIcon sx={{ fontSize: '0.65rem !important' }} />}
+                  label="Blocked"
+                  size="small"
+                  color="warning"
+                  variant="outlined"
+                  sx={{ height: 16, fontSize: '0.6rem' }}
+                />
+              </Tooltip>
+            );
+          })()}
           {(ticket.failed_count ?? 0) > 0 && (
             <Chip
               label={`Failed ${ticket.failed_count}×`}
@@ -1339,10 +1414,17 @@ const TicketCard: React.FC<TicketCardProps> = ({
         <Box>
           {columnId === 'backlog' && (() => {
             const noGraph = graphNodes.length === 0;
-            const blocked = noGraph || missingRequired.length > 0;
+            const blocked = noGraph || missingRequired.length > 0 || isBlocked;
             const tooltipLines: string[] = [];
             if (noGraph) tooltipLines.push('Add at least one node to the graph first.');
             missingRequired.forEach((m) => tooltipLines.push(`Missing: ${m.label} — set ${m.key} in .env`));
+            if (isBlocked) {
+              const blockingTitles = (ticket.depends_on_ticket_ids ?? [])
+                .map((id) => allTickets.find((t) => t.id === id))
+                .filter((t) => t && t.column_id !== 'done')
+                .map((t) => t!.title);
+              tooltipLines.push(`Blocked by: ${blockingTitles.join(', ')}`);
+            }
             const tooltipText = blocked ? tooltipLines.join('\n') : 'Run ticket';
             return (
               <Tooltip title={tooltipText}>

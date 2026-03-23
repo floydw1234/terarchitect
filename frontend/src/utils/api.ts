@@ -49,6 +49,7 @@ export interface Ticket {
   priority: string;
   status: string;
   failed_count?: number;
+  depends_on_ticket_ids?: string[];
   is_running?: boolean;
   running_job_kind?: string | null;
   created_at?: string;
@@ -201,6 +202,7 @@ export async function createTicket(projectId: string, data: {
   associated_edge_ids?: string[];
   priority?: string;
   status?: string;
+  depends_on_ticket_ids?: string[];
 }): Promise<Ticket> {
   const response = await fetch(`${API_URL}/api/projects/${projectId}/tickets`, {
     method: 'POST',
@@ -218,6 +220,7 @@ export async function updateTicket(projectId: string, ticketId: string, data: {
   status?: string;
   associated_node_ids?: string[];
   associated_edge_ids?: string[];
+  depends_on_ticket_ids?: string[];
 }): Promise<Ticket> {
   const response = await fetch(`${API_URL}/api/projects/${projectId}/tickets/${ticketId}`, {
     method: 'PATCH',

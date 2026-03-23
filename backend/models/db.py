@@ -65,6 +65,7 @@ class Ticket(db.Model):
     priority = db.Column(db.String(50), default="medium")
     status = db.Column(db.String(50), default="todo")
     failed_count = db.Column(db.Integer, default=0, nullable=False)
+    depends_on_ticket_ids = db.Column(JSONB, default=list)
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
 
