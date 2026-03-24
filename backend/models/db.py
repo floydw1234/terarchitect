@@ -17,6 +17,7 @@ class Project(db.Model):
     project_path = db.Column(db.Text)  # When execution_mode=local: path on host for agent to run in
     github_url = db.Column(db.Text)    # GitHub repository URL for PR creation and docker-mode clone
     execution_mode = db.Column(db.String(50), nullable=False, default="docker")  # "docker" | "local"
+    git_mode = db.Column(db.String(20), nullable=False, default="structured")   # "structured" | "swarm"
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
 

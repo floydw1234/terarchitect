@@ -18,7 +18,20 @@ function resolveApiUrl(): string {
 
 export const API_URL = resolveApiUrl();
 
+function resolveAgenthubUrl(): string {
+  if (process.env.REACT_APP_AGENTHUB_URL) {
+    return process.env.REACT_APP_AGENTHUB_URL.replace(/\/$/, '');
+  }
+  if (typeof window !== 'undefined') {
+    return `${window.location.protocol}//${window.location.hostname}:8088`;
+  }
+  return 'http://localhost:8088';
+}
+
+export const AGENTHUB_URL = resolveAgenthubUrl();
+
 export type ProjectExecutionMode = 'docker' | 'local';
+export type ProjectGitMode = 'structured' | 'swarm';
 
 export interface Project {
   id: string;
@@ -28,6 +41,8 @@ export interface Project {
   /** When execution_mode is "local", agent runs on host at this path. */
   project_path?: string | null;
   execution_mode?: ProjectExecutionMode;
+  /** "structured" = GitHub branches + PRs. "swarm" = agenthub DAG. */
+  git_mode?: ProjectGitMode;
   created_at?: string;
   updated_at?: string;
 }
@@ -105,6 +120,7 @@ export async function updateProject(projectId: string, data: {
   description?: string;
   github_url?: string;
   execution_mode?: ProjectExecutionMode;
+  git_mode?: ProjectGitMode;
   project_path?: string | null;
 }): Promise<Project> {
   const response = await fetch(`${API_URL}/api/projects/${projectId}`, {

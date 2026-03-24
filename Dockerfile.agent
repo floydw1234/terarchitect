@@ -7,6 +7,12 @@
 # sidecar and DOCKER_HOST=tcp://dind:2375 (see https://hub.docker.com/_/docker and
 # https://www.docker.com/resources/docker-in-docker-containerized-ci-workflows-dockercon-2023/).
 
+# Build the agenthub CLI (ah) for swarm mode
+FROM golang:1.26 AS ah-builder
+WORKDIR /src
+COPY agenthub/ .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /ah ./cmd/ah
+
 FROM python:3.11-slim
 
 # Git, gh CLI
@@ -77,6 +83,9 @@ ENV PYTHONPATH=/app
 # Allow --dangerously-skip-permissions inside root containers (CI/DinD environments).
 ENV CLAUDE_SKIP_PERMISSIONS_CHECK=1
 # Do not set AGENT_WORKSPACE here: coordinator sets it only for local execution. In Docker we clone into a temp dir.
+
+# ah CLI for swarm mode (agenthub integration)
+COPY --from=ah-builder /ah /usr/local/bin/ah
 
 RUN chmod +x /app/agent_runner/entrypoint.sh
 

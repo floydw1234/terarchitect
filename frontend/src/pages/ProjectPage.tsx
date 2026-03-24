@@ -17,7 +17,7 @@ import {
   Select,
   MenuItem,
 } from '@mui/material';
-import { getProject, updateProject, deleteProject, type Project, type ProjectExecutionMode } from '../utils/api';
+import { getProject, updateProject, deleteProject, type Project, type ProjectExecutionMode, type ProjectGitMode } from '../utils/api';
 
 const ProjectPage: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
@@ -29,6 +29,7 @@ const ProjectPage: React.FC = () => {
   const [editDescription, setEditDescription] = useState('');
   const [editGithubUrl, setEditGithubUrl] = useState('');
   const [editExecutionMode, setEditExecutionMode] = useState<ProjectExecutionMode>('docker');
+  const [editGitMode, setEditGitMode] = useState<ProjectGitMode>('structured');
   const [editProjectPath, setEditProjectPath] = useState('');
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteConfirmName, setDeleteConfirmName] = useState('');
@@ -61,6 +62,7 @@ const ProjectPage: React.FC = () => {
       setEditDescription(data.description ?? '');
       setEditGithubUrl(data.github_url ?? '');
       setEditExecutionMode(data.execution_mode ?? 'docker');
+      setEditGitMode(data.git_mode ?? 'structured');
       setEditProjectPath(data.project_path ?? '');
       setEditOpen(true);
     } catch (error) {
@@ -76,6 +78,7 @@ const ProjectPage: React.FC = () => {
         description: editDescription.trim() || undefined,
         github_url: editGithubUrl.trim() || undefined,
         execution_mode: editExecutionMode,
+        git_mode: editGitMode,
         project_path: editExecutionMode === 'local' ? (editProjectPath.trim() || null) : null,
       });
       setProject(data);
@@ -180,6 +183,12 @@ const ProjectPage: React.FC = () => {
         <Stack spacing={0.5}>
           <Typography sx={infoTextSx}>
             Agent execution: {project.execution_mode === 'local' ? 'Local' : 'Docker'}
+          </Typography>
+          <Typography sx={infoTextSx}>
+            Git mode:{' '}
+            <span style={{ color: project.git_mode === 'swarm' ? '#a78bfa' : '#22d3ee' }}>
+              {project.git_mode === 'swarm' ? 'Swarm (AgentHub)' : 'Structured (GitHub)'}
+            </span>
           </Typography>
           {project.execution_mode === 'local' && project.project_path && (
             <Typography sx={infoTextSx}>
@@ -311,6 +320,17 @@ const ProjectPage: React.FC = () => {
               >
                 <MenuItem value="docker">Docker (clone repo in container)</MenuItem>
                 <MenuItem value="local">Local (run on host at project path)</MenuItem>
+              </Select>
+            </FormControl>
+            <FormControl size="small" fullWidth>
+              <InputLabel>Git mode</InputLabel>
+              <Select
+                value={editGitMode}
+                label="Git mode"
+                onChange={(e) => setEditGitMode(e.target.value as ProjectGitMode)}
+              >
+                <MenuItem value="structured">Structured — GitHub branches + PR review</MenuItem>
+                <MenuItem value="swarm">Swarm — AgentHub DAG (no PRs)</MenuItem>
               </Select>
             </FormControl>
             {editExecutionMode === 'local' && (

@@ -8,6 +8,7 @@ import GraphEditorPage from './pages/GraphEditorPage';
 import KanbanPage from './pages/KanbanPage';
 import ReviewPage from './pages/ReviewPage';
 import ReviewDetailPage from './pages/ReviewDetailPage';
+import AgenthubPage from './pages/AgenthubPage';
 
 const theme = createTheme({
   palette: {
@@ -105,6 +106,7 @@ function App() {
               <Route path="/projects/:projectId/kanban" element={<KanbanPage />} />
               <Route path="/projects/:projectId/review" element={<ReviewPage />} />
               <Route path="/projects/:projectId/review/:ticketId" element={<ReviewDetailPage />} />
+              <Route path="/agenthub" element={<AgenthubPage />} />
             </Routes>
           </Box>
         </Box>

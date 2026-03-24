@@ -1,0 +1,20 @@
+# Build from repo root: docker compose build agenthub
+# Runtime dependency: git on PATH (for bundle operations)
+
+FROM golang:1.26 AS builder
+WORKDIR /src
+COPY agenthub/ .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /agenthub-server ./cmd/agenthub-server
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /agenthub-server /usr/local/bin/agenthub-server
+
+VOLUME /data
+EXPOSE 8080
+
+ENTRYPOINT ["agenthub-server", "--data", "/data"]

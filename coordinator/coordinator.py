@@ -111,6 +111,7 @@ _COORDINATOR_AGENT_ENV_KEYS = (
     "OPENAI_API_KEY", "openai_api_key",
     "TERARCHITECT_WORKER_API_KEY",
     "OPENCODE_SERVER_URL", "OPENCODE_SERVER_USERNAME", "OPENCODE_SERVER_PASSWORD",
+    "AGENTHUB_URL", "AGENTHUB_API_KEY", "AGENTHUB_AGENT_ID",
 )
 
 def _headers() -> dict:
@@ -252,6 +253,7 @@ def job_to_env(job: dict, for_docker: bool = False) -> dict:
     env["REPO_URL"] = str(job.get("repo_url", ""))
     env["JOB_ID"] = str(job.get("job_id", ""))
     env["JOB_KIND"] = str(job.get("kind", "ticket"))
+    env["TERARCHITECT_MODE"] = "swarm" if job.get("git_mode") == "swarm" else "structured"
     # When execution_mode=local, agent runs on host and uses this path instead of cloning
     if job.get("execution_mode") == "local" and job.get("project_path"):
         env["AGENT_WORKSPACE"] = str(job["project_path"]).strip()
@@ -285,6 +287,7 @@ _DOCKER_STRIP_ENV = frozenset({"GIT_ASKPASS", "SSH_ASKPASS"})
 _SECRET_ENV_KEYS = frozenset({
     "TERARCHITECT_WORKER_API_KEY", "GH_TOKEN", "GITHUB_TOKEN",
     "AGENT_API_KEY", "WORKER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+    "AGENTHUB_API_KEY",
 })
 
 _RUN_COMMAND_FILE = Path("/tmp") / "terarchitect_run_command.txt"

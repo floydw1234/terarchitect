@@ -36,6 +36,13 @@ const Navbar: React.FC<NavbarProps> = () => {
           >
             Projects
           </Button>
+          <Button
+            component={Link}
+            to="/agenthub"
+            color={location.pathname === '/agenthub' ? 'primary' : 'inherit'}
+          >
+            AgentHub
+          </Button>
         </Box>
       </Toolbar>
     </AppBar>

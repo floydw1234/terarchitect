@@ -114,6 +114,7 @@ def _project_to_json(project: Project):
         "description": project.description,
         "github_url": project.github_url,
         "execution_mode": getattr(project, "execution_mode", None) or "docker",
+        "git_mode": getattr(project, "git_mode", None) or "structured",
         "project_path": project.project_path,
         "created_at": project.created_at.isoformat() if project.created_at else None,
         "updated_at": project.updated_at.isoformat() if project.updated_at else None,
@@ -134,6 +135,7 @@ def projects():
             description=data.get("description"),
             github_url=data.get("github_url"),
             execution_mode="local" if (data.get("execution_mode") or "").strip().lower() == "local" else "docker",
+            git_mode="swarm" if (data.get("git_mode") or "").strip().lower() == "swarm" else "structured",
             project_path=data.get("project_path"),
         )
         db.session.add(project)
@@ -200,6 +202,8 @@ def project_detail(project_id):
         project.github_url = data.get("github_url", project.github_url)
         if "execution_mode" in data:
             project.execution_mode = "local" if (data.get("execution_mode") or "").strip().lower() == "local" else "docker"
+        if "git_mode" in data:
+            project.git_mode = "swarm" if (data.get("git_mode") or "").strip().lower() == "swarm" else "structured"
         if "project_path" in data:
             project.project_path = data.get("project_path") or None
         db.session.commit()
@@ -943,6 +947,8 @@ def ticket_complete(project_id, ticket_id):
     ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
     if ticket.column_id != "in_progress":
         return jsonify({"error": "Ticket is not in_progress; cannot mark complete"}), 409
+    project = Project.query.get(project_id)
+    git_mode = getattr(project, "git_mode", None) or "structured"
     data = request.json or {}
     pr_url = (data.get("pr_url") or "").strip() or None
     pr_number = data.get("pr_number")
@@ -953,21 +959,36 @@ def ticket_complete(project_id, ticket_id):
             pr_number = None
     summary = (data.get("summary") or "").strip() or ""
     review_comment_body = (data.get("review_comment_body") or "").strip() or None
+    commit_hash = (data.get("commit_hash") or "").strip() or None
 
     ticket.status = "completed"
-    ticket.column_id = "in_review"
-    if pr_url is not None:
-        existing = PR.query.filter_by(ticket_id=ticket.id).first()
-        if existing:
-            existing.pr_url = pr_url
-            existing.pr_number = pr_number
-        else:
-            db.session.add(PR(
-                project_id=project_id,
-                ticket_id=ticket.id,
-                pr_url=pr_url,
-                pr_number=pr_number,
-            ))
+    if git_mode == "swarm":
+        # Swarm mode: skip PR review, go straight to done
+        ticket.column_id = "done"
+        if commit_hash:
+            existing = PR.query.filter_by(ticket_id=ticket.id).first()
+            if existing:
+                existing.commit_hash = commit_hash
+            else:
+                db.session.add(PR(
+                    project_id=project_id,
+                    ticket_id=ticket.id,
+                    commit_hash=commit_hash,
+                ))
+    else:
+        ticket.column_id = "in_review"
+        if pr_url is not None:
+            existing = PR.query.filter_by(ticket_id=ticket.id).first()
+            if existing:
+                existing.pr_url = pr_url
+                existing.pr_number = pr_number
+            else:
+                db.session.add(PR(
+                    project_id=project_id,
+                    ticket_id=ticket.id,
+                    pr_url=pr_url,
+                    pr_number=pr_number,
+                ))
     db.session.commit()
     return jsonify({"message": "Complete", "ticket_id": str(ticket.id)})
 
@@ -1260,6 +1281,7 @@ def _job_to_response(job):
     project = Project.query.get(job.project_id)
     repo_url = (project.github_url or "") if project else ""
     execution_mode = getattr(project, "execution_mode", None) or "docker" if project else "docker"
+    git_mode = getattr(project, "git_mode", None) or "structured" if project else "structured"
     out = {
         "job_id": str(job.id),
         "ticket_id": str(job.ticket_id),
@@ -1267,6 +1289,7 @@ def _job_to_response(job):
         "kind": job.kind,
         "repo_url": repo_url,
         "execution_mode": execution_mode,
+        "git_mode": git_mode,
         "project_path": (project.project_path or "").strip() or None if project else None,
     }
     if job.kind == "review":
@@ -1814,6 +1837,7 @@ def _poll_pr_review_comments():
         .filter(Ticket.column_id == "in_review")
         .filter(Project.github_url.isnot(None))
         .filter(PR.pr_number.isnot(None))
+        .filter(db.or_(Project.git_mode == "structured", Project.git_mode.is_(None)))
         .all()
     )
     if prs_in_review:

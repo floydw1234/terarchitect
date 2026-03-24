@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Protocol
 
 from utils.app_settings import get_gh_env_for_agent, get_setting_or_env
+import git_backend
 
 # Invisible HTML comment appended to all agent-posted PR comments.
 # Must match the constant in backend/api/routes.py — used by the PR polling loop
@@ -876,9 +877,14 @@ class MiddleAgent:
             completion_summary: Optional[str] = None  # initialized here so _finalize always has a defined value
             base_save_dir = None  # Not used; memory via backend
             memory_kwargs = {}
-            branch_name = self._ensure_ticket_branch(ticket, project_path, session_id, ticket_id)
-            if branch_name:
-                self._log(ticket.project_id, ticket_id, session_id, "branch_created", f"Branch {branch_name} checked out")
+            if git_backend.is_swarm():
+                # Swarm mode: fetch latest agenthub leaf so agent works from the frontier
+                git_backend.prepare_work(project_path)
+                self._log(ticket.project_id, ticket_id, session_id, "swarm_prepare", "Fetched latest agenthub leaf (swarm mode)")
+            else:
+                branch_name = self._ensure_ticket_branch(ticket, project_path, session_id, ticket_id)
+                if branch_name:
+                    self._log(ticket.project_id, ticket_id, session_id, "branch_created", f"Branch {branch_name} checked out")
 
             # Worker context (same for all phases; worker session is never reset). project_path is the clone dir (from runner).
             worker_context = {
@@ -888,6 +894,11 @@ class MiddleAgent:
                 "graph_relevant_to_current_ticket": context.get("graph_relevant_to_current_ticket"),
             }
             context_json = "\nContext:\n" + json.dumps(worker_context, indent=2)
+
+            # Swarm mode: prepend peer context (what other agents have done on this ticket)
+            peer_ctx = git_backend.get_peer_context(str(ticket_id))
+            if peer_ctx:
+                context_json = peer_ctx + context_json
             start_query = f"{ticket.title}. {(ticket.description or '').strip()}".strip()
             project_context_query = "What has been done in this project? Completed work and summaries."
             start_memory_passages = self._retrieve_memory_passages(
@@ -2275,6 +2286,36 @@ Write a clear, descriptive paragraph for the PR description explaining what was 
             commit_message = commit_message[:197] + "..."
         pr_url = None
         pr_number = None
+
+        # Swarm mode: publish to agenthub DAG instead of GitHub push + PR
+        if git_backend.is_swarm() and project_path and os.path.isdir(project_path):
+            commit_hash = git_backend.swarm_publish(
+                project_path,
+                commit_message,
+                str(ticket.id),
+                completion_summary or "",
+            )
+            self._log(
+                ticket.project_id, ticket.id, session_id,
+                "swarm_publish",
+                f"Published to agenthub DAG: {commit_hash or 'failed'}",
+            )
+            if review_mode:
+                self._backend.complete(
+                    ticket.id,
+                    ticket.project_id,
+                    summary=(completion_summary or "Addressed review feedback.").strip()[:500],
+                    review_comment_body=pr_comment_body,
+                )
+            else:
+                self._backend.complete(
+                    ticket.id,
+                    ticket.project_id,
+                    summary=(completion_summary or ticket.title or "Implementation").strip()[:500],
+                    agenthub_commit_hash=commit_hash,
+                )
+            return
+
         if project_path and os.path.isdir(project_path):
             try:
                 gh_env = {**os.environ, **get_gh_env_for_agent()}
