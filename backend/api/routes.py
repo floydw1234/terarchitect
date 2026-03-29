@@ -15,7 +15,7 @@ import requests
 from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy import text, nullslast
 
-from models.db import db, Project, Graph, KanbanBoard, Ticket, Note, RAGEmbedding, ExecutionLog, PR, PRReviewComment, AgentJob
+from models.db import db, Project, Graph, KanbanBoard, Ticket, Note, RAGEmbedding, ExecutionLog, PR, PRReviewComment, AgentJob, MergeRun
 from utils.embedding_client import embed_single
 from utils.rag import upsert_embedding, delete_embeddings_for_source
 from utils.app_settings import (
@@ -129,9 +129,11 @@ def projects():
         return jsonify([_project_to_json(p) for p in projects])
 
     if request.method == "POST":
-        data = request.json
+        data = request.json or {}
+        if not data.get("name"):
+            return jsonify({"error": "name is required"}), 400
         project = Project(
-            name=data.get("name", "Untitled Project"),
+            name=data.get("name"),
             description=data.get("description"),
             github_url=data.get("github_url"),
             execution_mode="local" if (data.get("execution_mode") or "").strip().lower() == "local" else "docker",
@@ -143,9 +145,10 @@ def projects():
         graph = Graph(project_id=project.id)
         default_columns = [
             {"id": "backlog", "title": "Backlog", "order": 0},
-            {"id": "in_progress", "title": "In Progress", "order": 1},
-            {"id": "in_review", "title": "In Review", "order": 2},
-            {"id": "done", "title": "Done", "order": 3},
+            {"id": "queued", "title": "Queued", "order": 1},
+            {"id": "in_progress", "title": "In Progress", "order": 2},
+            {"id": "in_review", "title": "In Review", "order": 3},
+            {"id": "done", "title": "Done", "order": 4},
         ]
         kanban_board = KanbanBoard(project_id=project.id, columns=default_columns)
         db.session.add(graph)
@@ -718,6 +721,23 @@ def _enqueue_ticket_job(ticket_id):
     current_app.logger.info("Enqueued ticket job for ticket %s", ticket_id)
 
 
+def _dispatch_unblocked_queued(project_id):
+    """Move any queued tickets whose dependencies are all done to in_progress and enqueue them."""
+    queued = Ticket.query.filter_by(project_id=project_id, column_id="queued").all()
+    for t in queued:
+        dep_ids = t.depends_on_ticket_ids or []
+        if dep_ids:
+            blocking = Ticket.query.filter(
+                Ticket.id.in_(dep_ids),
+                Ticket.column_id != "done",
+            ).first()
+            if blocking:
+                continue
+        t.column_id = "in_progress"
+        db.session.commit()
+        _enqueue_ticket_job(t.id)
+
+
 def _run_pr_poll_loop(app, pr_poll_seconds=60):
     """Background thread: run PR review comment poll; new comments enqueue to agent_jobs. No in-process agent run."""
     while True:
@@ -811,9 +831,10 @@ def ticket_detail(project_id, ticket_id):
                     }), 400
         if "column_id" in data:
             new_col = data["column_id"]
+            _SYSTEM_COLUMNS = {"backlog", "queued", "in_progress", "in_review", "done"}
             kanban = KanbanBoard.query.filter_by(project_id=project_id).first()
             valid_cols = {c["id"] for c in (kanban.columns or [])} if kanban else set()
-            if valid_cols and new_col not in valid_cols:
+            if valid_cols and new_col not in valid_cols and new_col not in _SYSTEM_COLUMNS:
                 return jsonify({"error": f"Invalid column_id '{new_col}'"}), 400
             ticket.column_id = new_col
         if "title" in data:
@@ -836,27 +857,9 @@ def ticket_detail(project_id, ticket_id):
             upsert_embedding(project_id, "ticket", ticket.id, content)
         if moved_to_in_progress:
             _enqueue_ticket_job(ticket.id)
-        # Cascade: when a ticket reaches done, auto-enqueue backlog tickets that depended on it
-        # and whose remaining dependencies are now all satisfied.
+        # Cascade: when a ticket reaches done, dispatch any queued tickets now unblocked.
         if data.get("column_id") == "done":
-            done_ticket_id = str(ticket.id)
-            candidates = Ticket.query.filter(
-                Ticket.project_id == project_id,
-                Ticket.column_id == "backlog",
-            ).all()
-            for candidate in candidates:
-                dep_ids = [str(d) for d in (candidate.depends_on_ticket_ids or [])]
-                if done_ticket_id not in dep_ids:
-                    continue
-                still_blocking = Ticket.query.filter(
-                    Ticket.id.in_(dep_ids),
-                    Ticket.column_id != "done",
-                ).count()
-                if still_blocking == 0:
-                    current_app.logger.info(
-                        "Auto-enqueuing ticket %s: all dependencies now done", candidate.id
-                    )
-                    _enqueue_ticket_job(candidate.id)
+            _dispatch_unblocked_queued(project_id)
         return jsonify(_ticket_to_json(ticket))
 
     if request.method == "DELETE":
@@ -990,6 +993,14 @@ def ticket_complete(project_id, ticket_id):
                     pr_number=pr_number,
                 ))
     db.session.commit()
+
+    # Swarm mode: check if this ticket's wave is fully done → auto-queue merge
+    if git_mode == "swarm":
+        try:
+            _maybe_trigger_wave_merge(project_id, ticket_id)
+        except Exception as exc:
+            current_app.logger.warning("Wave merge trigger failed: %s", exc)
+
     return jsonify({"message": "Complete", "ticket_id": str(ticket.id)})
 
 
@@ -1311,27 +1322,172 @@ def worker_projects():
     }), 200
 
 
+# ---------------------------------------------------------------------------
+# Wave computation helpers (swarm mode)
+# ---------------------------------------------------------------------------
+
+def _compute_waves(tickets: list) -> dict:
+    """BFS topological layering over depends_on_ticket_ids.
+    Returns {ticket_id_str: wave_num}.  Wave 0 = no dependencies.
+    Handles cycles and unknown dep refs gracefully (assigns wave 0).
+    """
+    id_to_deps: dict = {
+        str(t.id): set(str(d) for d in (t.depends_on_ticket_ids or []))
+        for t in tickets
+    }
+    known_ids = set(id_to_deps.keys())
+    waves: dict = {}
+    changed = True
+    while changed:
+        changed = False
+        for tid, deps in id_to_deps.items():
+            if tid in waves:
+                continue
+            # Only wait on deps that exist in this project; ignore unknown refs
+            local_deps = deps & known_ids
+            if any(d not in waves for d in local_deps):
+                continue
+            w = (max(waves[d] for d in local_deps) + 1) if local_deps else 0
+            waves[tid] = w
+            changed = True
+    # Fallback: circular or unresolved → wave 0
+    for tid in id_to_deps:
+        waves.setdefault(tid, 0)
+    return waves
+
+
+def _maybe_trigger_wave_merge(project_id, completed_ticket_id) -> None:
+    """Called after a swarm ticket reaches `done`.  If every ticket in that
+    wave is done AND no merge run exists yet for the wave, enqueue one."""
+    tickets = Ticket.query.filter_by(project_id=project_id).all()
+    if not tickets:
+        return
+    waves = _compute_waves(tickets)
+    my_wave = waves.get(str(completed_ticket_id), 0)
+
+    # All tickets in this wave must be done
+    wave_tickets = [t for t in tickets if waves.get(str(t.id), 0) == my_wave]
+    if not all(t.column_id == "done" for t in wave_tickets):
+        return
+
+    # Don't double-trigger
+    existing = MergeRun.query.filter_by(
+        project_id=project_id, wave_num=my_wave,
+    ).filter(MergeRun.status.in_(["queued", "running", "done"])).first()
+    if existing:
+        return
+
+    run = MergeRun(project_id=str(project_id), wave_num=my_wave, status="queued")
+    db.session.add(run)
+    db.session.commit()
+    current_app.logger.info(
+        "Wave %d complete for project %s — merge run %s queued",
+        my_wave, project_id, run.id,
+    )
+
+
+# ---------------------------------------------------------------------------
+
+def _occupied_nodes_edges(project_id) -> tuple:
+    """Return (occupied_node_ids, occupied_edge_ids) sets for all currently running
+    jobs in the given project.  Used to gate swarm job dispatch."""
+    running_jobs = AgentJob.query.filter_by(project_id=project_id, status="running").all()
+    occupied_nodes: set = set()
+    occupied_edges: set = set()
+    for rj in running_jobs:
+        ticket = Ticket.query.get(rj.ticket_id)
+        if not ticket:
+            continue
+        for n in (ticket.associated_node_ids or []):
+            occupied_nodes.add(n)
+        for e in (ticket.associated_edge_ids or []):
+            occupied_edges.add(e)
+    return occupied_nodes, occupied_edges
+
+
+def _claim_swarm_job(project_id):
+    """Claim the first pending swarm job whose ticket's nodes/edges don't conflict
+    with any currently running job.
+
+    Rules:
+      - A ticket with no associated nodes/edges is always dispatchable (no constraint).
+      - A ticket with ["*"] (wildcard) may only run when nothing else is running.
+      - Otherwise: skip if any of the ticket's node_ids or edge_ids are occupied.
+    """
+    occupied_nodes, occupied_edges = _occupied_nodes_edges(project_id)
+    has_running = bool(occupied_nodes or occupied_edges or
+                       AgentJob.query.filter_by(project_id=project_id, status="running").first())
+
+    pending_jobs = (
+        AgentJob.query.filter_by(project_id=project_id, status="pending")
+        .order_by(AgentJob.created_at.asc())
+        .all()
+    )
+
+    for job in pending_jobs:
+        ticket = Ticket.query.get(job.ticket_id)
+        if not ticket:
+            continue
+
+        ticket_nodes = set(ticket.associated_node_ids or [])
+        ticket_edges = set(ticket.associated_edge_ids or [])
+
+        # Unconstrained ticket — always runnable
+        if not ticket_nodes and not ticket_edges:
+            pass  # fall through to claim
+
+        # Wildcard ticket: must wait for all others to finish first
+        elif "*" in ticket_nodes:
+            if has_running:
+                continue
+
+        # Normal ticket: skip if any overlap with currently occupied nodes/edges
+        elif ticket_nodes & occupied_nodes or ticket_edges & occupied_edges:
+            continue
+
+        # Try to claim this specific job (with_for_update guards against concurrent coordinators)
+        claimed = (
+            AgentJob.query.filter_by(id=job.id, status="pending")
+            .with_for_update(skip_locked=True)
+            .first()
+        )
+        if claimed:
+            return claimed
+        # Another coordinator just claimed it — keep looking
+
+    return None
+
+
 @api_bp.route("/worker/jobs/start", methods=["POST"])
 def worker_jobs_start():
-    """Phase 1: Claim one pending job. Body: optional {"project_id": "<uuid>"}. If project_id omitted, claim next pending job from any project. Returns 200 + job or 204."""
+    """Claim one pending job. Body: optional {"project_id": "<uuid>"}.
+    For swarm-mode projects, skips tickets whose graph nodes/edges conflict with
+    any currently running ticket, serialising overlapping work automatically.
+    Returns 200 + job or 204 (nothing available right now)."""
     err, status = _require_worker_auth()
     if err is not None:
         return err, status
     data = request.json or {}
     project_id = data.get("project_id")
+
     if project_id:
         try:
             project_id = UUID(project_id) if isinstance(project_id, str) else project_id
         except (ValueError, TypeError):
             return jsonify({"error": "project_id must be a valid UUID"}), 400
-        if Project.query.get(project_id) is None:
+        project = Project.query.get(project_id)
+        if project is None:
             return jsonify({"error": "Project not found"}), 404
-        job = (
-            AgentJob.query.filter_by(project_id=project_id, status="pending")
-            .order_by(AgentJob.created_at.asc())
-            .with_for_update(skip_locked=True)
-            .first()
-        )
+
+        if getattr(project, "git_mode", None) == "swarm":
+            job = _claim_swarm_job(project_id)
+        else:
+            job = (
+                AgentJob.query.filter_by(project_id=project_id, status="pending")
+                .order_by(AgentJob.created_at.asc())
+                .with_for_update(skip_locked=True)
+                .first()
+            )
     else:
         job = (
             AgentJob.query.filter_by(status="pending")
@@ -1339,6 +1495,7 @@ def worker_jobs_start():
             .with_for_update(skip_locked=True)
             .first()
         )
+
     if not job:
         return "", 204
     job.status = "running"
@@ -1374,14 +1531,14 @@ def worker_jobs_fail(job_id):
     job.status = "failed"
     # Move ticket back to the appropriate column and track failure count.
     # Review jobs: ticket stays in in_review (it was already there, still needs addressing).
-    # Ticket jobs: ticket goes back to backlog.
+    # Ticket jobs: ticket goes back to queued (still approved to run, just needs a retry).
     if job.ticket_id:
         ticket = Ticket.query.filter_by(id=job.ticket_id).first()
         if ticket:
             if job.kind == "review":
                 ticket.column_id = "in_review"
             else:
-                ticket.column_id = "backlog"
+                ticket.column_id = "queued"
             ticket.failed_count = (ticket.failed_count or 0) + 1
     db.session.commit()
     return jsonify({"message": "Job failed", "job_id": str(job_id)})
@@ -1414,7 +1571,7 @@ def worker_jobs_reset_stale():
                 if job.kind == "review":
                     ticket.column_id = "in_review"
                 else:
-                    ticket.column_id = "backlog"
+                    ticket.column_id = "queued"
                 ticket.failed_count = (ticket.failed_count or 0) + 1
     db.session.commit()
     current_app.logger.info("Reset %d stale running jobs (older than %ds)", count, max_age)
@@ -2060,3 +2217,253 @@ def _poll_pr_review_comments():
                 )
 
 
+# =============================================================================
+# Merge-run routes — swarm wave merging
+# =============================================================================
+
+def _merge_run_to_json(run: MergeRun) -> dict:
+    return {
+        "id": str(run.id),
+        "project_id": str(run.project_id),
+        "wave_num": run.wave_num,
+        "status": run.status,
+        "commit_hash": run.commit_hash,
+        "pr_url": run.pr_url,
+        "error": run.error,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "updated_at": run.updated_at.isoformat() if run.updated_at else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# UI-facing routes
+# ---------------------------------------------------------------------------
+
+@api_bp.route("/projects/<uuid:project_id>/merge/runs", methods=["GET"])
+def merge_runs_list(project_id):
+    """List all merge runs for a project, newest first."""
+    Project.query.get_or_404(project_id)
+    runs = (
+        MergeRun.query.filter_by(project_id=project_id)
+        .order_by(MergeRun.created_at.desc())
+        .all()
+    )
+    return jsonify([_merge_run_to_json(r) for r in runs])
+
+
+@api_bp.route("/projects/<uuid:project_id>/start", methods=["POST"])
+def project_start(project_id):
+    """Move all backlog tickets to queued, then immediately dispatch those with no unfinished deps.
+    This is the 'Go' button — VP approves the full backlog to run autonomously."""
+    Project.query.get_or_404(project_id)
+    backlog_tickets = Ticket.query.filter_by(project_id=project_id, column_id="backlog").all()
+    for t in backlog_tickets:
+        t.column_id = "queued"
+    db.session.commit()
+    _dispatch_unblocked_queued(project_id)
+    queued_count = Ticket.query.filter_by(project_id=project_id, column_id="queued").count()
+    in_progress_count = Ticket.query.filter_by(project_id=project_id, column_id="in_progress").count()
+    return jsonify({
+        "queued": queued_count,
+        "dispatched": in_progress_count,
+        "message": f"Moved {len(backlog_tickets)} tickets to queued; {in_progress_count} dispatched immediately.",
+    })
+
+
+@api_bp.route("/projects/<uuid:project_id>/merge/trigger", methods=["POST"])
+def merge_trigger(project_id):
+    """Manually queue a merge run for the current incomplete wave (or a specific wave).
+    Body: optional {"wave_num": N}.  Useful for the 'Go' button."""
+    project = Project.query.get_or_404(project_id)
+    if (getattr(project, "git_mode", None) or "structured") != "swarm":
+        return jsonify({"error": "Project is not in swarm mode"}), 400
+    data = request.json or {}
+    wave_num = data.get("wave_num")
+
+    if wave_num is None:
+        # Default: find the lowest wave with all tickets done but no successful merge run
+        tickets = Ticket.query.filter_by(project_id=project_id).all()
+        if not tickets:
+            return jsonify({"error": "No tickets found"}), 404
+        waves = _compute_waves(tickets)
+        all_wave_nums = sorted(set(waves.values()))
+        wave_num = None
+        for w in all_wave_nums:
+            wt = [t for t in tickets if waves.get(str(t.id), 0) == w]
+            if all(t.column_id == "done" for t in wt):
+                existing = MergeRun.query.filter_by(
+                    project_id=project_id, wave_num=w,
+                ).filter(MergeRun.status.in_(["queued", "running", "done"])).first()
+                if not existing:
+                    wave_num = w
+                    break
+        if wave_num is None:
+            return jsonify({"error": "No eligible wave found (all waves already have a merge run, or not all tickets are done)"}), 409
+
+    run = MergeRun(project_id=str(project_id), wave_num=int(wave_num), status="queued")
+    db.session.add(run)
+    db.session.commit()
+    return jsonify(_merge_run_to_json(run)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/merge/waves", methods=["GET"])
+def merge_waves(project_id):
+    """Return wave assignment for all tickets + merge run status per wave."""
+    Project.query.get_or_404(project_id)
+    tickets = Ticket.query.filter_by(project_id=project_id).all()
+    waves = _compute_waves(tickets)
+    runs = {r.wave_num: r for r in MergeRun.query.filter_by(project_id=project_id).all()}
+
+    wave_map: dict = {}
+    for t in tickets:
+        w = waves.get(str(t.id), 0)
+        wave_map.setdefault(w, {"wave_num": w, "tickets": [], "merge_run": None})
+        wave_map[w]["tickets"].append({
+            "id": str(t.id),
+            "title": t.title,
+            "column_id": t.column_id,
+        })
+    for w, run in runs.items():
+        wave_map.setdefault(w, {"wave_num": w, "tickets": [], "merge_run": None})
+        wave_map[w]["merge_run"] = _merge_run_to_json(run)
+
+    return jsonify(sorted(wave_map.values(), key=lambda x: x["wave_num"]))
+
+
+# ---------------------------------------------------------------------------
+# Worker-facing merge routes (coordinator claims and executes merge runs)
+# ---------------------------------------------------------------------------
+
+@api_bp.route("/worker/merge/next", methods=["POST"])
+def worker_merge_next():
+    """Coordinator claims the next queued merge run.
+    Returns 204 if nothing to do, or {run, project, commit_hashes, wave_tickets}."""
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
+
+    run = (
+        MergeRun.query.filter_by(status="queued")
+        .order_by(MergeRun.created_at.asc())
+        .with_for_update(skip_locked=True)
+        .first()
+    )
+    if not run:
+        return "", 204
+
+    run.status = "running"
+    db.session.commit()
+
+    # Collect commit hashes for this wave's tickets
+    project = Project.query.get(run.project_id)
+    tickets = Ticket.query.filter_by(project_id=run.project_id).all()
+    waves = _compute_waves(tickets)
+    wave_tickets = [t for t in tickets if waves.get(str(t.id), 0) == run.wave_num]
+
+    commit_hashes = []
+    for t in wave_tickets:
+        pr_row = PR.query.filter_by(ticket_id=t.id).first()
+        if pr_row and pr_row.commit_hash:
+            commit_hashes.append(pr_row.commit_hash)
+
+    return jsonify({
+        "run": _merge_run_to_json(run),
+        "project": {
+            "id": str(project.id),
+            "name": project.name,
+            "project_path": project.project_path,
+            "github_url": project.github_url,
+            "git_mode": project.git_mode,
+        },
+        "wave_tickets": [
+            {"id": str(t.id), "title": t.title, "column_id": t.column_id}
+            for t in wave_tickets
+        ],
+        "commit_hashes": commit_hashes,
+    }), 200
+
+
+@api_bp.route("/worker/merge/<uuid:run_id>", methods=["GET"])
+def worker_merge_get(run_id):
+    """Fetch full data for a specific (already-claimed) merge run.
+    Used by coordinator-spawned merger subprocesses that were pre-claimed via /worker/merge/next."""
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
+    run = MergeRun.query.filter_by(id=run_id).first_or_404()
+    project = Project.query.get(run.project_id)
+    tickets = Ticket.query.filter_by(project_id=run.project_id).all()
+    waves = _compute_waves(tickets)
+    wave_tickets = [t for t in tickets if waves.get(str(t.id), 0) == run.wave_num]
+    commit_hashes = []
+    for t in wave_tickets:
+        pr_row = PR.query.filter_by(ticket_id=t.id).first()
+        if pr_row and pr_row.commit_hash:
+            commit_hashes.append(pr_row.commit_hash)
+    return jsonify({
+        "run": _merge_run_to_json(run),
+        "project": {
+            "id": str(project.id),
+            "name": project.name,
+            "project_path": project.project_path,
+            "github_url": project.github_url,
+            "git_mode": project.git_mode,
+        },
+        "wave_tickets": [
+            {"id": str(t.id), "title": t.title, "column_id": t.column_id}
+            for t in wave_tickets
+        ],
+        "commit_hashes": commit_hashes,
+    }), 200
+
+
+@api_bp.route("/worker/merge/<uuid:run_id>/done", methods=["POST"])
+def worker_merge_done(run_id):
+    """Merge agent reports success: {commit_hash, pr_url}."""
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
+    run = MergeRun.query.filter_by(id=run_id).first_or_404()
+    data = request.json or {}
+    run.status = "done"
+    run.commit_hash = (data.get("commit_hash") or "").strip() or None
+    run.pr_url = (data.get("pr_url") or "").strip() or None
+    db.session.commit()
+    return jsonify(_merge_run_to_json(run))
+
+
+@api_bp.route("/worker/merge/<uuid:run_id>/fail", methods=["POST"])
+def worker_merge_fail(run_id):
+    """Merge agent reports failure: {error, fix_ticket_title, fix_ticket_description}.
+    Optionally auto-creates a fix ticket in the project's backlog."""
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
+    run = MergeRun.query.filter_by(id=run_id).first_or_404()
+    data = request.json or {}
+    run.status = "failed"
+    run.error = (data.get("error") or "")[:4000]
+    db.session.commit()
+
+    # Auto-create a fix ticket if the agent supplied one
+    fix_title = (data.get("fix_ticket_title") or "").strip()
+    fix_desc = (data.get("fix_ticket_description") or "").strip()
+    fix_ticket_id = None
+    if fix_title:
+        fix = Ticket(
+            project_id=run.project_id,
+            title=fix_title,
+            description=fix_desc or fix_title,
+            column_id="backlog",
+            priority="high",
+            status="todo",
+            associated_node_ids=["*"],
+        )
+        db.session.add(fix)
+        db.session.commit()
+        fix_ticket_id = str(fix.id)
+
+    result = _merge_run_to_json(run)
+    if fix_ticket_id:
+        result["fix_ticket_id"] = fix_ticket_id
+    return jsonify(result)

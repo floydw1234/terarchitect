@@ -29,6 +29,7 @@ import {
 } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import RocketLaunchIcon from '@mui/icons-material/RocketLaunch';
 import StopIcon from '@mui/icons-material/Stop';
 import ListAltIcon from '@mui/icons-material/ListAlt';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
@@ -48,6 +49,7 @@ import {
   getTicketLogs,
   cancelTicketExecution,
   getExecutionReady,
+  startProject,
   type Ticket,
   type KanbanColumn,
   type Note,
@@ -60,13 +62,15 @@ interface GraphEdgeOption { id: string; label: string; }
 
 const DEFAULT_COLUMNS: KanbanColumn[] = [
   { id: 'backlog', title: 'Backlog', order: 0 },
-  { id: 'in_progress', title: 'In Progress', order: 1 },
-  { id: 'in_review', title: 'In Review', order: 2 },
-  { id: 'done', title: 'Done', order: 3 },
+  { id: 'queued', title: 'Queued', order: 1 },
+  { id: 'in_progress', title: 'In Progress', order: 2 },
+  { id: 'in_review', title: 'In Review', order: 3 },
+  { id: 'done', title: 'Done', order: 4 },
 ];
 
 const COLUMN_TITLE_BY_ID: Record<string, string> = {
   backlog: 'Backlog',
+  queued: 'Queued',
   in_progress: 'In Progress',
   in_review: 'In Review',
   done: 'Done',
@@ -74,13 +78,14 @@ const COLUMN_TITLE_BY_ID: Record<string, string> = {
 
 const CANONICAL_COLUMN_ORDER: Record<string, number> = {
   backlog: 0,
-  in_progress: 1,
-  in_review: 2,
-  done: 3,
+  queued: 1,
+  in_progress: 2,
+  in_review: 3,
+  done: 4,
 };
 
 /** Columns shown in the board — In Progress is intentionally excluded (shown in Running strip above). */
-const BOARD_COLUMN_IDS = new Set(['backlog', 'in_review', 'done']);
+const BOARD_COLUMN_IDS = new Set(['backlog', 'queued', 'in_review', 'done']);
 
 const PRIORITY_COLOR: Record<string, 'error' | 'warning' | 'success'> = {
   high: 'error',
@@ -376,6 +381,10 @@ const KanbanPage: React.FC = () => {
 
   const [missingRequired, setMissingRequired] = useState<ReadyMissing[]>([]);
 
+  // Go button
+  const [goLoading, setGoLoading] = useState(false);
+  const [goResult, setGoResult] = useState<string | null>(null);
+
   useEffect(() => {
     if (projectId) fetchKanban();
   }, [projectId]);
@@ -484,6 +493,24 @@ const KanbanPage: React.FC = () => {
 
   const handleRunTicket = async (ticket: Ticket) => {
     await handleMoveTicket(ticket.id, 'in_progress');
+  };
+
+  const handleGo = async () => {
+    if (!projectId) return;
+    setGoLoading(true);
+    setGoResult(null);
+    try {
+      const result = await startProject(projectId);
+      const updated = await getTickets(projectId);
+      setTickets(updated as Ticket[]);
+      setGoResult(`${result.queued} queued, ${result.dispatched} dispatched`);
+      setTimeout(() => setGoResult(null), 4000);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Failed to start project';
+      setActionError(msg);
+    } finally {
+      setGoLoading(false);
+    }
   };
 
   const handleApproveTicket = async (ticket: Ticket) => {
@@ -715,8 +742,29 @@ const KanbanPage: React.FC = () => {
     <Box>
       {/* Header */}
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3, flexWrap: 'wrap', gap: 2 }}>
-        <Typography variant="h4">Kanban Board</Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <Typography variant="h4">Kanban Board</Typography>
+          {goResult && (
+            <Typography variant="body2" color="success.main" fontWeight="medium">
+              ✓ {goResult}
+            </Typography>
+          )}
+        </Box>
         <Box sx={{ display: 'flex', gap: 1 }}>
+          <Tooltip title={tickets.filter((t) => t.column_id === 'backlog').length === 0 ? 'No backlog tickets to start' : 'Move all backlog tickets to queued and dispatch wave-0'}>
+            <span>
+              <Button
+                variant="contained"
+                size="small"
+                color="success"
+                startIcon={goLoading ? <CircularProgress size={14} color="inherit" /> : <RocketLaunchIcon />}
+                onClick={handleGo}
+                disabled={goLoading || tickets.filter((t) => t.column_id === 'backlog').length === 0}
+              >
+                {goLoading ? 'Starting…' : 'Go'}
+              </Button>
+            </span>
+          </Tooltip>
           <Button variant="contained" size="small" onClick={openCreateTicket}>
             Create ticket
           </Button>

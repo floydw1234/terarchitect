@@ -1,0 +1,41 @@
+# Test overrides for docker-compose.yml.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.test.yml \
+#          --project-name terarchitect-test up -d backend postgres
+#
+# Key differences from dev:
+#   - Different host ports (5011/5435) so tests don't conflict with a running dev stack
+#   - Postgres uses an ephemeral named volume (not ./data/postgres bind-mount)
+#   - Backend env_file cleared; all config inlined with test-safe stubs
+
+services:
+  backend:
+    container_name: terarchitect-backend-test
+    ports:
+      - "5011:5010"
+    env_file: []         # clear dev env_file; use environment block below only
+    environment:
+      DATABASE_URL: postgresql://terarchitect:terarchitect@postgres:5432/terarchitect
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      MEMORY_SAVE_DIR: /tmp/terarchitect
+      CORS_ORIGINS: "ANY_PORT_3000"
+      # Stub values — Phase 1 smoke tests don't call GitHub or LLMs
+      GITHUB_TOKEN: test-stub
+      GIT_USER_NAME: "Test User"
+      GIT_USER_EMAIL: test@example.com
+      EMBEDDING_PROVIDER: custom
+      EMBEDDING_SERVICE_URL: http://localhost:9009/v1
+      EMBEDDING_API_KEY: dummy
+      MEMORY_EMBEDDING_MODEL: bge-large
+
+  postgres:
+    container_name: terarchitect-postgres-test
+    ports:
+      - "5435:5432"
+    volumes:
+      # Named volume (ephemeral) — wiped on `docker compose down -v`
+      - test-postgres-data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+
+volumes:
+  test-postgres-data:

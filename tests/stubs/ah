@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Stub `ah` binary for swarm integration tests.
+# Intercepts `ah push` (and any other ah subcommand) and succeeds silently.
+# Real `ah` would bundle local commits and push them to the agenthub DAG server.
+echo "stub-ah: $* (noop in test mode)" >&2
+exit 0

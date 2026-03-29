@@ -1,0 +1,25 @@
+name: "CLI Test Project"
+description: "Created from config file by integration test"
+github_url: "https://github.com/test-org/test-repo"
+execution_mode: "docker"
+git_mode: "structured"
+is_existing_repo: true
+
+default_tickets:
+  - title: "Set up project scaffolding"
+    description: "Initialize the project structure and dependencies"
+    column_id: "backlog"
+    priority: "high"
+    status: "todo"
+
+  - title: "Implement core data models"
+    description: "Define database schema and ORM models"
+    column_id: "backlog"
+    priority: "high"
+    status: "todo"
+
+  - title: "Write API endpoints"
+    description: "REST endpoints for CRUD operations"
+    column_id: "backlog"
+    priority: "medium"
+    status: "todo"

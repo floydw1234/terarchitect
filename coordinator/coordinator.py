@@ -166,6 +166,71 @@ def claim_job(base_url: str, project_id: Optional[str] = None) -> Optional[dict]
         return None
 
 
+def claim_merge_run(base_url: str) -> Optional[dict]:
+    """POST /api/worker/merge/next. Claims the next queued merge run.
+    Returns the full run payload or None if nothing to do."""
+    try:
+        r = requests.post(
+            f"{base_url}/api/worker/merge/next",
+            json={},
+            headers=_headers(),
+            timeout=30,
+        )
+        if r.status_code == 204:
+            return None
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"[coordinator] claim merge run error: {e}", file=sys.stderr)
+        return None
+
+
+# Env vars forwarded from coordinator to merger subprocess.
+_MERGER_ENV_KEYS = (
+    "TERARCHITECT_API_URL", "TERARCHITECT_WORKER_API_KEY",
+    "AGENTHUB_URL", "AGENTHUB_API_KEY",
+    "MERGE_TEST_COMMAND", "MERGE_BRANCH_PREFIX",
+    "GIT_USER_NAME", "GIT_USER_EMAIL",
+    "GH_TOKEN", "GITHUB_TOKEN",
+)
+
+
+def _run_merger(base_url: str, run_data: dict) -> None:
+    """Run the merger agent as a subprocess on the host (needs project_path filesystem access).
+    The coordinator pre-claimed the run; we pass MERGE_RUN_ID so the merger fetches it directly."""
+    run_id = run_data["run"]["id"]
+    wave_num = run_data["run"].get("wave_num", "?")
+    project_name = run_data["project"].get("name", "")
+    print(f"[coordinator] starting merger run={run_id} wave={wave_num} project={project_name!r}", flush=True)
+
+    env = {}
+    for key in _MERGER_ENV_KEYS:
+        val = os.environ.get(key)
+        if val:
+            env[key] = val
+    env["MERGE_RUN_ID"] = str(run_id)
+
+    repo_root = _repo_root()
+    full_env = {**os.environ, **env}
+    pythonpath = str(repo_root)
+    if full_env.get("PYTHONPATH"):
+        pythonpath = pythonpath + os.pathsep + full_env["PYTHONPATH"]
+    full_env["PYTHONPATH"] = pythonpath
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "agent.merger"],
+            env=full_env,
+            cwd=str(repo_root),
+        )
+        if result.returncode == 0:
+            print(f"[coordinator] merger run {run_id} completed", flush=True)
+        else:
+            print(f"[coordinator] merger run {run_id} exited {result.returncode}", file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f"[coordinator] merger run {run_id} error: {e}", file=sys.stderr, flush=True)
+
+
 def mark_complete(base_url: str, job_id: str) -> None:
     for attempt in range(3):
         try:
@@ -543,15 +608,18 @@ def main() -> None:
                 print(f"[coordinator] reset {data['reset']} stale running job(s) from previous session", flush=True)
     except Exception as e:
         print(f"[coordinator] could not reset stale jobs (backend may not be ready yet): {e}", file=sys.stderr)
+    running_mergers: List[threading.Thread] = []
+
     while True:
         running = [t for t in running if t.is_alive()]
+        running_mergers = [t for t in running_mergers if t.is_alive()]
 
         new_max = _max_concurrent(1)
         if new_max != max_concurrent:
             print(f"[coordinator] max_concurrent changed: {max_concurrent} → {new_max}", flush=True)
             max_concurrent = new_max
 
-        # Claim and start new jobs up to max_concurrent
+        # Claim and start new ticket/review jobs up to max_concurrent
         while len(running) < max_concurrent:
             job = None
             if project_ids:
@@ -577,6 +645,18 @@ def main() -> None:
             )
             t.start()
             running.append(t)
+
+        # Claim and dispatch merge runs (independent of ticket agent slots; one merger at a time)
+        if not running_mergers:
+            run_data = claim_merge_run(base_url)
+            if run_data:
+                mt = threading.Thread(
+                    target=_run_merger,
+                    args=(base_url, run_data),
+                    daemon=False,
+                )
+                mt.start()
+                running_mergers.append(mt)
 
         time.sleep(poll_interval)
 

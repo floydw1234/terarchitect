@@ -1,0 +1,23 @@
+[
+  {
+    "title": "Add authentication middleware",
+    "description": "Implement JWT-based auth middleware for all protected routes",
+    "column_id": "backlog",
+    "priority": "high",
+    "status": "todo"
+  },
+  {
+    "title": "Create user profile endpoint",
+    "description": "GET /api/users/:id — return user profile data",
+    "column_id": "backlog",
+    "priority": "medium",
+    "status": "todo"
+  },
+  {
+    "title": "Add rate limiting",
+    "description": "Limit API calls to 100/minute per IP using Redis",
+    "column_id": "backlog",
+    "priority": "low",
+    "status": "todo"
+  }
+]

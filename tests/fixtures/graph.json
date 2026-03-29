@@ -1,0 +1,64 @@
+{
+  "nodes": [
+    {
+      "id": "frontend",
+      "type": "component",
+      "data": {
+        "label": "Frontend",
+        "description": "React SPA",
+        "tech": "React, TypeScript"
+      },
+      "position": { "x": 100, "y": 100 }
+    },
+    {
+      "id": "api",
+      "type": "component",
+      "data": {
+        "label": "API Server",
+        "description": "REST API backend",
+        "tech": "Python, Flask"
+      },
+      "position": { "x": 400, "y": 100 }
+    },
+    {
+      "id": "db",
+      "type": "component",
+      "data": {
+        "label": "Database",
+        "description": "Primary data store",
+        "tech": "PostgreSQL"
+      },
+      "position": { "x": 400, "y": 300 }
+    },
+    {
+      "id": "cache",
+      "type": "component",
+      "data": {
+        "label": "Cache",
+        "description": "Session and rate-limit cache",
+        "tech": "Redis"
+      },
+      "position": { "x": 700, "y": 100 }
+    }
+  ],
+  "edges": [
+    {
+      "id": "frontend-api",
+      "source": "frontend",
+      "target": "api",
+      "data": { "label": "HTTPS/REST" }
+    },
+    {
+      "id": "api-db",
+      "source": "api",
+      "target": "db",
+      "data": { "label": "SQL" }
+    },
+    {
+      "id": "api-cache",
+      "source": "api",
+      "target": "cache",
+      "data": { "label": "Redis protocol" }
+    }
+  ]
+}

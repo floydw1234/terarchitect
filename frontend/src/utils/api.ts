@@ -413,3 +413,19 @@ export async function getExecutionReady(): Promise<ReadyResponse> {
   const response = await fetch(`${API_URL}/api/ready`);
   return checkResponse<ReadyResponse>(response);
 }
+
+export interface StartProjectResponse {
+  queued: number;
+  dispatched: number;
+  message: string;
+}
+
+/** Move all backlog tickets to queued and immediately dispatch those with no unfinished deps. */
+export async function startProject(projectId: string): Promise<StartProjectResponse> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  return checkResponse<StartProjectResponse>(response);
+}

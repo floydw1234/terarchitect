@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Mock gh CLI for integration tests.
+# Intercepts the gh calls made by the agent during _finalize so no real
+# GitHub token or network access is required.
+
+CMD="${1:-} ${2:-}"
+
+case "$CMD" in
+  "pr create")
+    # Return a fake GitHub PR URL; agent extracts the PR number via regex /pull/<n>
+    echo "https://github.com/test-org/test-repo/pull/42"
+    ;;
+  "pr comment")
+    exit 0
+    ;;
+  "pr view")
+    printf '{"state":"open","merged":false,"number":42,"title":"stub PR"}\n'
+    ;;
+  "pr merge")
+    exit 0
+    ;;
+  "api "*)
+    # Used by the PR review poller: return a minimal open PR object
+    printf '{"state":"open","merged":false,"number":42,"title":"stub PR","body":""}\n'
+    ;;
+  *)
+    # Unknown command: log it but exit 0 so the agent doesn't abort
+    echo "stub gh: unhandled: $*" >&2
+    exit 0
+    ;;
+esac

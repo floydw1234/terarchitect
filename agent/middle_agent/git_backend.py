@@ -24,6 +24,15 @@ from typing import Optional
 import requests
 
 
+def _ticket_channel(ticket_id: str) -> str:
+    """Derive a valid agenthub channel name from a ticket ID.
+    Agenthub enforces ≤ 31 chars, lowercase alphanumeric/dash/underscore.
+    'ticket-' (7) + 24 hex chars (UUID without dashes, truncated) = 31.
+    """
+    short = str(ticket_id).replace("-", "")[:24]
+    return f"ticket-{short}"
+
+
 def is_swarm() -> bool:
     return (os.environ.get("TERARCHITECT_MODE") or "structured").strip().lower() == "swarm"
 
@@ -92,7 +101,7 @@ def get_peer_context(ticket_id: str) -> str:
             lines.append(f"  {h}  [{agent}]  {msg}")
         lines.append("")
 
-    channel = f"ticket-{ticket_id}"
+    channel = _ticket_channel(ticket_id)
     posts = _ah_get(f"/api/channels/{channel}/posts?limit=10") or []
     if isinstance(posts, list) and posts:
         lines.append(f"### Recent board posts in #{channel}")
@@ -110,9 +119,38 @@ def get_peer_context(ticket_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 def prepare_work(project_path: str) -> None:
-    """Fetch the latest agenthub leaf into the local repo and check it out.
-    Non-fatal: if agenthub is unreachable the agent works from the cloned origin."""
+    """Set up the swarm branch before the agent starts work.
+
+    Priority:
+      1. origin/swarm — the authoritative merged state (carries all previous wave merges).
+         Fetch and check out this first so the agent always builds on the full history.
+      2. Latest agenthub leaf — peer work from other agents in the *current* wave that
+         has not yet been merged.  Applied on top of origin/swarm if it is a descendant
+         of origin/swarm (i.e. it is genuinely ahead, not a diverging branch).
+
+    Non-fatal throughout: if anything fails the agent continues from origin clone.
+    """
     if not is_swarm():
+        return
+
+    branch = _swarm_branch()
+
+    # --- Step 1: fetch and check out origin/swarm ---
+    fetch_r = subprocess.run(
+        ["git", "fetch", "origin", branch],
+        cwd=project_path, capture_output=True, text=True, timeout=60,
+    )
+    if fetch_r.returncode == 0:
+        subprocess.run(
+            ["git", "checkout", "-B", branch, f"origin/{branch}"],
+            cwd=project_path, capture_output=True, timeout=10,
+        )
+    # If origin/swarm doesn't exist yet (first wave), the clone already has origin/main;
+    # fall through and let the agenthub leaf step (or the plain clone) provide the base.
+
+    # --- Step 2: overlay latest agenthub leaf (same-wave peer work) ---
+    url = _ah_url()
+    if not url:
         return
 
     leaves = _ah_get("/api/git/leaves") or []
@@ -121,10 +159,6 @@ def prepare_work(project_path: str) -> None:
 
     latest_hash = (leaves[0].get("hash") or "").strip()
     if not latest_hash:
-        return
-
-    url = _ah_url()
-    if not url:
         return
 
     try:
@@ -147,11 +181,18 @@ def prepare_work(project_path: str) -> None:
                 ["git", "bundle", "unbundle", bundle_path],
                 cwd=project_path, capture_output=True, text=True, timeout=60,
             )
-            if r.returncode == 0:
-                # Reset (or create) the shared swarm branch at the leaf commit.
-                # Using -B so it's idempotent: creates the branch if absent, moves it
-                # to the leaf if the branch already exists from a previous agent run.
-                branch = _swarm_branch()
+            if r.returncode != 0:
+                return
+
+            # Only move to the leaf if it is a descendant of our current HEAD
+            # (i.e. it is ahead of origin/swarm, not a diverging branch from a
+            # different wave).  This prevents agents from accidentally working off
+            # stale wave-N-1 agenthub commits when wave-N has just started.
+            ancestor_check = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", "HEAD", latest_hash],
+                cwd=project_path, capture_output=True, timeout=10,
+            )
+            if ancestor_check.returncode == 0:
                 subprocess.run(
                     ["git", "checkout", "-B", branch, latest_hash],
                     cwd=project_path, capture_output=True, timeout=10,
@@ -162,7 +203,7 @@ def prepare_work(project_path: str) -> None:
             except OSError:
                 pass
     except Exception:
-        pass  # Non-fatal; agent continues from origin clone
+        pass  # Non-fatal; agent continues from origin/swarm or origin clone
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +252,7 @@ def swarm_publish(
     )
 
     # Post completion notice to ticket channel (auto-created if it doesn't exist)
-    channel = f"ticket-{ticket_id}"
+    channel = _ticket_channel(ticket_id)
     body = f"done: {summary[:400]}\ncommit: {commit_hash[:12]}" if summary else f"done\ncommit: {commit_hash[:12]}"
     _ah_post(f"/api/channels/{channel}/posts", {"content": body})
 

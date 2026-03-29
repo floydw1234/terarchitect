@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Protocol
 
 from utils.app_settings import get_gh_env_for_agent, get_setting_or_env
-import git_backend
+from middle_agent import git_backend
 
 # Invisible HTML comment appended to all agent-posted PR comments.
 # Must match the constant in backend/api/routes.py — used by the PR polling loop
@@ -261,7 +261,7 @@ class MiddleAgent:
 
         # Worker mode: "claude-code" (default) or "opencode" (OpenCode CLI with HTTP LLM server).
         raw_worker_mode = (get_setting_or_env("WORKER_MODE") or "claude-code").strip().lower()
-        self.worker_mode: str = raw_worker_mode if raw_worker_mode in ("opencode", "claude-code") else "claude-code"
+        self.worker_mode: str = raw_worker_mode if raw_worker_mode in ("opencode", "claude-code", "stub") else "claude-code"
 
         # OpenCode worker: model, LLM URL. No default URL — WORKER_LLM_URL must be configured.
         self.worker_provider_id = "terarchitect-proxy"
@@ -305,7 +305,9 @@ class MiddleAgent:
             errors.append("DIRECTOR_LLM_URL is not set — Director LLM has no URL. Set DIRECTOR_PROVIDER to a known provider (openai, anthropic, groq, etc.) or provide DIRECTOR_LLM_URL explicitly.")
         if not self.director_model:
             errors.append("DIRECTOR_MODEL is not set — Director LLM has no model to use.")
-        if self.worker_mode == "claude-code":
+        if self.worker_mode == "stub":
+            pass  # stub mode: no worker credentials needed (testing only)
+        elif self.worker_mode == "claude-code":
             if not self.worker_api_key:
                 errors.append("WORKER_API_KEY (Anthropic) is not set — required for Claude Code mode.")
         else:
@@ -1382,6 +1384,69 @@ class MiddleAgent:
         except Exception as e:
             self._debug_log(f"[Cleanup] Cleanup step failed (non-fatal): {e}")
 
+    def _send_to_worker_stub(
+        self,
+        prompt: str,
+        project_path: Optional[str],
+        resume: bool,
+    ) -> dict:
+        """Stub worker for integration testing. No LLM calls — deterministic canned responses.
+
+        Turn detection:
+          - prompt contains '_task_plan.md' → planning turn: create the plan file
+          - resume=False                    → research turn: return canned research
+          - otherwise                       → execution turn: write stub_output.txt
+        """
+        import re
+
+        # Plan turn: prompt contains the path to the task plan file
+        plan_match = re.search(r'(\S+_task_plan\.md)', prompt)
+        if plan_match:
+            plan_path = plan_match.group(1)
+            try:
+                os.makedirs(os.path.dirname(plan_path), exist_ok=True)
+                with open(plan_path, "w") as fh:
+                    fh.write(
+                        "# Stub Task Plan\n\n"
+                        "1. Create `stub_output.txt` in the project root with the text 'stub complete'.\n"
+                        "2. Verify the file exists.\n"
+                        "3. Done.\n"
+                    )
+                return {
+                    "output": f"Created plan file at {plan_path}. Plan: write stub_output.txt.",
+                    "error": "",
+                    "return_code": 0,
+                }
+            except OSError as e:
+                return {"output": f"Stub plan write failed: {e}", "error": str(e), "return_code": 0}
+
+        # Research turn (first call, resume=False)
+        if not resume:
+            return {
+                "output": (
+                    "Research complete. This is a test project. "
+                    "Best practice: write a stub_output.txt file to demonstrate task completion."
+                ),
+                "error": "",
+                "return_code": 0,
+            }
+
+        # Execution turn: make an actual file change so git has something to commit
+        if project_path and os.path.isdir(project_path):
+            try:
+                with open(os.path.join(project_path, "stub_output.txt"), "w") as fh:
+                    fh.write("stub complete\n")
+            except OSError:
+                pass
+        return {
+            "output": (
+                "Implementation complete. Created stub_output.txt in the project directory. "
+                "The task is done."
+            ),
+            "error": "",
+            "return_code": 0,
+        }
+
     def _call_claude_code_worker(
         self,
         prompt: str,
@@ -1519,6 +1584,8 @@ class MiddleAgent:
         ticket_id: Optional["uuid.UUID"] = None,
     ) -> dict:
         """Send a prompt to the configured worker. Dispatches to OpenCode (HTTP) or Claude Code (CLI) based on worker_mode."""
+        if self.worker_mode == "stub":
+            return self._send_to_worker_stub(prompt, project_path, resume)
         if self.worker_mode == "claude-code":
             return self._call_claude_code_worker(prompt, session_id, project_path, resume)
         # Use caller-supplied IDs or fall back to the instance-level active context

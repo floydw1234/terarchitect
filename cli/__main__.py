@@ -9,6 +9,7 @@ Commands:
     ticket    list | create | show | update | run | cancel | logs
     review    list | show | comment | approve | merge
     graph     get | set
+    plan      <project-id>  — generate tickets from graph + notes via LLM
 
 Environment:
     TERARCHITECT_API_URL   Backend base URL (default: http://localhost:5010)
@@ -19,7 +20,7 @@ import sys
 
 from cli._api import API
 from cli._config import get_api_url
-from cli.commands import graph, project, review, ticket
+from cli.commands import graph, merge, plan, project, review, ticket
 
 
 def main() -> None:
@@ -48,6 +49,8 @@ def main() -> None:
     ticket.register(subparsers)
     review.register(subparsers)
     graph.register(subparsers)
+    plan.register(subparsers)
+    merge.register(subparsers)
 
     args = parser.parse_args()
     api = API(args.api_url or get_api_url())

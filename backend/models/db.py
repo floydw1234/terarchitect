@@ -27,6 +27,7 @@ class Project(db.Model):
     notes = db.relationship("Note", backref="project", cascade="all, delete-orphan")
     execution_logs = db.relationship("ExecutionLog", backref="project", cascade="all, delete-orphan")
     prs = db.relationship("PR", backref="project", cascade="all, delete-orphan")
+    merge_runs = db.relationship("MergeRun", backref="project", cascade="all, delete-orphan")
     # No cascade, noload: embedding column is pgvector (OID 16397); ORM must never SELECT it (unknown to ARRAY(Float)).
     rag_embeddings = db.relationship("RAGEmbedding", backref="project", cascade="save-update", lazy="noload")
 
@@ -164,6 +165,22 @@ class AgentJob(db.Model):
     pr_number = db.Column(db.Integer)
     comment_body = db.Column(db.Text)
     github_comment_id = db.Column(db.BigInteger)
+
+
+class MergeRun(db.Model):
+    """Tracks swarm-mode wave merges. Created automatically when a wave completes."""
+
+    __tablename__ = "merge_runs"
+
+    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
+    project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
+    wave_num = db.Column(db.Integer, nullable=False)
+    status = db.Column(db.String(50), nullable=False, default="queued")  # queued | running | done | failed
+    commit_hash = db.Column(db.String(255))
+    pr_url = db.Column(db.Text)
+    error = db.Column(db.Text)
+    created_at = db.Column(db.TIMESTAMP, default=db.func.now())
+    updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
 
 
 class RAGEmbedding(db.Model):
