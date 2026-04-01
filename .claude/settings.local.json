@@ -26,7 +26,12 @@
       "Bash(docker exec -i terarchitect-postgres psql -U terarchitect -d terarchitect -c \"SELECT column_name, data_type FROM information_schema.columns WHERE table_name = ''projects'' ORDER BY ordinal_position;\")",
       "Bash(psql:*)",
       "Bash(docker exec:*)",
-      "Bash(docker ps:*)"
+      "Bash(docker ps:*)",
+      "Bash(ls /home/william/Documents/codingProj/terarchitect/migrations/*.sql)",
+      "Bash(python3 -m json.tool --no-ensure-ascii)",
+      "Bash(docker restart:*)",
+      "Bash(docker stop:*)",
+      "Bash(docker compose:*)"
     ]
   }
 }

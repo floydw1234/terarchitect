@@ -54,6 +54,7 @@ def build_provider_config_from_settings() -> dict | None:
     raw_model = (os.environ.get("WORKER_MODEL") or "").strip()
     api_key = (os.environ.get("WORKER_API_KEY") or "dummy").strip() or "dummy"
     provider_id = (os.environ.get("OPENCODE_PROVIDER_ID") or "terarchitect-proxy").strip()
+    max_tokens = int(os.environ.get("WORKER_MAX_TOKENS") or "16384")
     if not base_url and not raw_model:
         return None
     if not base_url:
@@ -71,7 +72,7 @@ def build_provider_config_from_settings() -> dict | None:
                 "name": "Terarchitect Proxy",
                 "options": {"baseURL": base_url, "apiKey": api_key},
                 "models": {
-                    model_id: {"name": model_id, "tool_call": True},
+                    model_id: {"name": model_id, "tool_call": True, "limit": {"context": 262144, "output": max_tokens}},
                 },
             }
         },

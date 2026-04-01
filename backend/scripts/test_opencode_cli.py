@@ -82,6 +82,7 @@ env.setdefault(
                         local_model_name: {
                             "name": local_model_name,
                             "tool_call": True,
+                            "limit": {"context": 262144, "output": int(os.environ.get("WORKER_MAX_TOKENS") or "16384")},
                         }
                     },
                 }

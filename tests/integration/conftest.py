@@ -304,6 +304,84 @@ def _ah_get(ah_url: str, api_key: str, path: str):
 
 
 @pytest.fixture(scope="session")
+def agenthub_docker(tmp_path_factory):
+    """Start the prod agenthub Docker image (terarchitect-agenthub:latest) as a container
+    and extract the ah binary from it.  Skipped if the image is not present.
+    Yields a dict with url, admin_key, ah_bin_dir.
+    """
+    prod_image = "terarchitect-agenthub:latest"
+    port = 8094
+    container_name = "terarchitect-agenthub-docker-test"
+    admin_key = "test-admin-key-docker"
+    url = f"http://127.0.0.1:{port}"
+
+    # Check the image exists locally
+    r = subprocess.run(
+        ["docker", "image", "inspect", prod_image],
+        capture_output=True,
+    )
+    if r.returncode != 0:
+        pytest.skip(f"Docker image {prod_image!r} not found — run: docker compose build agenthub")
+
+    build_dir = tmp_path_factory.mktemp("agenthub-docker-bin")
+    ah_bin = build_dir / "ah"
+
+    # Extract ah binary from the image
+    create_r = subprocess.run(
+        ["docker", "create", prod_image], capture_output=True, text=True,
+    )
+    cid = create_r.stdout.strip()
+    try:
+        cp_r = subprocess.run(
+            ["docker", "cp", f"{cid}:/usr/local/bin/ah", str(ah_bin)],
+            capture_output=True, text=True,
+        )
+        if cp_r.returncode != 0:
+            pytest.fail(
+                f"Could not extract ah from {prod_image} — rebuild with: docker compose build agenthub\n"
+                f"{cp_r.stderr}"
+            )
+        ah_bin.chmod(0o755)
+    finally:
+        subprocess.run(["docker", "rm", cid], capture_output=True)
+
+    # Start the server container
+    subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
+    r = subprocess.run(
+        ["docker", "run", "-d",
+         "--name", container_name,
+         "-p", f"{port}:8080",
+         "-e", f"AGENTHUB_ADMIN_KEY={admin_key}",
+         prod_image],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        pytest.fail(f"docker run {prod_image} failed: {r.stderr}")
+
+    # Wait for health
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(f"{url}/api/health", timeout=2):
+                print(f"[conftest] agenthub_docker ready at {url}", flush=True)
+                break
+        except Exception:
+            time.sleep(0.5)
+    else:
+        subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
+        pytest.fail(f"agenthub Docker container did not become healthy within 30s")
+
+    yield {
+        "url": url,
+        "admin_key": admin_key,
+        "ah_bin_dir": str(build_dir),
+    }
+
+    subprocess.run(["docker", "stop", container_name], capture_output=True)
+    subprocess.run(["docker", "rm", container_name], capture_output=True)
+
+
+@pytest.fixture(scope="session")
 def agenthub_real(tmp_path_factory):
     """Build agenthub-server and ah binaries from source (go build), then run
     the server as a subprocess.  Falls back to Docker build if `go` is absent.

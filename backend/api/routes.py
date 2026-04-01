@@ -722,7 +722,20 @@ def _enqueue_ticket_job(ticket_id):
 
 
 def _dispatch_unblocked_queued(project_id):
-    """Move any queued tickets whose dependencies are all done to in_progress and enqueue them."""
+    """Move any queued tickets whose dependencies are all done to in_progress and enqueue them.
+    In swarm mode, also holds back tickets whose graph nodes conflict with currently running tickets."""
+    project = Project.query.get(project_id)
+    is_swarm = project and (getattr(project, "git_mode", None) or "structured") == "swarm"
+
+    # Pre-compute occupied nodes/edges from in_progress tickets (swarm only)
+    occupied_nodes: set = set()
+    occupied_edges: set = set()
+    if is_swarm:
+        running = Ticket.query.filter_by(project_id=project_id, column_id="in_progress").all()
+        for rt in running:
+            occupied_nodes.update(rt.associated_node_ids or [])
+            occupied_edges.update(rt.associated_edge_ids or [])
+
     queued = Ticket.query.filter_by(project_id=project_id, column_id="queued").all()
     for t in queued:
         dep_ids = t.depends_on_ticket_ids or []
@@ -733,9 +746,17 @@ def _dispatch_unblocked_queued(project_id):
             ).first()
             if blocking:
                 continue
+        if is_swarm:
+            ticket_nodes = set(t.associated_node_ids or [])
+            ticket_edges = set(t.associated_edge_ids or [])
+            if ticket_nodes & occupied_nodes or ticket_edges & occupied_edges:
+                continue  # Node conflict — leave in queued until the blocker finishes
         t.column_id = "in_progress"
         db.session.commit()
         _enqueue_ticket_job(t.id)
+        if is_swarm:
+            occupied_nodes.update(t.associated_node_ids or [])
+            occupied_edges.update(t.associated_edge_ids or [])
 
 
 def _run_pr_poll_loop(app, pr_poll_seconds=60):
@@ -993,6 +1014,13 @@ def ticket_complete(project_id, ticket_id):
                     pr_number=pr_number,
                 ))
     db.session.commit()
+
+    # Swarm mode: release any queued tickets that were held back due to node conflicts
+    if git_mode == "swarm":
+        try:
+            _dispatch_unblocked_queued(project_id)
+        except Exception as exc:
+            current_app.logger.warning("Dispatch queued failed: %s", exc)
 
     # Swarm mode: check if this ticket's wave is fully done → auto-queue merge
     if git_mode == "swarm":

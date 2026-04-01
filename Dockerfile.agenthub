@@ -4,7 +4,8 @@
 FROM golang:1.26 AS builder
 WORKDIR /src
 COPY agenthub/ .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /agenthub-server ./cmd/agenthub-server
+RUN CGO_ENABLED=0 GOOS=linux go build -o /agenthub-server ./cmd/agenthub-server && \
+    CGO_ENABLED=0 GOOS=linux go build -o /ah ./cmd/ah
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -13,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /agenthub-server /usr/local/bin/agenthub-server
+COPY --from=builder /ah /usr/local/bin/ah
 
 VOLUME /data
 EXPOSE 8080

@@ -5,7 +5,9 @@ import os
 import re
 import sys
 import json
+import queue as _queue_mod
 import subprocess
+import threading
 import uuid
 from datetime import datetime
 import requests
@@ -296,11 +298,6 @@ class MiddleAgent:
     def _validate_config(self, project_id: uuid.UUID, ticket_id: uuid.UUID, session_id: str) -> bool:
         """Fail fast with a clear log message if required env (Director/Worker URLs and keys) is missing. Returns True if valid."""
         errors = []
-        if ":8000" in (self.director_api_url or ""):
-            self._debug_log(
-                "DIRECTOR_LLM_URL points to port 8000 (old vLLM default). "
-                "Set DIRECTOR_LLM_URL to your Ollama URL (e.g. http://localhost:11434) in coordinator/.env and restart."
-            )
         if not self.director_api_url:
             errors.append("DIRECTOR_LLM_URL is not set — Director LLM has no URL. Set DIRECTOR_PROVIDER to a known provider (openai, anthropic, groq, etc.) or provide DIRECTOR_LLM_URL explicitly.")
         if not self.director_model:
@@ -1653,6 +1650,39 @@ class MiddleAgent:
             "model": model_obj,
         }
 
+        # Open the SSE connection BEFORE firing prompt_async to eliminate the race condition
+        # where session.idle fires before our SSE client has started listening.
+        sse_connected = threading.Event()
+        sse_stop = threading.Event()
+        sse_result_queue: _queue_mod.Queue = _queue_mod.Queue()
+
+        def _sse_listener() -> None:
+            try:
+                result = self._stream_opencode_until_idle(
+                    base=base,
+                    worker_session_id=worker_session_id,
+                    timeout_sec=timeout_sec,
+                    project_id=_pid,
+                    ticket_id=_tid,
+                    session_id=session_id,
+                    project_path=project_path,
+                    connected_event=sse_connected,
+                    stop_event=sse_stop,
+                )
+                sse_result_queue.put(("ok", result))
+            except Exception as exc:  # noqa: BLE001
+                sse_connected.set()  # unblock caller even on error
+                sse_result_queue.put(("err", exc))
+
+        sse_thread = threading.Thread(target=_sse_listener, daemon=True)
+        sse_thread.start()
+
+        # Wait for the SSE connection to be fully established before firing prompt_async.
+        if not sse_connected.wait(timeout=15):
+            self._debug_log("SSE connection did not establish within 15s; proceeding anyway")
+        else:
+            self._debug_log(f"SSE connected for worker_session={worker_session_id}; firing prompt_async")
+
         # Fire the prompt asynchronously so we can stream progress via SSE.
         try:
             r_async = requests.post(
@@ -1663,12 +1693,14 @@ class MiddleAgent:
                 timeout=30,
             )
             # prompt_async returns 204 No Content on success.
+            self._debug_log(f"prompt_async HTTP status={r_async.status_code} for worker_session={worker_session_id}")
             if r_async.status_code not in (200, 201, 204):
                 # Fall back to synchronous /message if prompt_async is not supported.
                 self._debug_log(f"prompt_async returned {r_async.status_code}; falling back to synchronous /message")
                 raise requests.RequestException(f"prompt_async status {r_async.status_code}")
         except requests.RequestException:
             # Fallback: synchronous POST /message (no streaming logs, but still works).
+            sse_stop.set()  # signal the SSE thread to exit when it next wakes
             self._debug_log("prompt_async unavailable; using synchronous POST /message (no intra-turn logs)")
             try:
                 r_sync = requests.post(
@@ -1690,16 +1722,16 @@ class MiddleAgent:
                     msg += f" Response: {e.response.text[:500]}"
                 raise WorkerUnavailableError(msg, cause=e) from e
 
-        # --- Stream SSE /event until session.idle for this worker session ---
-        output = self._stream_opencode_until_idle(
-            base=base,
-            worker_session_id=worker_session_id,
-            timeout_sec=timeout_sec,
-            project_id=_pid,
-            ticket_id=_tid,
-            session_id=session_id,
-            project_path=project_path,
-        )
+        # --- Wait for SSE /event session.idle result from the background listener thread ---
+        try:
+            sse_status, sse_result = sse_result_queue.get(timeout=timeout_sec + 60)
+        except _queue_mod.Empty:
+            self._debug_log("SSE listener thread timed out without result; fetching messages as fallback")
+            output = self._fetch_opencode_last_message(base, worker_session_id)
+        else:
+            if sse_status == "err":
+                raise sse_result
+            output = sse_result
         self._worker_turn_count[session_id] = turn_count + 1
         if session_id and project_path:
             self._trace_log(session_id, f"OpenCode streaming response len={len(output)}", project_path)
@@ -1733,19 +1765,28 @@ class MiddleAgent:
         ticket_id: Optional["uuid.UUID"],
         session_id: str,
         project_path: Optional[str],
+        connected_event: Optional[threading.Event] = None,
+        stop_event: Optional[threading.Event] = None,
     ) -> str:
         """Subscribe to GET /event SSE stream and wait for session.idle for worker_session_id.
         Posts intermediate tool-use log entries while the worker is active.
-        Returns the final text output from the completed assistant message."""
+        Returns the final text output from the completed assistant message.
+
+        connected_event: if provided, set() as soon as the HTTP connection is established.
+        stop_event: if provided and set(), exits the event loop early (used by the fallback path)."""
         import time
 
-        event_url = f"{base}/event"
+        # Use /global/event so we receive bus events from ALL instances regardless of
+        # which working directory the OpenCode session was initialised in.
+        # /event (without the global prefix) is instance-scoped and would miss events
+        # from sessions running in a different directory.
+        event_url = f"{base}/global/event"
         deadline = time.monotonic() + timeout_sec
         last_log_time = time.monotonic()
         log_interval = 15.0  # post a heartbeat log at most once per 15s
         tool_calls_seen: List[str] = []
 
-        self._debug_log(f"SSE stream: waiting for session.idle on worker_session={worker_session_id}")
+        self._debug_log(f"SSE stream: waiting for session.idle on worker_session={worker_session_id} dir={project_path!r}")
         try:
             with requests.get(
                 event_url,
@@ -1754,12 +1795,18 @@ class MiddleAgent:
                 timeout=(10, timeout_sec),  # (connect, read)
             ) as resp:
                 resp.raise_for_status()
+                # Signal caller that the connection is open; it's now safe to fire prompt_async.
+                if connected_event is not None:
+                    connected_event.set()
                 event_type = ""
                 data_lines: List[str] = []
 
                 for raw_line in resp.iter_lines(decode_unicode=True):
                     if time.monotonic() > deadline:
                         self._debug_log(f"SSE stream: timeout after {timeout_sec}s")
+                        break
+                    if stop_event is not None and stop_event.is_set():
+                        self._debug_log("SSE stream: stop requested, exiting early")
                         break
 
                     if raw_line is None:
@@ -1781,8 +1828,12 @@ class MiddleAgent:
                         except json.JSONDecodeError:
                             payload = {}
 
+                        # /global/event wraps events: {"directory": "...", "payload": {...}}
+                        # /event sends flat: {"type": "...", "properties": {...}}
+                        inner = payload.get("payload") if isinstance(payload.get("payload"), dict) else payload
+
                         # All events carry a properties object; session events have sessionID inside.
-                        props = payload.get("properties") or payload
+                        props = inner.get("properties") or inner
                         evt_session_id = (
                             props.get("sessionID")
                             or props.get("session_id")
@@ -1796,7 +1847,9 @@ class MiddleAgent:
                             continue
 
                         # Detect tool-call activity for intermediate logging.
-                        resolved_type = event_type or (payload.get("type") or "")
+                        resolved_type = event_type or (inner.get("type") or "")
+                        if "delta" not in resolved_type:
+                            self._debug_log(f"SSE event: type={resolved_type!r} sess={evt_session_id!r}")
                         if "tool" in resolved_type.lower() or "part" in resolved_type.lower():
                             part = props.get("part") or props
                             tool_name = (
@@ -1826,6 +1879,8 @@ class MiddleAgent:
                         event_type = ""
 
         except requests.RequestException as e:
+            if connected_event is not None:
+                connected_event.set()  # unblock caller even on connect failure
             raise WorkerUnavailableError(
                 f"OpenCode SSE stream error: {e}. Is opencode serve running at {base}?",
                 cause=e,

@@ -36,6 +36,7 @@ import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import BlockIcon from '@mui/icons-material/Block';
 import {
   getKanban,
+  getProject,
   getTickets,
   getGraph,
   createTicket,
@@ -384,6 +385,7 @@ const KanbanPage: React.FC = () => {
   // Go button
   const [goLoading, setGoLoading] = useState(false);
   const [goResult, setGoResult] = useState<string | null>(null);
+  const [gitMode, setGitMode] = useState<string>('structured');
 
   useEffect(() => {
     if (projectId) fetchKanban();
@@ -416,18 +418,28 @@ const KanbanPage: React.FC = () => {
   const fetchKanban = async () => {
     if (!projectId) return;
     try {
-      const [kanbanRes, ticketsRes, notesRes, graphRes] = await Promise.all([
+      const [kanbanRes, ticketsRes, notesRes, graphRes, projectRes] = await Promise.all([
         getKanban(projectId),
         getTickets(projectId),
         getNotes(projectId),
         getGraph(projectId).catch(() => ({ nodes: [], edges: [] })),
+        getProject(projectId),
       ]);
+
+      setGitMode(projectRes.git_mode ?? 'structured');
 
       const apiColumns =
         kanbanRes.columns && kanbanRes.columns.length > 0 ? kanbanRes.columns : DEFAULT_COLUMNS;
-      const ticketColumnIds = [...new Set((ticketsRes as Ticket[]).map((t) => t.column_id))];
-      const columnIds = new Set(apiColumns.map((c) => c.id));
+      // Always ensure all system columns are present (e.g. queued may be missing from older boards)
+      const columnIds = new Set(apiColumns.map((c: KanbanColumn) => c.id));
       const nextColumns = [...apiColumns];
+      for (const col of DEFAULT_COLUMNS) {
+        if (!columnIds.has(col.id)) {
+          columnIds.add(col.id);
+          nextColumns.push(col);
+        }
+      }
+      const ticketColumnIds = [...new Set((ticketsRes as Ticket[]).map((t) => t.column_id))];
       for (const id of ticketColumnIds) {
         if (!columnIds.has(id)) {
           columnIds.add(id);
@@ -736,7 +748,10 @@ const KanbanPage: React.FC = () => {
   };
 
   const inProgressTickets = tickets.filter((t) => t.is_running);
-  const boardColumns = columns.filter((c) => BOARD_COLUMN_IDS.has(c.id));
+  const visibleBoardColumnIds = gitMode === 'swarm'
+    ? new Set(['backlog', 'queued', 'done'])
+    : BOARD_COLUMN_IDS;
+  const boardColumns = columns.filter((c) => visibleBoardColumnIds.has(c.id));
 
   return (
     <Box>
@@ -1505,19 +1520,6 @@ const TicketCard: React.FC<TicketCardProps> = ({
             </Button>
           )}
         </Box>
-        <Tooltip title="Delete ticket">
-          <IconButton
-            size="small"
-            color="error"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete(ticket.id);
-            }}
-            aria-label="Delete ticket"
-          >
-            <DeleteIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
       </CardActions>
     </Card>
   );
