@@ -66,7 +66,7 @@ def create_app():
     # Register blueprints
     from api import api_bp
     from api.embedding_openai import embedding_bp
-    from api.routes import _run_pr_poll_loop
+    from api.services.pr_service import run_pr_poll_loop as _run_pr_poll_loop
     app.register_blueprint(api_bp, url_prefix="/api")
     app.register_blueprint(embedding_bp)
 

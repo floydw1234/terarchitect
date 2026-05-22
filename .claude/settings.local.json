@@ -31,7 +31,14 @@
       "Bash(python3 -m json.tool --no-ensure-ascii)",
       "Bash(docker restart:*)",
       "Bash(docker stop:*)",
-      "Bash(docker compose:*)"
+      "Bash(docker compose:*)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\(''/Users/william.floyd/repos/terarchitect/backend/api/routes.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\(''/Users/william.floyd/repos/terarchitect/backend/main.py''\\).read\\(\\)\\); print\\(''main.py OK''\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\(''/Users/william.floyd/repos/terarchitect/backend/api/routes.py''\\).read\\(\\)\\); print\\(''routes.py OK''\\)\")",
+      "Bash(for f:*)",
+      "Bash(do python3:*)",
+      "Bash(done)",
+      "Bash(python3:*)"
     ]
   }
 }
