@@ -20,7 +20,7 @@ Or with a local LLM + OpenAI embeddings:
     MEMORY_SAVE_DIR=/tmp/terarchitect_memory_test python -m pytest tests/test_memory_hipporag.py -v -s
 
 Or fully local (local LLM + local embedding service):
-  EMBEDDING_SERVICE_URL=http://localhost:11434/v1 EMBEDDING_API_KEY=... \\
+  EMBEDDING_SERVICE_URL=http://localhost:9009/v1 EMBEDDING_API_KEY=... \\
     MEMORY_EMBEDDING_MODEL=nomic-embed-text \\
     MEMORY_LLM_BASE_URL=http://localhost:8000/v1 MEMORY_LLM_MODEL=your-model \\
     MEMORY_SAVE_DIR=/tmp/terarchitect_memory_test python -m pytest tests/test_memory_hipporag.py -v -s

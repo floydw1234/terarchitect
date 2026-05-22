@@ -42,7 +42,7 @@ def get_hipporag_kwargs() -> Dict[str, Any]:
     if not llm_url:
         raise RuntimeError(
             "MEMORY_LLM_BASE_URL is required for project memory. "
-            "Set it to an OpenAI-compatible base URL (including /v1), e.g. http://localhost:11434/v1."
+            "Set it to an OpenAI-compatible base URL (including /v1), e.g. http://localhost:8081/v1."
         )
     if not llm_url.endswith("/v1"):
         llm_url = f"{llm_url}/v1"

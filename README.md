@@ -37,7 +37,7 @@ If you’ve ever wanted “Kanban → PRs” with guardrails, this is it.
 - **Database**: Postgres (with `pgvector/pgvector` image for vector search support)
 - **Frontend**: Node 20 + React (served from Docker Compose)
 - **Coordinator**: Python (host process) + `requests`
-- **Agent image**: Python runner + **OpenCode** (server mode) + **Claude Code** (headless CLI) + Node 20 (for `npm test` in target repos) + Docker daemon (full DinD — each container has its own isolated daemon)
+- **Agent image**: Python runner + **OpenCode** (server mode) + **Claude Code** (headless CLI) + **Codex** (autonomous coding) + Node 20 (for `npm test` in target repos) + Docker daemon (full DinD — each container has its own isolated daemon)
 
 LLM endpoints are configured via env (Director via `DIRECTOR_LLM_URL`, Worker via `WORKER_LLM_URL`, etc., set in coordinator/agent env). See `example.env` and `docs/RUNBOOK.md`.
 
@@ -62,12 +62,13 @@ Details: `backend/README.md` (Memory section).
 
 ## Worker modes + API integration
 
-Terarchitect supports two worker backends, selectable via **WORKER_MODE** in the coordinator/agent environment (`opencode` or `claude-code`):
+Terarchitect supports three worker backends, selectable via **WORKER_MODE** in the coordinator/agent environment (`opencode`, `claude-code`, or `codex`):
 
 | Mode | How it works |
 |------|-------------|
 | **OpenCode** (default) | The agent entrypoint starts `opencode serve` (HTTP API). The Director sends prompts over HTTP (session create → message turns → summarize every 30 turns). Requires `WORKER_LLM_URL` pointing at an OpenAI-compatible LLM. |
 | **Claude Code** | The Director invokes `claude -p "..."` (headless CLI) for each prompt. No LLM URL needed — just set `WORKER_API_KEY` to your Anthropic API key. |
+| **Codex** | The Director invokes `codex exec --json --sandbox workspace-write "..."` for first turns, captures the Codex `thread_id`, and resumes follow-up turns with `codex exec resume <thread_id> --json "..."`. Requires `WORKER_API_KEY` set to an OpenAI API key. |
 
 At the app boundary, the coordinator/agent use a small “worker API” surface (Bearer-authenticated when `TERARCHITECT_WORKER_API_KEY` is set):
 

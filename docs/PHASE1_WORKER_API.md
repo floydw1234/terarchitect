@@ -120,3 +120,31 @@ python -m coordinator
 The agent uses **OpenCode** only. The container entrypoint starts `opencode serve` and sets `OPENCODE_SERVER_URL`. The Director talks to OpenCode via HTTP: `POST /session`, `POST /session/<id>/message`, and `/summarize` every 30 turns.
 
 **Required env (set in coordinator env and forwarded to container):** `WORKER_LLM_URL`, `WORKER_MODEL`, `WORKER_API_KEY`. **Timeout:** `WORKER_TIMEOUT_SEC` (default 3600).
+
+---
+
+## Phase 6: Codex CLI
+
+The agent uses **Codex CLI** (`@openai/codex`) when `WORKER_MODE=codex`. Terarchitect starts sessions with Codex JSONL output and resumes follow-up turns using the captured Codex thread ID.
+
+**Required env:**
+- `WORKER_MODE=codex`
+- `WORKER_API_KEY` — OpenAI API key
+- `WORKER_MODEL` — optional, model name (e.g. `o4`, `gpt-4o`)
+
+**Optional env:**
+- `CODEX_EXTRA_FLAGS` — comma-separated additional flags (e.g. `--max-turns,50`)
+- `WORKER_TIMEOUT_SEC` — max seconds per invocation (default 3600)
+
+**Invocation:**
+```bash
+# First turn
+codex exec --json --sandbox workspace-write "<prompt>"
+
+# Follow-up turns
+codex exec resume <thread_id> --json "<prompt>"
+```
+
+Terarchitect captures `thread_id` from `thread.started` JSONL events and stores it in `_worker_sessions`. Output is parsed from `item.completed` events where `item.type == "agent_message"`; fallback is raw stdout. Codex persists sessions under `~/.codex/sessions/` unless `--ephemeral` is used.
+
+**Dockerfile.agent:** Codex CLI is installed via `npm install -g @openai/codex`.

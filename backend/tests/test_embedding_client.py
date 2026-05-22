@@ -49,12 +49,12 @@ class TestEmbedClient(unittest.TestCase):
     def test_get_client_uses_embedding_service_url(self):
         """When EMBEDDING_SERVICE_URL is set, the OpenAI client is built with that base_url."""
         import utils.embedding_client as ec
-        with patch.dict(os.environ, {"EMBEDDING_SERVICE_URL": "http://localhost:11434/v1", "EMBEDDING_API_KEY": "test-key"}, clear=False):
+        with patch.dict(os.environ, {"EMBEDDING_SERVICE_URL": "http://localhost:9009/v1", "EMBEDDING_API_KEY": "test-key"}, clear=False):
             with patch.object(ec, "OpenAI") as mock_openai_cls:
                 mock_openai_cls.return_value = MagicMock()
                 ec._get_client()
                 call_kwargs = mock_openai_cls.call_args.kwargs
-                self.assertEqual(call_kwargs["base_url"], "http://localhost:11434/v1")
+                self.assertEqual(call_kwargs["base_url"], "http://localhost:9009/v1")
                 self.assertEqual(call_kwargs["api_key"], "test-key")
 
     def test_get_client_no_url_uses_none(self):

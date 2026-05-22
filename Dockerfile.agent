@@ -62,6 +62,8 @@ ENV PATH="/root/.opencode/bin:$PATH"
 
 # Claude Code CLI - used when WORKER_MODE=claude-code (headless -p mode)
 RUN npm install -g @anthropic-ai/claude-code
+# Codex CLI — used when WORKER_MODE=codex (OpenAI's autonomous coding agent)
+RUN npm install -g @openai/codex
 
 WORKDIR /app
 

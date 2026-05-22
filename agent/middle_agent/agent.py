@@ -261,9 +261,9 @@ class MiddleAgent:
         self.director_model = (get_setting_or_env("DIRECTOR_MODEL") or "").strip()
         self.director_api_key = (get_setting_or_env("DIRECTOR_API_KEY") or "").strip() or None
 
-        # Worker mode: "claude-code" (default) or "opencode" (OpenCode CLI with HTTP LLM server).
+        # Worker mode: "claude-code" (default), "codex", or "opencode" (OpenCode CLI with HTTP LLM server).
         raw_worker_mode = (get_setting_or_env("WORKER_MODE") or "claude-code").strip().lower()
-        self.worker_mode: str = raw_worker_mode if raw_worker_mode in ("opencode", "claude-code", "stub") else "claude-code"
+        self.worker_mode: str = raw_worker_mode if raw_worker_mode in ("opencode", "claude-code", "codex", "stub") else "claude-code"
 
         # OpenCode worker: model, LLM URL. No default URL — WORKER_LLM_URL must be configured.
         self.worker_provider_id = "terarchitect-proxy"
@@ -277,6 +277,8 @@ class MiddleAgent:
         # Comma-separated; supports mcp__ tool names e.g. "mcp__brave__search,mcp__github__create_issue"
         raw_extra = (get_setting_or_env("CLAUDE_CODE_EXTRA_TOOLS") or "").strip()
         self.worker_extra_tools: list[str] = [t.strip() for t in raw_extra.split(",") if t.strip()]
+        raw_extra_flags = (get_setting_or_env("CODEX_EXTRA_FLAGS") or "").strip()
+        self.codex_extra_flags: list[str] = [f.strip() for f in raw_extra_flags.split(",") if f.strip()]
 
         # Active ticket context for intra-turn logging (OpenCode streaming). Set per process_ticket call.
         self._active_project_id: Optional[uuid.UUID] = None
@@ -307,6 +309,9 @@ class MiddleAgent:
         elif self.worker_mode == "claude-code":
             if not self.worker_api_key:
                 errors.append("WORKER_API_KEY (Anthropic) is not set — required for Claude Code mode.")
+        elif self.worker_mode == "codex":
+            if not self.worker_api_key:
+                errors.append("WORKER_API_KEY (OpenAI) is not set — required for Codex mode.")
         else:
             if not self.worker_llm_url:
                 errors.append("WORKER_LLM_URL is not set — Worker LLM has no URL to connect to.")
@@ -1569,6 +1574,139 @@ class MiddleAgent:
             self._trace_log(session_id, f"Claude Code response len={len(output)}", project_path)
         return {"output": output, "error": "", "return_code": 0}
 
+    def _call_codex_worker(
+        self,
+        prompt: str,
+        session_id: str,
+        project_path: Optional[str] = None,
+        resume: bool = False,
+    ) -> dict:
+        """Invoke Codex CLI for a single turn.
+
+        Returns: {"output": str, "error": str, "return_code": int}
+        """
+        worker_session_id = self._worker_sessions.get(session_id)
+        should_resume = bool(resume and worker_session_id)
+
+        if should_resume:
+            cmd = ["codex", "exec", "resume", "--json"]
+        else:
+            cmd = ["codex", "exec", "--json", "--sandbox", "workspace-write"]
+
+        if self.worker_model:
+            cmd.extend(["--model", self.worker_model])
+
+        # Codex extra flags from CODEX_EXTRA_FLAGS env var
+        for flag in self.codex_extra_flags:
+            cmd.append(flag)
+
+        if should_resume:
+            cmd.extend([worker_session_id, prompt])
+        else:
+            cmd.append(prompt)
+
+        env = dict(os.environ)
+        if self.worker_api_key and self.worker_api_key != "dummy":
+            env["OPENAI_API_KEY"] = self.worker_api_key
+
+        cwd = project_path if (project_path and os.path.isdir(project_path)) else None
+        self._debug_log(f"Codex CLI: cwd={cwd!r}, resume={worker_session_id!r}")
+
+        _pid = getattr(self, "_active_project_id", None)
+        _tid = getattr(self, "_active_ticket_id", None)
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+        except FileNotFoundError as e:
+            raise WorkerUnavailableError(
+                "Codex CLI not found. Install Codex CLI (npm install -g @openai/codex) in the agent image.",
+                cause=e,
+            ) from e
+
+        stdout_lines: list = []
+        stderr_lines: list = []
+        agent_message_text: str = ""
+
+        import threading
+        import time as _time
+
+        def _read_stderr():
+            for line in proc.stderr:
+                stderr_lines.append(line)
+
+        stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
+        stderr_thread.start()
+
+        deadline = _time.monotonic() + self.worker_timeout_sec
+        last_log_time = _time.monotonic()
+        LOG_INTERVAL = 10  # post an intermediate log every 10 seconds of activity
+
+        for line in proc.stdout:
+            if _time.monotonic() > deadline:
+                proc.kill()
+                raise WorkerUnavailableError(
+                    f"Codex timed out after {self.worker_timeout_sec}s",
+                    cause=None,
+                )
+            stdout_lines.append(line)
+            activity_snippet = line.strip()
+            try:
+                event = json.loads(line)
+                if not isinstance(event, dict):
+                    continue
+                if event.get("type") == "thread.started" and event.get("thread_id"):
+                    self._worker_sessions[session_id] = event["thread_id"]
+                item = event.get("item")
+                if (
+                    event.get("type") == "item.completed"
+                    and isinstance(item, dict)
+                    and item.get("type") == "agent_message"
+                ):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        agent_message_text = text
+                        activity_snippet = text.strip() or activity_snippet
+            except (json.JSONDecodeError, ValueError, TypeError):
+                pass
+            # Post intermediate log roughly every LOG_INTERVAL seconds
+            now = _time.monotonic()
+            if _pid and _tid and session_id and (now - last_log_time) >= LOG_INTERVAL:
+                try:
+                    snippet = activity_snippet[:200]
+                    self._backend.log(
+                        _pid, _tid, session_id,
+                        "worker_activity",
+                        f"Worker active… — {snippet}",
+                    )
+                except Exception:
+                    pass
+                last_log_time = now
+
+        proc.wait()
+        stderr_thread.join(timeout=5)
+
+        if proc.returncode != 0:
+            err_detail = ("".join(stderr_lines) or "".join(stdout_lines) or "")[:1000]
+            raise WorkerUnavailableError(
+                f"Codex exited with code {proc.returncode}: {err_detail}",
+                cause=None,
+            )
+
+        stdout = "".join(stdout_lines)
+        self._worker_turn_count[session_id] = self._worker_turn_count.get(session_id, 0) + 1
+        output = agent_message_text.strip() or stdout.strip()
+        return {
+            "output": output,
+            "error": "".join(stderr_lines).strip(),
+            "return_code": 0,
+        }
     def _send_to_worker(
         self,
         prompt: str,
@@ -1585,6 +1723,8 @@ class MiddleAgent:
             return self._send_to_worker_stub(prompt, project_path, resume)
         if self.worker_mode == "claude-code":
             return self._call_claude_code_worker(prompt, session_id, project_path, resume)
+        if self.worker_mode == "codex":
+            return self._call_codex_worker(prompt, session_id, project_path, resume)
         # Use caller-supplied IDs or fall back to the instance-level active context
         # set by process_ticket / process_ticket_review.
         _pid = project_id or getattr(self, "_active_project_id", None)

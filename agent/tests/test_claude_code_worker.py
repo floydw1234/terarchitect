@@ -21,7 +21,7 @@ def _make_agent(env_overrides: dict | None = None):
 
     env = {
         "WORKER_MODE": "opencode",  # explicit; tests override via env_overrides
-        "DIRECTOR_LLM_URL": "http://localhost:11434",
+        "DIRECTOR_LLM_URL": "http://localhost:8000",
         "DIRECTOR_MODEL": "test-model",
         "WORKER_LLM_URL": "http://localhost:8080/v1",
         "WORKER_MODEL": "gpt-4o",

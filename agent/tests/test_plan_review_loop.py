@@ -21,7 +21,7 @@ def _make_agent():
 
     env = {
         "WORKER_MODE": "claude-code",
-        "DIRECTOR_LLM_URL": "http://localhost:11434",
+        "DIRECTOR_LLM_URL": "http://localhost:8000",
         "DIRECTOR_MODEL": "gpt-4o",
         "DIRECTOR_API_KEY": "sk-test",
         "WORKER_API_KEY": "sk-ant-test",
