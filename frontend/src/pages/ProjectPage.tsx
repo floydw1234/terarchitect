@@ -29,7 +29,7 @@ const ProjectPage: React.FC = () => {
   const [editDescription, setEditDescription] = useState('');
   const [editGithubUrl, setEditGithubUrl] = useState('');
   const [editExecutionMode, setEditExecutionMode] = useState<ProjectExecutionMode>('docker');
-  const [editGitMode, setEditGitMode] = useState<ProjectGitMode>('structured');
+  const [editGitMode, setEditGitMode] = useState<ProjectGitMode>('swarm');
   const [editProjectPath, setEditProjectPath] = useState('');
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteConfirmName, setDeleteConfirmName] = useState('');
@@ -62,7 +62,7 @@ const ProjectPage: React.FC = () => {
       setEditDescription(data.description ?? '');
       setEditGithubUrl(data.github_url ?? '');
       setEditExecutionMode(data.execution_mode ?? 'docker');
-      setEditGitMode(data.git_mode ?? 'structured');
+      setEditGitMode(data.git_mode ?? 'swarm');
       setEditProjectPath(data.project_path ?? '');
       setEditOpen(true);
     } catch (error) {
@@ -329,7 +329,6 @@ const ProjectPage: React.FC = () => {
                 label="Git mode"
                 onChange={(e) => setEditGitMode(e.target.value as ProjectGitMode)}
               >
-                <MenuItem value="structured">Structured — GitHub branches + PR review</MenuItem>
                 <MenuItem value="swarm">Swarm — AgentHub DAG (no PRs)</MenuItem>
               </Select>
             </FormControl>

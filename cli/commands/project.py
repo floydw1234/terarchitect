@@ -26,8 +26,8 @@ def register(subparsers) -> None:
         default="docker",
         help="Agent execution mode (default: docker)",
     )
-    c.add_argument("--git-mode", choices=["structured", "swarm"], default="structured",
-                   help="Git mode (default: structured)")
+    c.add_argument("--git-mode", choices=["swarm"], default="swarm",
+                   help="Git mode (always swarm)")
     c.add_argument("--project-path", metavar="PATH", help="Host path for local execution mode")
     c.add_argument("--existing-repo", action="store_true",
                    help="Skip creating default setup ticket (existing repo)")
@@ -43,7 +43,7 @@ def register(subparsers) -> None:
     u.add_argument("--description", help="New description")
     u.add_argument("--github-url", metavar="URL")
     u.add_argument("--execution-mode", choices=["docker", "local"])
-    u.add_argument("--git-mode", choices=["structured", "swarm"])
+    u.add_argument("--git-mode", choices=["swarm"])
     u.add_argument("--project-path", metavar="PATH")
 
     # delete
@@ -84,7 +84,7 @@ def _cmd_list(args, api: API) -> None:
             "id": short_id(p.get("id", "")),
             "name": p.get("name", ""),
             "mode": p.get("execution_mode", "docker"),
-            "git": p.get("git_mode", "structured"),
+            "git": p.get("git_mode", "swarm"),
             "github": (p.get("github_url") or "")[:40],
         }
         for p in (projects or [])
@@ -109,7 +109,7 @@ def _cmd_create(args, api: API) -> None:
         "description": getattr(args, "description", None) or cfg.get("description"),
         "github_url": getattr(args, "github_url", None) or cfg.get("github_url"),
         "execution_mode": getattr(args, "execution_mode", None) or cfg.get("execution_mode", "docker"),
-        "git_mode": getattr(args, "git_mode", None) or cfg.get("git_mode", "structured"),
+        "git_mode": getattr(args, "git_mode", None) or cfg.get("git_mode", "swarm"),
         "project_path": getattr(args, "project_path", None) or cfg.get("project_path"),
         "is_existing_repo": getattr(args, "existing_repo", False) or cfg.get("is_existing_repo", False),
     }
@@ -144,7 +144,7 @@ def _cmd_create(args, api: API) -> None:
         return
     print(f"Created project: {project['id']}")
     print(f"  Name:     {project.get('name')}")
-    print(f"  Git mode: {project.get('git_mode', 'structured')}")
+    print(f"  Git mode: {project.get('git_mode', 'swarm')}")
     print(f"  Exec:     {project.get('execution_mode', 'docker')}")
     if default_tickets:
         print(f"  Tickets created: {len(default_tickets)}")

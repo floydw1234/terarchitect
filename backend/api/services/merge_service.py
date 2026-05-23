@@ -1,7 +1,14 @@
-"""Merge-run and wave-computation helpers (swarm mode)."""
+"""Ship run and wave-computation helpers (swarm mode)."""
 from flask import current_app
 
-from models.db import db, Ticket, MergeRun
+from models.db import db, Ticket, ShipRun, TicketAttempt
+from .attempt_service import SATISFIED_STATUSES as _SATISFIED_STATUSES
+
+
+def _has_accepted_attempt(ticket_id) -> bool:
+    return TicketAttempt.query.filter_by(ticket_id=ticket_id).filter(
+        TicketAttempt.status.in_(_SATISFIED_STATUSES)
+    ).first() is not None
 
 
 def compute_waves(tickets: list) -> dict:
@@ -21,58 +28,65 @@ def compute_waves(tickets: list) -> dict:
         for tid, deps in id_to_deps.items():
             if tid in waves:
                 continue
-            # Only wait on deps that exist in this project; ignore unknown refs
             local_deps = deps & known_ids
             if any(d not in waves for d in local_deps):
                 continue
             w = (max(waves[d] for d in local_deps) + 1) if local_deps else 0
             waves[tid] = w
             changed = True
-    # Fallback: circular or unresolved → wave 0
     for tid in id_to_deps:
         waves.setdefault(tid, 0)
     return waves
 
 
 def maybe_trigger_wave_merge(project_id, completed_ticket_id) -> None:
-    """Called after a swarm ticket reaches `done`.  If every ticket in that
-    wave is done AND no merge run exists yet for the wave, enqueue one."""
+    """Called after a swarm ticket reaches `done`. If every ticket in that
+    wave has an accepted attempt AND no ship run exists yet, enqueue one."""
     tickets = Ticket.query.filter_by(project_id=project_id).all()
     if not tickets:
         return
     waves = compute_waves(tickets)
     my_wave = waves.get(str(completed_ticket_id), 0)
 
-    # All tickets in this wave must be done
     wave_tickets = [t for t in tickets if waves.get(str(t.id), 0) == my_wave]
-    if not all(t.column_id == "done" for t in wave_tickets):
+    if not all(_has_accepted_attempt(t.id) for t in wave_tickets):
         return
 
-    # Don't double-trigger
-    existing = MergeRun.query.filter_by(
+    existing = ShipRun.query.filter_by(
         project_id=project_id, wave_num=my_wave,
-    ).filter(MergeRun.status.in_(["queued", "running", "done"])).first()
+    ).filter(ShipRun.status.in_(["queued", "running", "ready_to_ship", "shipping", "shipped", "done"])).first()
     if existing:
         return
 
-    run = MergeRun(project_id=str(project_id), wave_num=my_wave, status="queued")
+    run = ShipRun(project_id=str(project_id), wave_num=my_wave, status="queued")
     db.session.add(run)
     db.session.commit()
     current_app.logger.info(
-        "Wave %d complete for project %s — merge run %s queued",
+        "Wave %d complete for project %s — ship run %s queued",
         my_wave, project_id, run.id,
     )
 
 
-def merge_run_to_json(run: MergeRun) -> dict:
+def ship_run_to_json(run: ShipRun) -> dict:
     return {
         "id": str(run.id),
         "project_id": str(run.project_id),
         "wave_num": run.wave_num,
         "status": run.status,
-        "commit_hash": run.commit_hash,
-        "pr_url": run.pr_url,
         "error": run.error,
+        "release_branch": run.release_branch,
+        "base_main_hash": run.base_main_hash,
+        "composed_commit_hash": run.composed_commit_hash,
+        "changed_files": run.changed_files or [],
+        "summary": run.summary,
+        "test_status": run.test_status,
+        "test_output": run.test_output,
+        "release_pr_url": run.release_pr_url,
+        "release_pr_number": run.release_pr_number,
+        "shipped_at": run.shipped_at.isoformat() if run.shipped_at else None,
+        "shipped_commit_hash": run.shipped_commit_hash,
         "created_at": run.created_at.isoformat() if run.created_at else None,
         "updated_at": run.updated_at.isoformat() if run.updated_at else None,
     }
+
+

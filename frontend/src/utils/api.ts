@@ -18,6 +18,16 @@ function resolveApiUrl(): string {
 
 export const API_URL = resolveApiUrl();
 
+// ---------------------------------------------------------------------------
+// AgentHub channel naming (mirrors backend channel_service.py)
+// ---------------------------------------------------------------------------
+
+/** Returns the AgentHub channel name for a ticket (ticket-{uuid_no_dashes[:24]}). */
+export function ticketChannelName(ticketId: string): string {
+  const short = ticketId.replace(/-/g, '').slice(0, 24);
+  return `ticket-${short}`;
+}
+
 function resolveAgenthubUrl(): string {
   if (process.env.REACT_APP_AGENTHUB_URL) {
     return process.env.REACT_APP_AGENTHUB_URL.replace(/\/$/, '');
@@ -31,7 +41,7 @@ function resolveAgenthubUrl(): string {
 export const AGENTHUB_URL = resolveAgenthubUrl();
 
 export type ProjectExecutionMode = 'docker' | 'local';
-export type ProjectGitMode = 'structured' | 'swarm';
+export type ProjectGitMode = 'swarm';
 
 export interface Project {
   id: string;
@@ -41,8 +51,12 @@ export interface Project {
   /** When execution_mode is "local", agent runs on host at this path. */
   project_path?: string | null;
   execution_mode?: ProjectExecutionMode;
-  /** "structured" = GitHub branches + PRs. "swarm" = agenthub DAG. */
   git_mode?: ProjectGitMode;
+  /** Last shipped main commit hash. All new agent work builds on top of this. */
+  shipped_frontier?: string | null;
+  shipped_frontier_updated_at?: string | null;
+  /** Set on project creation when frontier could not be auto-detected. */
+  frontier_warning?: string | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -52,6 +66,27 @@ export interface KanbanColumn {
   title: string;
   order: number;
 }
+
+export interface LatestAttempt {
+  id: string;
+  short_commit_hash: string | null;
+  status: string;
+  wave_num: number;
+  attempt_num: number;
+  summary: string | null;
+  test_status: string | null;
+  stale: boolean | null;
+}
+
+export type IntentStatus = 'draft' | 'ready' | 'active' | 'blocked' | 'archived';
+export type RiskLevel = 'low' | 'medium' | 'high';
+
+/** Computed display state derived from intent + execution data. */
+export type DisplayState =
+  | 'draft' | 'blocked' | 'queued' | 'running'
+  | 'attempt_ready' | 'accepted' | 'stale'
+  | 'composed' | 'release_pr_open' | 'shipped'
+  | 'failed' | 'archived';
 
 export interface Ticket {
   id: string;
@@ -66,11 +101,80 @@ export interface Ticket {
   failed_count?: number;
   depends_on_ticket_ids?: string[];
   is_running?: boolean;
-  running_job_kind?: string | null;
   created_at?: string;
   updated_at?: string;
-  pr_url?: string | null;
-  pr_number?: number | null;
+  latest_attempt?: LatestAttempt | null;
+  /** Most recent accepted (or better) attempt — may differ from latest_attempt if agent retried and failed. */
+  accepted_attempt?: LatestAttempt | null;
+  // Intent fields
+  intent_status: IntentStatus;
+  display_state: DisplayState;
+  rationale?: string | null;
+  acceptance_criteria?: string | null;
+  constraints?: string | null;
+  value_score?: number | null;
+  risk_level?: RiskLevel | null;
+  created_source?: string | null;
+}
+
+export interface TicketAttempt {
+  id: string;
+  project_id: string;
+  ticket_id: string;
+  agenthub_commit_hash: string;
+  short_commit_hash: string | null;
+  base_hash: string | null;
+  wave_num: number;
+  attempt_num: number;
+  agent_id: string | null;
+  status: string;
+  summary: string | null;
+  validation_error: string | null;
+  test_status: string | null;
+  test_output?: string | null;
+  stale: boolean | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ShipRun {
+  id: string;
+  project_id: string;
+  wave_num: number;
+  status: string;
+  error: string | null;
+  release_branch: string | null;
+  base_main_hash: string | null;
+  composed_commit_hash: string | null;
+  changed_files: string[];
+  summary: string | null;
+  test_status: string | null;
+  test_output: string | null;
+  release_pr_url: string | null;
+  release_pr_number: number | null;
+  shipped_at: string | null;
+  shipped_commit_hash: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface WaveSummary {
+  wave_num: number;
+  ticket_count: number;
+  accepted_count: number;
+  all_done: boolean;
+  ship_run: ShipRun | null;
+}
+
+export interface WaveDetail {
+  wave_num: number;
+  tickets: Ticket[];
+  accepted_attempts: TicketAttempt[];
+  ship_run: ShipRun | null;
+  can_compose: boolean;
+  all_done: boolean;
+  shipped_frontier: string | null;
+  stale_count: number;
 }
 
 async function checkResponse<T = unknown>(response: Response): Promise<T> {
@@ -98,6 +202,7 @@ export async function createProject(data: {
   description?: string;
   github_url?: string;
   execution_mode?: ProjectExecutionMode;
+  git_mode?: ProjectGitMode;
   project_path?: string;
   /** If true, project is from an existing repo; default "Project setup" ticket is not created. */
   is_existing_repo?: boolean;
@@ -219,6 +324,12 @@ export async function createTicket(projectId: string, data: {
   priority?: string;
   status?: string;
   depends_on_ticket_ids?: string[];
+  intent_status?: IntentStatus;
+  rationale?: string;
+  acceptance_criteria?: string;
+  constraints?: string;
+  value_score?: number;
+  risk_level?: RiskLevel;
 }): Promise<Ticket> {
   const response = await fetch(`${API_URL}/api/projects/${projectId}/tickets`, {
     method: 'POST',
@@ -237,6 +348,12 @@ export async function updateTicket(projectId: string, ticketId: string, data: {
   associated_node_ids?: string[];
   associated_edge_ids?: string[];
   depends_on_ticket_ids?: string[];
+  intent_status?: IntentStatus;
+  rationale?: string;
+  acceptance_criteria?: string;
+  constraints?: string;
+  value_score?: number;
+  risk_level?: RiskLevel;
 }): Promise<Ticket> {
   const response = await fetch(`${API_URL}/api/projects/${projectId}/tickets/${ticketId}`, {
     method: 'PATCH',
@@ -324,78 +441,252 @@ export async function deleteNote(projectId: string, noteId: string): Promise<voi
   await checkResponse(response);
 }
 
-export interface ReviewCommit {
-  sha: string;
+// ---------------------------------------------------------------------------
+// Ship Room API
+// ---------------------------------------------------------------------------
+
+export async function getShipWaves(projectId: string): Promise<WaveSummary[]> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/waves`);
+  return checkResponse<WaveSummary[]>(response);
+}
+
+export async function getShipWaveDetail(projectId: string, waveNum: number): Promise<WaveDetail> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/waves/${waveNum}`);
+  return checkResponse<WaveDetail>(response);
+}
+
+export async function composeWave(projectId: string, waveNum: number): Promise<ShipRun> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/waves/${waveNum}/compose`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  return checkResponse<ShipRun>(response);
+}
+
+export async function shipWave(projectId: string, waveNum: number): Promise<ShipRun> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/waves/${waveNum}/ship`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  return checkResponse<ShipRun>(response);
+}
+
+export async function sendWaveFeedback(
+  projectId: string,
+  waveNum: number,
+  message: string,
+  targetTicketId?: string,
+): Promise<void> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/waves/${waveNum}/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, target_ticket_id: targetTicketId }),
+  });
+  await checkResponse(response);
+}
+
+export async function getTicketAttempts(
+  projectId: string,
+  ticketId: string,
+): Promise<TicketAttempt[]> {
+  const response = await fetch(
+    `${API_URL}/api/projects/${projectId}/tickets/${ticketId}/attempts`,
+  );
+  return checkResponse<TicketAttempt[]>(response);
+}
+
+export async function acceptAttempt(
+  projectId: string,
+  ticketId: string,
+  attemptId: string,
+): Promise<TicketAttempt> {
+  const response = await fetch(
+    `${API_URL}/api/projects/${projectId}/tickets/${ticketId}/attempts/${attemptId}/accept`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+  );
+  return checkResponse<TicketAttempt>(response);
+}
+
+/** An event posted to an AgentHub channel — execution ledger entry. */
+export interface AgentHubEvent {
+  id: number;
+  channel_id: number;
+  agent_id: string;
+  parent_id: number | null;
+  content: string;
+  created_at: string;
+  /** Channel the event was posted to */
+  _channel: string;
+  /** 'wave' = wave-level event, 'ticket' = per-ticket event */
+  _channel_type: 'wave' | 'ticket';
+  /** Title of the ticket this event belongs to (ticket events only) */
+  _ticket_title?: string;
+}
+
+/** @deprecated Use AgentHubEvent */
+export type TimelinePost = AgentHubEvent;
+
+/** Current AgentHub root state for a project. */
+export interface ProjectFrontier {
+  shipped_frontier: string | null;
+  shipped_frontier_updated_at: string | null;
+  frontier_warning?: string | null;
+}
+
+export async function getWaveTimeline(projectId: string, waveNum: number): Promise<AgentHubEvent[]> {
+  const response = await fetch(
+    `${API_URL}/api/projects/${projectId}/ship/waves/${waveNum}/timeline`,
+  );
+  return checkResponse<AgentHubEvent[]>(response);
+}
+
+// ---------------------------------------------------------------------------
+// Composite Workspace API (Phase 9)
+// ---------------------------------------------------------------------------
+
+export type WorkspaceStatus =
+  | 'draft' | 'composing' | 'conflicted' | 'test_failed'
+  | 'preview_ready' | 'blessed' | 'snapshot_candidate' | 'discarded';
+
+export interface CompositeWorkspace {
+  id: string;
+  project_id: string;
+  base_root_hash: string | null;
+  selected_attempt_ids: string[];
+  selected_leaf_hashes: string[];
+  status: WorkspaceStatus;
+  composed_commit_hash: string | null;
+  short_composed_hash: string | null;
+  conflict_summary: string | null;
+  changed_files: string[];
+  summary: string | null;
+  test_status: string | null;
+  test_output?: string | null;
+  preview_url: string | null;
+  created_by: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface CompatibilityIssue {
+  attempt_id: string;
+  level: 'error' | 'warning';
   message: string;
 }
 
-export interface ReviewTestFile {
-  path: string;
-  test_names: string[];
+export interface CompatibilityReport {
+  ok: boolean;
+  issues: CompatibilityIssue[];
+  selected_attempts: {
+    attempt_id: string;
+    ticket_id: string;
+    commit_hash: string | null;
+    base_hash: string | null;
+    wave_num: number;
+    status: string;
+    summary: string | null;
+    stale: boolean | null;
+  }[];
+  dep_order: string[];
 }
 
-export interface ReviewComment {
-  author: string;
-  body: string;
-  created_at: string | null;
+export async function getWorkspaces(projectId: string): Promise<CompositeWorkspace[]> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/workspaces`);
+  return checkResponse<CompositeWorkspace[]>(response);
 }
 
-export interface ReviewResponse {
-  summary: string;
-  commits: ReviewCommit[];
-  test_files: ReviewTestFile[];
-  tests_description?: string;
-  comments: ReviewComment[];
-  pr_url: string;
-  pr_number: number;
-  pr_state: string;
-  merged: boolean;
-}
-
-export async function getReview(projectId: string, ticketId: string): Promise<ReviewResponse> {
-  const response = await fetch(`${API_URL}/api/projects/${projectId}/tickets/${ticketId}/review`);
-  return checkResponse<ReviewResponse>(response);
-}
-
-export interface ReviewListEntry {
-  id: string;
-  title: string;
-  pr_url: string | null;
-  pr_number: number | null;
-  pr_state: string;
-  merged: boolean;
-}
-
-export async function getReviewList(projectId: string): Promise<ReviewListEntry[]> {
-  const response = await fetch(`${API_URL}/api/projects/${projectId}/review`);
-  return checkResponse<ReviewListEntry[]>(response);
-}
-
-export async function postReviewComment(projectId: string, ticketId: string, body: string): Promise<void> {
-  const response = await fetch(`${API_URL}/api/projects/${projectId}/tickets/${ticketId}/review/comment`, {
+export async function createWorkspace(
+  projectId: string,
+  attemptIds: string[],
+  createdBy?: string,
+): Promise<CompositeWorkspace> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/workspaces`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ body }),
+    body: JSON.stringify({ attempt_ids: attemptIds, created_by: createdBy }),
   });
-  await checkResponse(response);
+  return checkResponse<CompositeWorkspace>(response);
 }
 
-export async function approveReview(projectId: string, ticketId: string, body?: string): Promise<void> {
-  const response = await fetch(`${API_URL}/api/projects/${projectId}/tickets/${ticketId}/review/approve`, {
+export async function analyzeCompatibility(
+  projectId: string,
+  attemptIds: string[],
+): Promise<CompatibilityReport> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/workspaces/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body != null ? { body } : {}),
+    body: JSON.stringify({ attempt_ids: attemptIds }),
   });
-  await checkResponse(response);
+  return checkResponse<CompatibilityReport>(response);
 }
 
-export async function mergeReview(projectId: string, ticketId: string, mergeMethod?: 'merge' | 'squash' | 'rebase'): Promise<void> {
-  const response = await fetch(`${API_URL}/api/projects/${projectId}/tickets/${ticketId}/review/merge`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(mergeMethod ? { merge_method: mergeMethod } : {}),
-  });
-  await checkResponse(response);
+export async function getWorkspace(projectId: string, wsId: string): Promise<CompositeWorkspace> {
+  const response = await fetch(
+    `${API_URL}/api/projects/${projectId}/workspaces/${wsId}?include_test_output=true`,
+  );
+  return checkResponse<CompositeWorkspace>(response);
+}
+
+export async function composeWorkspace(projectId: string, wsId: string): Promise<CompositeWorkspace> {
+  const response = await fetch(
+    `${API_URL}/api/projects/${projectId}/workspaces/${wsId}/compose`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+  );
+  return checkResponse<CompositeWorkspace>(response);
+}
+
+export async function blessWorkspace(projectId: string, wsId: string): Promise<CompositeWorkspace> {
+  const response = await fetch(
+    `${API_URL}/api/projects/${projectId}/workspaces/${wsId}/bless`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+  );
+  return checkResponse<CompositeWorkspace>(response);
+}
+
+export async function snapshotWorkspace(projectId: string, wsId: string): Promise<CompositeWorkspace> {
+  const response = await fetch(
+    `${API_URL}/api/projects/${projectId}/workspaces/${wsId}/snapshot`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+  );
+  return checkResponse<{ workspace: CompositeWorkspace }>(response).then(r => r.workspace);
+}
+
+export async function promoteWorkspace(
+  projectId: string,
+  wsId: string,
+): Promise<{ workspace: CompositeWorkspace; ship_run: ShipRun }> {
+  const response = await fetch(
+    `${API_URL}/api/projects/${projectId}/workspaces/${wsId}/promote`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+  );
+  return checkResponse(response);
+}
+
+export async function discardWorkspace(projectId: string, wsId: string): Promise<CompositeWorkspace> {
+  const response = await fetch(
+    `${API_URL}/api/projects/${projectId}/workspaces/${wsId}/discard`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+  );
+  return checkResponse<CompositeWorkspace>(response);
+}
+
+export async function rejectAttempt(
+  projectId: string,
+  ticketId: string,
+  attemptId: string,
+  reason?: string,
+): Promise<TicketAttempt> {
+  const response = await fetch(
+    `${API_URL}/api/projects/${projectId}/tickets/${ticketId}/attempts/${attemptId}/reject`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    },
+  );
+  return checkResponse<TicketAttempt>(response);
 }
 
 /** Execution readiness: required env vars set so a ticket can be run. */
@@ -407,6 +698,9 @@ export interface ReadyMissing {
 export interface ReadyResponse {
   ready: boolean;
   missing: ReadyMissing[];
+  features?: {
+    composite_workspace?: boolean;
+  };
 }
 
 export async function getExecutionReady(): Promise<ReadyResponse> {

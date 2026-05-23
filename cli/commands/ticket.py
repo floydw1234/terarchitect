@@ -28,11 +28,19 @@ def register(subparsers) -> None:
                     help="JSON/YAML file with a ticket object or array of tickets")
     cr.add_argument("--title", "-t", help="Ticket title")
     cr.add_argument("--description", "-d", help="Ticket description")
+    cr.add_argument("--rationale", help="Why this intent matters")
+    cr.add_argument("--acceptance-criteria", dest="acceptance_criteria",
+                    help="What done looks like")
+    cr.add_argument("--constraints", help="Limits and non-goals for the agent")
     cr.add_argument("--column", default="backlog",
                     help="Column ID (default: backlog)")
     cr.add_argument("--priority", default="medium",
                     choices=["low", "medium", "high"],
                     help="Priority (default: medium)")
+    cr.add_argument("--intent-status", dest="intent_status",
+                    choices=["draft", "ready", "active", "blocked", "archived"],
+                    default="ready",
+                    help="Intent status (default: ready)")
 
     # show
     sh = sub.add_parser("show", help="Show ticket details")
@@ -45,8 +53,13 @@ def register(subparsers) -> None:
     up.add_argument("ticket_id")
     up.add_argument("--title")
     up.add_argument("--description")
+    up.add_argument("--rationale")
+    up.add_argument("--acceptance-criteria", dest="acceptance_criteria")
+    up.add_argument("--constraints")
     up.add_argument("--column", dest="column_id")
     up.add_argument("--priority", choices=["low", "medium", "high"])
+    up.add_argument("--intent-status", dest="intent_status",
+                    choices=["draft", "ready", "active", "blocked", "archived"])
     up.add_argument("--status")
 
     # run
@@ -104,18 +117,20 @@ def _cmd_list(args, api: API) -> None:
         {
             "id": short_id(t.get("id", "")),
             "title": t.get("title", ""),
-            "column": t.get("column_id", ""),
+            "state": t.get("display_state") or t.get("column_id", ""),
+            "intent": t.get("intent_status", "ready"),
             "priority": t.get("priority", ""),
-            "running": "yes" if t.get("is_running") else "",
+            "attempt": (t.get("latest_attempt") or {}).get("short_commit_hash") or "",
         }
         for t in (tickets or [])
     ]
     print_table(rows, [
         ("id", "ID"),
         ("title", "TITLE"),
-        ("column", "COLUMN"),
+        ("state", "STATE"),
+        ("intent", "INTENT"),
         ("priority", "PRIORITY"),
-        ("running", "RUNNING"),
+        ("attempt", "LATEST"),
     ])
 
 
@@ -127,8 +142,12 @@ def _cmd_create(args, api: API) -> None:
         ticket_defs = [{
             "title": args.title,
             "description": getattr(args, "description", None),
+            "rationale": getattr(args, "rationale", None),
+            "acceptance_criteria": getattr(args, "acceptance_criteria", None),
+            "constraints": getattr(args, "constraints", None),
             "column_id": args.column,
             "priority": args.priority,
+            "intent_status": getattr(args, "intent_status", "ready"),
             "status": "todo",
         }]
     else:
@@ -145,6 +164,11 @@ def _cmd_create(args, api: API) -> None:
             "associated_node_ids": td.get("associated_node_ids", []),
             "associated_edge_ids": td.get("associated_edge_ids", []),
             "depends_on_ticket_ids": td.get("depends_on_ticket_ids", []),
+            # Intent fields
+            "intent_status": td.get("intent_status", "ready"),
+            "rationale": td.get("rationale"),
+            "acceptance_criteria": td.get("acceptance_criteria"),
+            "constraints": td.get("constraints"),
         }
         try:
             ticket = api.post(f"/api/projects/{args.project_id}/tickets", payload)
@@ -184,6 +208,14 @@ def _cmd_update(args, api: API) -> None:
         payload["priority"] = args.priority
     if getattr(args, "status", None):
         payload["status"] = args.status
+    if getattr(args, "intent_status", None):
+        payload["intent_status"] = args.intent_status
+    if getattr(args, "rationale", None):
+        payload["rationale"] = args.rationale
+    if getattr(args, "acceptance_criteria", None):
+        payload["acceptance_criteria"] = args.acceptance_criteria
+    if getattr(args, "constraints", None):
+        payload["constraints"] = args.constraints
     if not payload:
         die("No fields to update.")
     try:

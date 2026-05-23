@@ -1,25 +1,26 @@
 """
-Git backend for terarchitect agent.
-
-Reads TERARCHITECT_MODE from env:
-  "structured" (default) — GitHub branches + PRs (existing behaviour)
-  "swarm"                — agenthub DAG + message board (no PRs)
-
-In swarm mode all agents share a single named branch (AGENTHUB_BRANCH, default "swarm").
-Each agent resets that branch to the latest agenthub leaf before working, then commits
-and pushes their changes back as a new DAG node — no direct commits to main/master.
+Git backend for terarchitect agent (swarm mode only).
 
 Public API used by agent.py:
   is_swarm()                           → bool
   get_peer_context(ticket_id) → str    → injected into Director prompt before work starts
-  prepare_work(project_path)           → fetches latest agenthub leaf, checks out swarm branch
+  prepare_work(project_path)           → fetches BASE_HASH bundle from AgentHub and checks it out
   swarm_publish(project_path, commit_message, ticket_id, summary) → commit_hash | None
+
+Env vars consumed:
+  TERARCHITECT_MODE      — always "swarm"
+  BASE_HASH              — AgentHub commit hash to build on (set by coordinator)
+  AGENTHUB_ROOT_HASH     — last shipped frontier (informational; used for logging)
+  TICKET_ID              — used to name the local working branch
+  PROJECT_ID             — used for logging
+  AGENTHUB_URL           — AgentHub server URL
+  AGENTHUB_API_KEY       — AgentHub auth key
 """
 
 import os
 import subprocess
 import tempfile
-from typing import Optional
+from typing import Any, Optional
 
 import requests
 
@@ -34,12 +35,7 @@ def _ticket_channel(ticket_id: str) -> str:
 
 
 def is_swarm() -> bool:
-    return (os.environ.get("TERARCHITECT_MODE") or "structured").strip().lower() == "swarm"
-
-
-def _swarm_branch() -> str:
-    """Name of the shared git branch all swarm agents work on (default: 'swarm')."""
-    return (os.environ.get("AGENTHUB_BRANCH") or "swarm").strip() or "swarm"
+    return (os.environ.get("TERARCHITECT_MODE") or "swarm").strip().lower() == "swarm"
 
 
 def _ah_url() -> str:
@@ -54,7 +50,7 @@ def _ah_headers() -> dict:
     return {"Authorization": f"Bearer {_ah_key()}"}
 
 
-def _ah_get(path: str) -> Optional[any]:
+def _ah_get(path: str) -> Optional[Any]:
     url = _ah_url()
     if not url:
         return None
@@ -85,8 +81,8 @@ def _ah_post(path: str, body: dict) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 def get_peer_context(ticket_id: str) -> str:
-    """Return formatted agenthub context string. Empty string in structured mode or if unreachable."""
-    if not is_swarm() or not _ah_url():
+    """Return formatted agenthub context string. Empty string if AgentHub unreachable."""
+    if not _ah_url():
         return ""
 
     lines = ["## AgentHub — peer context\n"]
@@ -119,56 +115,48 @@ def get_peer_context(ticket_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 def prepare_work(project_path: str) -> None:
-    """Set up the swarm branch before the agent starts work.
+    """Set up the working base before the agent starts.
 
-    Priority:
-      1. origin/swarm — the authoritative merged state (carries all previous wave merges).
-         Fetch and check out this first so the agent always builds on the full history.
-      2. Latest agenthub leaf — peer work from other agents in the *current* wave that
-         has not yet been merged.  Applied on top of origin/swarm if it is a descendant
-         of origin/swarm (i.e. it is genuinely ahead, not a diverging branch).
+    Reads BASE_HASH from env (set by coordinator from compute_base_hash).
+    Fetches that commit bundle from AgentHub and checks it out as the
+    local working branch. No origin/swarm branch needed.
 
-    Non-fatal throughout: if anything fails the agent continues from origin clone.
+    If BASE_HASH is not set, the agent works from the clone's default branch (main).
+    Non-fatal throughout: on any failure the agent continues from the clone base.
     """
     if not is_swarm():
         return
 
-    branch = _swarm_branch()
+    base_hash = (os.environ.get("BASE_HASH") or "").strip()
+    ticket_id = (os.environ.get("TICKET_ID") or "").strip()
+    project_id = (os.environ.get("PROJECT_ID") or "").strip()
+    root_hash = (os.environ.get("AGENTHUB_ROOT_HASH") or "").strip()
 
-    # --- Step 1: fetch and check out origin/swarm ---
-    fetch_r = subprocess.run(
-        ["git", "fetch", "origin", branch],
-        cwd=project_path, capture_output=True, text=True, timeout=60,
+    print(
+        f"[git_backend] prepare_work project={project_id or '?'} ticket={ticket_id or '?'} "
+        f"base={base_hash[:12] if base_hash else 'none'} "
+        f"root={root_hash[:12] if root_hash else 'none'}",
+        flush=True,
     )
-    if fetch_r.returncode == 0:
-        subprocess.run(
-            ["git", "checkout", "-B", branch, f"origin/{branch}"],
-            cwd=project_path, capture_output=True, timeout=10,
-        )
-    # If origin/swarm doesn't exist yet (first wave), the clone already has origin/main;
-    # fall through and let the agenthub leaf step (or the plain clone) provide the base.
 
-    # --- Step 2: overlay latest agenthub leaf (same-wave peer work) ---
+    if not base_hash:
+        print("[git_backend] No BASE_HASH set — working from clone base (main)", flush=True)
+        return
+
     url = _ah_url()
     if not url:
-        return
-
-    leaves = _ah_get("/api/git/leaves") or []
-    if not leaves:
-        return
-
-    latest_hash = (leaves[0].get("hash") or "").strip()
-    if not latest_hash:
+        print("[git_backend] No AGENTHUB_URL set — cannot fetch base bundle", flush=True)
         return
 
     try:
         resp = requests.get(
-            f"{url}/api/git/fetch/{latest_hash}",
+            f"{url}/api/git/fetch/{base_hash}",
             headers=_ah_headers(),
             timeout=60,
             stream=True,
         )
         if not resp.ok:
+            print(f"[git_backend] AgentHub fetch {base_hash[:12]} → {resp.status_code}", flush=True)
             return
 
         with tempfile.NamedTemporaryFile(suffix=".bundle", delete=False) as f:
@@ -182,28 +170,25 @@ def prepare_work(project_path: str) -> None:
                 cwd=project_path, capture_output=True, text=True, timeout=60,
             )
             if r.returncode != 0:
+                print(f"[git_backend] git bundle unbundle failed: {r.stderr[:300]}", flush=True)
                 return
 
-            # Only move to the leaf if it is a descendant of our current HEAD
-            # (i.e. it is ahead of origin/swarm, not a diverging branch from a
-            # different wave).  This prevents agents from accidentally working off
-            # stale wave-N-1 agenthub commits when wave-N has just started.
-            ancestor_check = subprocess.run(
-                ["git", "merge-base", "--is-ancestor", "HEAD", latest_hash],
-                cwd=project_path, capture_output=True, timeout=10,
+            branch = f"ticket-{ticket_id}" if ticket_id else "swarm-work"
+            checkout_r = subprocess.run(
+                ["git", "checkout", "-B", branch, base_hash],
+                cwd=project_path, capture_output=True, text=True, timeout=10,
             )
-            if ancestor_check.returncode == 0:
-                subprocess.run(
-                    ["git", "checkout", "-B", branch, latest_hash],
-                    cwd=project_path, capture_output=True, timeout=10,
-                )
+            if checkout_r.returncode == 0:
+                print(f"[git_backend] Checked out base {base_hash[:12]} as branch {branch}", flush=True)
+            else:
+                print(f"[git_backend] Checkout failed: {checkout_r.stderr[:200]}", flush=True)
         finally:
             try:
                 os.unlink(bundle_path)
             except OSError:
                 pass
-    except Exception:
-        pass  # Non-fatal; agent continues from origin/swarm or origin clone
+    except Exception as exc:
+        print(f"[git_backend] prepare_work error (non-fatal): {exc}", flush=True)
 
 
 # ---------------------------------------------------------------------------

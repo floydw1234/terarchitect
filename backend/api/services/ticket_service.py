@@ -1,10 +1,97 @@
-"""Ticket domain helpers: serialisation, enqueueing, and dispatch."""
+"""Ticket domain helpers: serialisation, enqueueing, dispatch, and display state."""
+from typing import Optional
+
 from flask import current_app
 
-from models.db import db, Project, Ticket, AgentJob
+from models.db import db, Project, Ticket, AgentJob, TicketAttempt
+from .attempt_service import SATISFIED_STATUSES as _SATISFIED_STATUSES
+from .channel_service import ticket_channel as _ticket_channel, post_event as _post_event
 
 
-def ticket_to_json(t):
+def _has_accepted_attempt(ticket_id) -> bool:
+    """True if the ticket has an accepted (or better) attempt."""
+    return TicketAttempt.query.filter_by(ticket_id=ticket_id).filter(
+        TicketAttempt.status.in_(_SATISFIED_STATUSES)
+    ).first() is not None
+
+
+def compute_ticket_display_state(
+    ticket: Ticket,
+    *,
+    latest_attempt: Optional[TicketAttempt] = None,
+    accepted_attempt: Optional[TicketAttempt] = None,
+    project: Optional[Project] = None,
+    satisfied_dep_ids: Optional[set] = None,
+) -> str:
+    """Derive a single display state from intent + execution data.
+
+    Precedence (highest first):
+      archived / draft                       → intent is terminal
+      accepted attempt path (shipped → ...)  → execution is authoritative
+      latest attempt (attempt_ready, failed) → agent just finished or failed
+      running job                            → currently executing
+      blocked by deps (no accepted attempt)  → waiting on other work
+      queued / backlog                       → waiting for dispatch
+    """
+    intent_status = getattr(ticket, "intent_status", None) or "ready"
+
+    if intent_status == "archived":
+        return "archived"
+    if intent_status == "draft":
+        return "draft"
+    if intent_status == "blocked":
+        return "blocked"
+
+    # Accepted attempt branch — execution state is authoritative
+    if accepted_attempt:
+        s = accepted_attempt.status
+        if s == "shipped":
+            return "shipped"
+        if s == "release_pr_open":
+            return "release_pr_open"
+        if s == "composed":
+            return "composed"
+        # accepted: may be stale
+        frontier = getattr(project, "shipped_frontier", None) if project else None
+        if frontier and accepted_attempt.base_hash and accepted_attempt.base_hash != frontier:
+            return "stale"
+        return "accepted"
+
+    # Latest attempt — agent has run but attempt isn't accepted yet
+    if latest_attempt:
+        if latest_attempt.status in ("proposed", "validating"):
+            return "attempt_ready"
+        if latest_attempt.status == "failed":
+            return "failed"
+
+    # Execution column state
+    if ticket.column_id == "in_progress":
+        return "running"
+
+    # Dependency check — a dep is unblocked only when it has an accepted attempt.
+    # If satisfied_dep_ids is pre-computed (batch), use it; otherwise fall back to per-dep query.
+    dep_ids = ticket.depends_on_ticket_ids or []
+    if dep_ids:
+        if satisfied_dep_ids is not None:
+            if not all(str(d) in satisfied_dep_ids for d in dep_ids):
+                return "blocked"
+        else:
+            for dep_id in dep_ids:
+                if not _has_accepted_attempt(dep_id):
+                    return "blocked"
+
+    if ticket.column_id == "queued":
+        return "queued"
+
+    # backlog or ready intent with no activity
+    return "queued"
+
+
+# ---------------------------------------------------------------------------
+# Serialization
+# ---------------------------------------------------------------------------
+
+def ticket_to_json(t: Ticket) -> dict:
     out = {
         "id": str(t.id),
         "project_id": str(t.project_id),
@@ -17,23 +104,103 @@ def ticket_to_json(t):
         "status": t.status,
         "failed_count": t.failed_count or 0,
         "depends_on_ticket_ids": t.depends_on_ticket_ids or [],
+        # Intent fields
+        "intent_status": getattr(t, "intent_status", None) or "ready",
+        "rationale": getattr(t, "rationale", None),
+        "acceptance_criteria": getattr(t, "acceptance_criteria", None),
+        "constraints": getattr(t, "constraints", None),
+        "value_score": getattr(t, "value_score", None),
+        "risk_level": getattr(t, "risk_level", None),
+        "created_source": getattr(t, "created_source", None),
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
     }
+
     running_job = AgentJob.query.filter_by(ticket_id=t.id, status="running").first()
     out["is_running"] = running_job is not None
-    out["running_job_kind"] = running_job.kind if running_job else None
-    if t.pr:
-        out["pr_url"] = t.pr.pr_url
-        out["pr_number"] = t.pr.pr_number
+
+    project = Project.query.get(t.project_id)
+
+    # Latest and accepted attempts
+    latest = (
+        TicketAttempt.query
+        .filter_by(ticket_id=t.id)
+        .order_by(TicketAttempt.attempt_num.desc())
+        .first()
+    )
+    accepted = None
+    if latest and latest.status in _SATISFIED_STATUSES:
+        accepted = latest
+    elif latest:
+        accepted = (
+            TicketAttempt.query
+            .filter_by(ticket_id=t.id)
+            .filter(TicketAttempt.status.in_(_SATISFIED_STATUSES))
+            .order_by(TicketAttempt.attempt_num.desc())
+            .first()
+        )
+
+    # Pre-fetch which dep tickets have accepted attempts (avoids N+1 inside compute_ticket_display_state)
+    dep_ids = t.depends_on_ticket_ids or []
+    satisfied_dep_ids: Optional[set] = None
+    if dep_ids:
+        satisfied_rows = TicketAttempt.query.filter(
+            TicketAttempt.ticket_id.in_(dep_ids),
+            TicketAttempt.status.in_(_SATISFIED_STATUSES),
+        ).with_entities(TicketAttempt.ticket_id).distinct().all()
+        satisfied_dep_ids = {str(row[0]) for row in satisfied_rows}
+
+    out["display_state"] = compute_ticket_display_state(
+        t,
+        latest_attempt=latest,
+        accepted_attempt=accepted,
+        project=project,
+        satisfied_dep_ids=satisfied_dep_ids,
+    )
+
+    frontier = getattr(project, "shipped_frontier", None) or None
+    if latest:
+        commit = latest.agenthub_commit_hash or ""
+        stale = (latest.base_hash != frontier) if (frontier and latest.base_hash) else None
+        out["latest_attempt"] = {
+            "id": str(latest.id),
+            "short_commit_hash": commit[:12] if commit else None,
+            "status": latest.status,
+            "wave_num": latest.wave_num,
+            "attempt_num": latest.attempt_num,
+            "summary": latest.summary,
+            "test_status": latest.test_status,
+            "stale": stale,
+        }
     else:
-        out["pr_url"] = None
-        out["pr_number"] = None
+        out["latest_attempt"] = None
+
+    # Expose accepted attempt separately so callers (CLI workspace leaves, Ship Room)
+    # can identify selectable leaves even when the latest attempt is failed/rejected.
+    if accepted and accepted is not latest:
+        acc_commit = accepted.agenthub_commit_hash or ""
+        acc_stale = (accepted.base_hash != frontier) if (frontier and accepted.base_hash) else None
+        out["accepted_attempt"] = {
+            "id": str(accepted.id),
+            "short_commit_hash": acc_commit[:12] if acc_commit else None,
+            "status": accepted.status,
+            "wave_num": accepted.wave_num,
+            "attempt_num": accepted.attempt_num,
+            "stale": acc_stale,
+        }
+    else:
+        # latest IS accepted (or there's no accepted at all)
+        out["accepted_attempt"] = out["latest_attempt"] if (accepted and accepted is latest) else None
+
     return out
 
 
+# ---------------------------------------------------------------------------
+# Enqueueing and dispatch
+# ---------------------------------------------------------------------------
+
 def enqueue_ticket_job(ticket_id):
-    """Enqueue a ticket job to agent_jobs. Skip if project missing URL/path for mode or already pending/running."""
+    """Enqueue a ticket job to agent_jobs. Skip if project missing URL/path or already pending/running."""
     ticket = Ticket.query.get(ticket_id)
     if not ticket:
         return
@@ -43,24 +210,24 @@ def enqueue_ticket_job(ticket_id):
     execution_mode = getattr(project, "execution_mode", None) or "docker"
     if execution_mode == "local":
         if not (project.project_path or "").strip():
-            current_app.logger.info("Skipping enqueue: ticket %s project is local but has no project path", ticket_id)
+            current_app.logger.info("Skipping enqueue: ticket %s project has no project path", ticket_id)
             return
     else:
         if not (project.github_url or "").strip():
             current_app.logger.info("Skipping enqueue: ticket %s project has no GitHub URL", ticket_id)
             return
+
+    # Dependency check: a dep is satisfied when it has an accepted attempt
     dep_ids = ticket.depends_on_ticket_ids or []
-    if dep_ids:
-        blocking = Ticket.query.filter(
-            Ticket.id.in_(dep_ids),
-            Ticket.column_id != "done",
-        ).first()
-        if blocking:
+    for dep_id in dep_ids:
+        if not _has_accepted_attempt(dep_id):
+            dep = Ticket.query.get(dep_id)
             current_app.logger.info(
-                "Skipping enqueue: ticket %s blocked by dependency %s (%s)",
-                ticket_id, blocking.id, blocking.title,
+                "Skipping enqueue: ticket %s blocked by dep %s (%s) — no accepted attempt yet",
+                ticket_id, dep_id, dep.title if dep else "?",
             )
             return
+
     existing = AgentJob.query.filter(
         AgentJob.ticket_id == ticket_id,
         AgentJob.status.in_(["pending", "running"]),
@@ -68,6 +235,7 @@ def enqueue_ticket_job(ticket_id):
     if existing:
         current_app.logger.info("Skipping enqueue: ticket %s already has job %s", ticket_id, existing.id)
         return
+
     db.session.add(AgentJob(
         ticket_id=ticket_id,
         project_id=ticket.project_id,
@@ -76,15 +244,18 @@ def enqueue_ticket_job(ticket_id):
     ))
     db.session.commit()
     current_app.logger.info("Enqueued ticket job for ticket %s", ticket_id)
+    _post_event(
+        _ticket_channel(str(ticket_id)),
+        f"ticket_assigned: {ticket.title[:200]}",
+    )
 
 
 def dispatch_unblocked_queued(project_id):
-    """Move any queued tickets whose dependencies are all done to in_progress and enqueue them.
-    In swarm mode, also holds back tickets whose graph nodes conflict with currently running tickets."""
+    """Move queued tickets whose dependencies are satisfied to in_progress and enqueue.
+    In swarm mode, also holds back tickets whose graph nodes conflict with running tickets."""
     project = Project.query.get(project_id)
-    is_swarm = project and (getattr(project, "git_mode", None) or "structured") == "swarm"
+    is_swarm = project and (getattr(project, "git_mode", None) or "swarm") == "swarm"
 
-    # Pre-compute occupied nodes/edges from in_progress tickets (swarm only)
     occupied_nodes: set = set()
     occupied_edges: set = set()
     if is_swarm:
@@ -96,19 +267,15 @@ def dispatch_unblocked_queued(project_id):
     queued = Ticket.query.filter_by(project_id=project_id, column_id="queued").all()
     for t in queued:
         dep_ids = t.depends_on_ticket_ids or []
-        if dep_ids:
-            blocking = Ticket.query.filter(
-                Ticket.id.in_(dep_ids),
-                Ticket.column_id != "done",
-            ).first()
-            if blocking:
-                continue
+        if dep_ids and not all(_has_accepted_attempt(d) for d in dep_ids):
+            continue
         if is_swarm:
             ticket_nodes = set(t.associated_node_ids or [])
             ticket_edges = set(t.associated_edge_ids or [])
             if ticket_nodes & occupied_nodes or ticket_edges & occupied_edges:
-                continue  # Node conflict — leave in queued until the blocker finishes
+                continue
         t.column_id = "in_progress"
+        t.intent_status = "active"
         db.session.commit()
         enqueue_ticket_job(t.id)
         if is_swarm:

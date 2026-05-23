@@ -5,11 +5,21 @@ Usage:
     python -m cli [--api-url URL] [--output json] COMMAND SUBCOMMAND [args]
 
 Commands:
-    project   list | create | show | update | delete
-    ticket    list | create | show | update | run | cancel | logs
-    review    list | show | comment | approve | merge
-    graph     get | set
-    plan      <project-id>  — generate tickets from graph + notes via LLM
+    project    list | create | show | update | delete
+    ticket     list | create | show | update | run | cancel | logs
+               (Intent fields: --rationale, --acceptance-criteria, --constraints, --intent-status)
+    ship       waves | show | compose | feedback | merge-pr
+    workspace  leaves | list | create | show | compose | analyze | bless | promote | discard
+    graph      get | set
+    plan       <project-id>  — generate tickets from graph + notes via LLM
+    review     [DEPRECATED — per-ticket PRs removed, use 'ta ship']
+
+Product model:
+    Tickets are intents: goal, rationale, acceptance criteria, constraints, architecture scope.
+    Agents publish attempts to AgentHub (not GitHub PRs).
+    Ship Room composes accepted attempts into one release PR per wave.
+    Workspace lets you compose, preview, bless, and optionally promote candidate states
+    without shipping to main.
 
 Environment:
     TERARCHITECT_API_URL   Backend base URL (default: http://localhost:5010)
@@ -20,13 +30,13 @@ import sys
 
 from cli._api import API
 from cli._config import get_api_url
-from cli.commands import graph, merge, plan, project, review, ticket
+from cli.commands import graph, plan, project, review, ship, ticket, workspace
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="ta",
-        description="Terarchitect CLI — manage projects, tickets, and reviews from the terminal.",
+        description="Terarchitect CLI — manage intents, agents, Ship Room, and Workspace.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -47,10 +57,11 @@ def main() -> None:
 
     project.register(subparsers)
     ticket.register(subparsers)
-    review.register(subparsers)
+    ship.register(subparsers)
+    workspace.register(subparsers)
     graph.register(subparsers)
     plan.register(subparsers)
-    merge.register(subparsers)
+    review.register(subparsers)  # deprecated stub
 
     args = parser.parse_args()
     api = API(args.api_url or get_api_url())

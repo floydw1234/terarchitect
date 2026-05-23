@@ -6,9 +6,10 @@ import ProjectsPage from './pages/ProjectsPage';
 import ProjectPage from './pages/ProjectPage';
 import GraphEditorPage from './pages/GraphEditorPage';
 import KanbanPage from './pages/KanbanPage';
-import ReviewPage from './pages/ReviewPage';
-import ReviewDetailPage from './pages/ReviewDetailPage';
 import AgenthubPage from './pages/AgenthubPage';
+import ShipRoomPage from './pages/ShipRoomPage';
+import WorkspacePage from './pages/WorkspacePage';
+import IntentInboxPage from './pages/IntentInboxPage';
 
 const theme = createTheme({
   palette: {
@@ -104,8 +105,9 @@ function App() {
               <Route path="/projects/:projectId" element={<ProjectPage />} />
               <Route path="/projects/:projectId/graph" element={<GraphEditorPage />} />
               <Route path="/projects/:projectId/kanban" element={<KanbanPage />} />
-              <Route path="/projects/:projectId/review" element={<ReviewPage />} />
-              <Route path="/projects/:projectId/review/:ticketId" element={<ReviewDetailPage />} />
+              <Route path="/projects/:projectId/ship" element={<ShipRoomPage />} />
+              <Route path="/projects/:projectId/workspace" element={<WorkspacePage />} />
+              <Route path="/projects/:projectId/intents" element={<IntentInboxPage />} />
               <Route path="/agenthub" element={<AgenthubPage />} />
             </Routes>
           </Box>

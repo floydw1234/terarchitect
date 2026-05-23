@@ -38,7 +38,10 @@
       "Bash(for f:*)",
       "Bash(do python3:*)",
       "Bash(done)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(pip show:*)",
+      "Bash(python -c \"import alembic\")",
+      "Bash(grep:*)"
     ]
   }
 }

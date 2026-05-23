@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
+  Alert,
   Box,
   Typography,
   Button,
@@ -17,7 +18,7 @@ import {
   MenuItem,
 } from '@mui/material';
 import { Link } from 'react-router-dom';
-import { getProjects, createProject, deleteProject, type Project, type ProjectExecutionMode } from '../utils/api';
+import { getProjects, createProject, deleteProject, getExecutionReady, type Project, type ProjectExecutionMode, type ProjectGitMode } from '../utils/api';
 
 const ProjectsPage: React.FC = () => {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -26,15 +27,21 @@ const ProjectsPage: React.FC = () => {
   const [description, setDescription] = useState('');
   const [githubUrl, setGithubUrl] = useState('');
   const [executionMode, setExecutionMode] = useState<ProjectExecutionMode>('docker');
+  const [gitMode, setGitMode] = useState<ProjectGitMode>('swarm');
   const [projectPath, setProjectPath] = useState('');
   const [projectType, setProjectType] = useState<'new' | 'existing'>('new');
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [deleteConfirmName, setDeleteConfirmName] = useState('');
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const [frontierWarning, setFrontierWarning] = useState<string | null>(null);
+  const [workspaceEnabled, setWorkspaceEnabled] = useState(false);
 
   useEffect(() => {
     fetchProjects();
+    getExecutionReady()
+      .then(r => setWorkspaceEnabled(r.features?.composite_workspace ?? false))
+      .catch(() => {});
   }, []);
 
   const fetchProjects = async () => {
@@ -57,6 +64,7 @@ const ProjectsPage: React.FC = () => {
         description,
         github_url: githubUrl || undefined,
         execution_mode: executionMode,
+        git_mode: gitMode,
         project_path: executionMode === 'local' ? (projectPath.trim() || undefined) : undefined,
         is_existing_repo: projectType === 'existing',
       });
@@ -65,10 +73,14 @@ const ProjectsPage: React.FC = () => {
       setDescription('');
       setGithubUrl('');
       setExecutionMode('docker');
+      setGitMode('swarm');
       setProjectPath('');
       setProjectType('new');
       setCreateOpen(false);
       setProjects((prev) => [...prev, data]);
+      if (data.frontier_warning) {
+        setFrontierWarning(data.frontier_warning);
+      }
     } catch (error) {
       console.error('Failed to create project:', error);
     }
@@ -129,6 +141,12 @@ const ProjectsPage: React.FC = () => {
         </Stack>
       </Paper>
 
+      {frontierWarning && (
+        <Alert severity="warning" onClose={() => setFrontierWarning(null)} sx={{ mb: 2 }}>
+          <strong>Frontier not set:</strong> {frontierWarning}
+        </Alert>
+      )}
+
       {/* Projects Grid */}
       {projects.length === 0 ? (
         <Paper
@@ -179,6 +197,11 @@ const ProjectsPage: React.FC = () => {
                     GitHub: {project.github_url}
                   </Typography>
                 )}
+                {!project.shipped_frontier && (
+                  <Typography variant="caption" color="warning.main" sx={{ display: 'block', mt: 0.5 }}>
+                    ⚠ Frontier not set — set via Ship Room before running agents
+                  </Typography>
+                )}
 
                 <Box sx={{ mt: 'auto', pt: 2, display: 'flex', justifyContent: 'space-between', gap: 1, flexWrap: 'wrap' }}>
                   <Box>
@@ -198,11 +221,20 @@ const ProjectsPage: React.FC = () => {
                     </Button>
                     <Button
                       component={Link}
-                      to={`/projects/${project.id}/review`}
+                      to={`/projects/${project.id}/ship`}
                       size="small"
                     >
-                      Review
+                      Ship Room
                     </Button>
+                    {workspaceEnabled && (
+                      <Button
+                        component={Link}
+                        to={`/projects/${project.id}/workspace`}
+                        size="small"
+                      >
+                        Workspace
+                      </Button>
+                    )}
                   </Box>
                   <Button
                     size="small"
@@ -282,6 +314,16 @@ const ProjectsPage: React.FC = () => {
                 size="small"
               />
             )}
+            <FormControl size="small" fullWidth>
+              <InputLabel>Git mode</InputLabel>
+              <Select
+                value={gitMode}
+                label="Git mode"
+                onChange={(e) => setGitMode(e.target.value as ProjectGitMode)}
+              >
+                <MenuItem value="swarm">AgentHub (swarm) — recommended</MenuItem>
+              </Select>
+            </FormControl>
             <TextField
               label="GitHub Repository URL"
               value={githubUrl}

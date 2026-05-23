@@ -51,6 +51,8 @@ import {
   cancelTicketExecution,
   getExecutionReady,
   startProject,
+  AGENTHUB_URL,
+  ticketChannelName,
   type Ticket,
   type KanbanColumn,
   type Note,
@@ -65,15 +67,13 @@ const DEFAULT_COLUMNS: KanbanColumn[] = [
   { id: 'backlog', title: 'Backlog', order: 0 },
   { id: 'queued', title: 'Queued', order: 1 },
   { id: 'in_progress', title: 'In Progress', order: 2 },
-  { id: 'in_review', title: 'In Review', order: 3 },
-  { id: 'done', title: 'Done', order: 4 },
+  { id: 'done', title: 'Done', order: 3 },
 ];
 
 const COLUMN_TITLE_BY_ID: Record<string, string> = {
   backlog: 'Backlog',
   queued: 'Queued',
   in_progress: 'In Progress',
-  in_review: 'In Review',
   done: 'Done',
 };
 
@@ -81,12 +81,11 @@ const CANONICAL_COLUMN_ORDER: Record<string, number> = {
   backlog: 0,
   queued: 1,
   in_progress: 2,
-  in_review: 3,
-  done: 4,
+  done: 3,
 };
 
 /** Columns shown in the board — In Progress is intentionally excluded (shown in Running strip above). */
-const BOARD_COLUMN_IDS = new Set(['backlog', 'queued', 'in_review', 'done']);
+const BOARD_COLUMN_IDS = new Set(['backlog', 'queued', 'done']);
 
 const PRIORITY_COLOR: Record<string, 'error' | 'warning' | 'success'> = {
   high: 'error',
@@ -182,7 +181,6 @@ const RunningStrip: React.FC<RunningStripProps> = ({ tickets, projectId, onStop,
             const ticketLogs = logs[ticket.id] ?? [];
             const lastLog = ticketLogs[ticketLogs.length - 1];
             const isStopping = stopping.has(ticket.id);
-            const isReview = ticket.running_job_kind === 'review';
             return (
               <Box
                 key={ticket.id}
@@ -196,16 +194,12 @@ const RunningStrip: React.FC<RunningStripProps> = ({ tickets, projectId, onStop,
                   flexWrap: 'wrap',
                 }}
               >
-                <CircularProgress size={12} thickness={6} color={isReview ? 'secondary' : 'primary'} sx={{ flexShrink: 0 }} />
+                <CircularProgress size={12} thickness={6} color="primary" sx={{ flexShrink: 0 }} />
                 <Box sx={{ flex: 1, minWidth: 0 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap' }}>
                     <Typography variant="body2" fontWeight={600} noWrap>
                       {ticket.title}
                     </Typography>
-                    {isReview && (
-                      <Chip label="Responding to PR" size="small" color="secondary" variant="outlined"
-                        sx={{ height: 16, fontSize: '0.6rem', flexShrink: 0 }} />
-                    )}
                   </Box>
                   {lastLog ? (
                     <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>
@@ -224,7 +218,7 @@ const RunningStrip: React.FC<RunningStripProps> = ({ tickets, projectId, onStop,
                       <ListAltIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
-                  <Tooltip title={isStopping ? 'Stopping…' : ticket.running_job_kind === 'review' ? 'Stop and return to In Review' : 'Stop and return to Backlog'}>
+                  <Tooltip title={isStopping ? 'Stopping…' : 'Stop and return to Backlog'}>
                     <span>
                       <IconButton
                         size="small"
@@ -341,6 +335,9 @@ const KanbanPage: React.FC = () => {
   const [newTicketEdgeIds, setNewTicketEdgeIds] = useState<string[]>([]);
   const [newTicketAllNodesAndEdges, setNewTicketAllNodesAndEdges] = useState(false);
   const [newTicketDependsOn, setNewTicketDependsOn] = useState<string[]>([]);
+  const [newTicketRationale, setNewTicketRationale] = useState('');
+  const [newTicketAcceptanceCriteria, setNewTicketAcceptanceCriteria] = useState('');
+  const [newTicketConstraints, setNewTicketConstraints] = useState('');
   const [addTicketLoading, setAddTicketLoading] = useState(false);
   const [addTicketError, setAddTicketError] = useState<string | null>(null);
 
@@ -354,6 +351,10 @@ const KanbanPage: React.FC = () => {
   const [editEdgeIds, setEditEdgeIds] = useState<string[]>([]);
   const [editAllNodesAndEdges, setEditAllNodesAndEdges] = useState(false);
   const [editDependsOn, setEditDependsOn] = useState<string[]>([]);
+  const [editIntentStatus, setEditIntentStatus] = useState<string>('ready');
+  const [editRationale, setEditRationale] = useState('');
+  const [editAcceptanceCriteria, setEditAcceptanceCriteria] = useState('');
+  const [editConstraints, setEditConstraints] = useState('');
 
   // Graph options
   const [graphNodes, setGraphNodes] = useState<GraphNodeOption[]>([]);
@@ -385,15 +386,19 @@ const KanbanPage: React.FC = () => {
   // Go button
   const [goLoading, setGoLoading] = useState(false);
   const [goResult, setGoResult] = useState<string | null>(null);
-  const [gitMode, setGitMode] = useState<string>('structured');
+  const [gitMode, setGitMode] = useState<string>('swarm');
 
   useEffect(() => {
     if (projectId) fetchKanban();
   }, [projectId]);
 
+  const [workspaceEnabled, setWorkspaceEnabled] = useState(false);
   useEffect(() => {
     getExecutionReady()
-      .then((res) => setMissingRequired(res.missing ?? []))
+      .then((res) => {
+        setMissingRequired(res.missing ?? []);
+        setWorkspaceEnabled(res.features?.composite_workspace ?? false);
+      })
       .catch(() => {});
   }, []);
 
@@ -426,7 +431,7 @@ const KanbanPage: React.FC = () => {
         getProject(projectId),
       ]);
 
-      setGitMode(projectRes.git_mode ?? 'structured');
+      setGitMode(projectRes.git_mode ?? 'swarm');
 
       const apiColumns =
         kanbanRes.columns && kanbanRes.columns.length > 0 ? kanbanRes.columns : DEFAULT_COLUMNS;
@@ -525,18 +530,11 @@ const KanbanPage: React.FC = () => {
     }
   };
 
-  const handleApproveTicket = async (ticket: Ticket) => {
-    await handleMoveTicket(ticket.id, 'done');
-  };
-
   const handleStopTicket = async (ticketId: string) => {
     if (!projectId) return;
     try {
       await cancelTicketExecution(projectId, ticketId);
-      // Review jobs (in_review) stay in in_review; ticket jobs go back to backlog.
-      const ticket = tickets.find((t) => t.id === ticketId);
-      const targetColumn = ticket?.column_id === 'in_review' ? 'in_review' : 'backlog';
-      const updated = await updateTicket(projectId, ticketId, { column_id: targetColumn });
+      const updated = await updateTicket(projectId, ticketId, { column_id: 'backlog' });
       setTickets((prev) => prev.map((t) => (t.id === ticketId ? updated : t)));
     } catch (error) {
       console.error('Failed to stop ticket:', error);
@@ -567,6 +565,10 @@ const KanbanPage: React.FC = () => {
     setEditNodeIds(isAll ? [] : nodeIds);
     setEditEdgeIds(isAll ? [] : edgeIds);
     setEditDependsOn(ticket.depends_on_ticket_ids ?? []);
+    setEditIntentStatus(ticket.intent_status ?? 'ready');
+    setEditRationale(ticket.rationale ?? '');
+    setEditAcceptanceCriteria(ticket.acceptance_criteria ?? '');
+    setEditConstraints(ticket.constraints ?? '');
   };
 
   const handleSaveTicket = async () => {
@@ -580,6 +582,10 @@ const KanbanPage: React.FC = () => {
         associated_node_ids: editAllNodesAndEdges ? ['*'] : editNodeIds,
         associated_edge_ids: editAllNodesAndEdges ? ['*'] : editEdgeIds,
         depends_on_ticket_ids: editDependsOn,
+        intent_status: editIntentStatus as any,
+        rationale: editRationale.trim() || undefined,
+        acceptance_criteria: editAcceptanceCriteria.trim() || undefined,
+        constraints: editConstraints.trim() || undefined,
       });
       setTickets((prev) => prev.map((t) => (t.id === editTicket.id ? updated : t)));
       setEditTicket(null);
@@ -602,6 +608,9 @@ const KanbanPage: React.FC = () => {
         associated_node_ids: newTicketAllNodesAndEdges ? ['*'] : newTicketNodeIds,
         associated_edge_ids: newTicketAllNodesAndEdges ? ['*'] : newTicketEdgeIds,
         depends_on_ticket_ids: newTicketDependsOn,
+        rationale: newTicketRationale.trim() || undefined,
+        acceptance_criteria: newTicketAcceptanceCriteria.trim() || undefined,
+        constraints: newTicketConstraints.trim() || undefined,
       });
       setTickets((prev) => [...prev, data]);
       setNewTicketTitle('');
@@ -611,6 +620,9 @@ const KanbanPage: React.FC = () => {
       setNewTicketEdgeIds([]);
       setNewTicketAllNodesAndEdges(false);
       setNewTicketDependsOn([]);
+      setNewTicketRationale('');
+      setNewTicketAcceptanceCriteria('');
+      setNewTicketConstraints('');
       setCreateTicketOpen(false);
     } catch (error) {
       setAddTicketError(error instanceof Error ? error.message : 'Failed to add ticket');
@@ -748,10 +760,7 @@ const KanbanPage: React.FC = () => {
   };
 
   const inProgressTickets = tickets.filter((t) => t.is_running);
-  const visibleBoardColumnIds = gitMode === 'swarm'
-    ? new Set(['backlog', 'queued', 'done'])
-    : BOARD_COLUMN_IDS;
-  const boardColumns = columns.filter((c) => visibleBoardColumnIds.has(c.id));
+  const boardColumns = columns.filter((c) => BOARD_COLUMN_IDS.has(c.id));
 
   return (
     <Box>
@@ -786,9 +795,20 @@ const KanbanPage: React.FC = () => {
           <Button variant="outlined" size="small" onClick={openEditColumns}>
             Edit columns
           </Button>
+          <Button component={Link} to={`/projects/${projectId}/intents`} variant="outlined" size="small">
+            Intent Inbox
+          </Button>
           <Button component={Link} to={`/projects/${projectId}/graph`} variant="outlined" size="small">
             Graph
           </Button>
+          <Button component={Link} to={`/projects/${projectId}/ship`} variant="outlined" size="small">
+            Ship Room
+          </Button>
+          {workspaceEnabled && (
+            <Button component={Link} to={`/projects/${projectId}/workspace`} variant="outlined" size="small">
+              Workspace
+            </Button>
+          )}
         </Box>
       </Box>
 
@@ -811,7 +831,7 @@ const KanbanPage: React.FC = () => {
         />
       )}
 
-      {/* Board — Backlog / In Review / Done only */}
+      {/* Board — Backlog / Queued / Done columns */}
       <Paper sx={{ p: 2, mb: 3 }}>
         <Box sx={{ display: 'flex', gap: 3, alignItems: 'stretch' }}>
           {boardColumns.map((column) => {
@@ -848,7 +868,6 @@ const KanbanPage: React.FC = () => {
                       allTickets={tickets}
                       onEdit={openEditTicket}
                       onRun={handleRunTicket}
-                      onApprove={handleApproveTicket}
                       onDelete={handleDeleteTicket}
                     />
                   ))}
@@ -885,6 +904,36 @@ const KanbanPage: React.FC = () => {
               minRows={3}
               fullWidth
               size="small"
+            />
+            <TextField
+              label="Rationale — why this matters"
+              value={newTicketRationale}
+              onChange={(e) => setNewTicketRationale(e.target.value)}
+              multiline
+              minRows={2}
+              fullWidth
+              size="small"
+              placeholder="Why is this work valuable? What problem does it solve?"
+            />
+            <TextField
+              label="Acceptance criteria — what done looks like"
+              value={newTicketAcceptanceCriteria}
+              onChange={(e) => setNewTicketAcceptanceCriteria(e.target.value)}
+              multiline
+              minRows={2}
+              fullWidth
+              size="small"
+              placeholder="List the specific outcomes that define completion."
+            />
+            <TextField
+              label="Constraints — limits and non-goals"
+              value={newTicketConstraints}
+              onChange={(e) => setNewTicketConstraints(e.target.value)}
+              multiline
+              minRows={2}
+              fullWidth
+              size="small"
+              placeholder="What should the agent NOT do? Any hard limits?"
             />
             <FormControl size="small" fullWidth>
               <InputLabel>Priority</InputLabel>
@@ -1006,6 +1055,50 @@ const KanbanPage: React.FC = () => {
                   fullWidth
                   size="small"
                 />
+                <TextField
+                  label="Rationale — why this matters"
+                  value={editRationale}
+                  onChange={(e) => setEditRationale(e.target.value)}
+                  multiline
+                  minRows={2}
+                  fullWidth
+                  size="small"
+                  placeholder="Why is this work valuable? What problem does it solve?"
+                />
+                <TextField
+                  label="Acceptance criteria — what done looks like"
+                  value={editAcceptanceCriteria}
+                  onChange={(e) => setEditAcceptanceCriteria(e.target.value)}
+                  multiline
+                  minRows={2}
+                  fullWidth
+                  size="small"
+                  placeholder="List the specific outcomes that define completion."
+                />
+                <TextField
+                  label="Constraints — limits and non-goals"
+                  value={editConstraints}
+                  onChange={(e) => setEditConstraints(e.target.value)}
+                  multiline
+                  minRows={2}
+                  fullWidth
+                  size="small"
+                  placeholder="What should the agent NOT do? Any hard limits?"
+                />
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Intent status</InputLabel>
+                  <Select
+                    value={editIntentStatus}
+                    label="Intent status"
+                    onChange={(e) => setEditIntentStatus(e.target.value)}
+                  >
+                    <MenuItem value="draft">Draft — not yet fully defined</MenuItem>
+                    <MenuItem value="ready">Ready — approved for agents</MenuItem>
+                    <MenuItem value="active">Active — work is in progress</MenuItem>
+                    <MenuItem value="blocked">Blocked — external blocker</MenuItem>
+                    <MenuItem value="archived">Archived — no longer relevant</MenuItem>
+                  </Select>
+                </FormControl>
                 <FormControl size="small" fullWidth>
                   <InputLabel>Priority</InputLabel>
                   <Select
@@ -1027,7 +1120,7 @@ const KanbanPage: React.FC = () => {
                   >
                     <MenuItem value="backlog">Backlog</MenuItem>
                     <MenuItem value="in_progress">In Progress</MenuItem>
-                    <MenuItem value="in_review">In Review</MenuItem>
+
                     <MenuItem value="done">Done</MenuItem>
                   </Select>
                 </FormControl>
@@ -1348,7 +1441,6 @@ interface TicketCardProps {
   allTickets: Ticket[];
   onEdit: (ticket: Ticket) => void;
   onRun: (ticket: Ticket) => void;
-  onApprove: (ticket: Ticket) => void;
   onDelete: (ticketId: string) => void;
 }
 
@@ -1362,11 +1454,9 @@ const TicketCard: React.FC<TicketCardProps> = ({
   allTickets,
   onEdit,
   onRun,
-  onApprove,
   onDelete,
 }) => {
   const [running, setRunning] = useState(false);
-  const [approving, setApproving] = useState(false);
 
   const handleRun = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1375,16 +1465,6 @@ const TicketCard: React.FC<TicketCardProps> = ({
       await onRun(ticket);
     } finally {
       setRunning(false);
-    }
-  };
-
-  const handleApprove = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setApproving(true);
-    try {
-      await onApprove(ticket);
-    } finally {
-      setApproving(false);
     }
   };
 
@@ -1437,6 +1517,23 @@ const TicketCard: React.FC<TicketCardProps> = ({
               </Tooltip>
             );
           })()}
+          {ticket.display_state && !['queued', 'running', 'draft'].includes(ticket.display_state) && (
+            <Chip
+              label={ticket.display_state.replace(/_/g, ' ')}
+              size="small"
+              color={
+                ticket.display_state === 'shipped' ? 'success'
+                : ticket.display_state === 'accepted' ? 'success'
+                : ticket.display_state === 'failed' ? 'error'
+                : ticket.display_state === 'blocked' ? 'error'
+                : ticket.display_state === 'stale' ? 'warning'
+                : ticket.display_state === 'attempt_ready' ? 'info'
+                : 'default'
+              }
+              variant="outlined"
+              sx={{ height: 16, fontSize: '0.6rem' }}
+            />
+          )}
           {(ticket.failed_count ?? 0) > 0 && (
             <Chip
               label={`Failed ${ticket.failed_count}×`}
@@ -1446,30 +1543,44 @@ const TicketCard: React.FC<TicketCardProps> = ({
               sx={{ height: 16, fontSize: '0.6rem' }}
             />
           )}
-          {ticket.pr_url && (
-            <>
-              <Typography
-                component={Link}
-                to={`/projects/${projectId}/review/${ticket.id}`}
-                onClick={(e: React.MouseEvent) => e.stopPropagation()}
-                variant="caption"
-                sx={{ color: 'primary.main', textDecoration: 'none' }}
-              >
-                Review
-              </Typography>
-              <Typography variant="caption" color="text.secondary">·</Typography>
+          {ticket.latest_attempt && (
+            <Chip
+              label={`${ticket.latest_attempt.status}${ticket.latest_attempt.short_commit_hash ? ' · ' + ticket.latest_attempt.short_commit_hash : ''}`}
+              size="small"
+              color={
+                ticket.latest_attempt.status === 'accepted' || ticket.latest_attempt.status === 'shipped'
+                  ? 'success'
+                  : ticket.latest_attempt.status === 'failed' || ticket.latest_attempt.status === 'rejected'
+                  ? 'error'
+                  : 'default'
+              }
+              variant="outlined"
+              sx={{ height: 16, fontSize: '0.6rem', maxWidth: 180 }}
+              title={ticket.latest_attempt.summary ?? undefined}
+            />
+          )}
+          {ticket.latest_attempt?.stale && (
+            <Chip label="stale" size="small" color="warning" variant="outlined" sx={{ height: 16, fontSize: '0.6rem' }} />
+          )}
+          {ticket.latest_attempt?.wave_num !== undefined && (
+            <Typography variant="caption" color="text.secondary">
+              wave {ticket.latest_attempt.wave_num}
+            </Typography>
+          )}
+          {AGENTHUB_URL && (
+            <Tooltip title={`AgentHub channel: ${ticketChannelName(ticket.id)}`}>
               <Typography
                 component="a"
-                href={ticket.pr_url}
+                href={`${AGENTHUB_URL}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                onClick={(e: React.MouseEvent) => e.stopPropagation()}
                 variant="caption"
-                sx={{ color: 'text.secondary', textDecoration: 'none' }}
+                onClick={(e: React.MouseEvent) => e.stopPropagation()}
+                sx={{ color: 'primary.dark', textDecoration: 'none', fontSize: '0.6rem' }}
               >
-                PR{ticket.pr_number ? ` #${ticket.pr_number}` : ''}
+                #{ticketChannelName(ticket.id).slice(0, 14)}…
               </Typography>
-            </>
+            </Tooltip>
           )}
         </Box>
       </CardContent>
@@ -1507,18 +1618,6 @@ const TicketCard: React.FC<TicketCardProps> = ({
               </Tooltip>
             );
           })()}
-          {columnId === 'in_review' && (
-            <Button
-              size="small"
-              variant="outlined"
-              color="success"
-              startIcon={approving ? <CircularProgress size={12} color="inherit" /> : <CheckCircleOutlineIcon fontSize="small" />}
-              disabled={approving}
-              onClick={handleApprove}
-            >
-              {approving ? 'Approving…' : 'Approve'}
-            </Button>
-          )}
         </Box>
       </CardActions>
     </Card>

@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from alembic.config import Config as AlembicConfig
+from alembic import command as alembic_command
 
 # Load .env from backend directory
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -13,6 +15,12 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 from flask import Flask, jsonify
 from flask_cors import CORS
 from models.db import db
+
+def _run_migrations() -> None:
+    """Run any pending Alembic migrations. Safe to call on every startup."""
+    cfg = AlembicConfig(str(Path(__file__).resolve().parent / "alembic.ini"))
+    alembic_command.upgrade(cfg, "head")
+
 
 def create_app():
     app = Flask(__name__)
@@ -61,23 +69,13 @@ def create_app():
 
     db.init_app(app)
     with app.app_context():
-        db.create_all()
+        _run_migrations()
 
     # Register blueprints
     from api import api_bp
     from api.embedding_openai import embedding_bp
-    from api.services.pr_service import run_pr_poll_loop as _run_pr_poll_loop
     app.register_blueprint(api_bp, url_prefix="/api")
     app.register_blueprint(embedding_bp)
-
-    # Background thread: PR comment poll; new comments enqueue to agent_jobs. No in-process agent.
-    # Use an app-level attribute to ensure only one polling thread starts per process even if
-    # create_app() is called multiple times (e.g. during testing or Gunicorn preload).
-    import threading
-    if not getattr(app, "_pr_poll_started", False):
-        app._pr_poll_started = True
-        runner = threading.Thread(target=_run_pr_poll_loop, args=(app,), kwargs={"pr_poll_seconds": 10}, daemon=True)
-        runner.start()
 
     # Health check endpoint
     @app.route("/health")

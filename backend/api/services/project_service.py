@@ -5,14 +5,18 @@ from models.db import Project
 
 
 def project_to_json(project: Project):
+    frontier = getattr(project, "shipped_frontier", None) or None
+    frontier_updated = getattr(project, "shipped_frontier_updated_at", None)
     return {
         "id": str(project.id),
         "name": project.name,
         "description": project.description,
         "github_url": project.github_url,
         "execution_mode": getattr(project, "execution_mode", None) or "docker",
-        "git_mode": getattr(project, "git_mode", None) or "structured",
+        "git_mode": getattr(project, "git_mode", None) or "swarm",
         "project_path": project.project_path,
+        "shipped_frontier": frontier,
+        "shipped_frontier_updated_at": frontier_updated.isoformat() if frontier_updated else None,
         "created_at": project.created_at.isoformat() if project.created_at else None,
         "updated_at": project.updated_at.isoformat() if project.updated_at else None,
     }

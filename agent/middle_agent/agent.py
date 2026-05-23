@@ -20,11 +20,10 @@ from middle_agent import git_backend
 # Invisible HTML comment appended to all agent-posted PR comments.
 # Must match the constant in backend/api/routes.py — used by the PR polling loop
 # to distinguish agent replies from human reviewer comments when both share the same token.
-BOT_COMMENT_SIGNATURE = "<!-- terarchitect-bot -->"
 
 
 class TicketLike(Protocol):
-    """Minimal ticket interface for Director (no DB dependency). Used by process_ticket and process_ticket_review."""
+    """Minimal ticket interface for Director (no DB dependency). Used by process_ticket."""
 
     id: Any
     project_id: Any
@@ -881,14 +880,8 @@ class MiddleAgent:
             completion_summary: Optional[str] = None  # initialized here so _finalize always has a defined value
             base_save_dir = None  # Not used; memory via backend
             memory_kwargs = {}
-            if git_backend.is_swarm():
-                # Swarm mode: fetch latest agenthub leaf so agent works from the frontier
-                git_backend.prepare_work(project_path)
-                self._log(ticket.project_id, ticket_id, session_id, "swarm_prepare", "Fetched latest agenthub leaf (swarm mode)")
-            else:
-                branch_name = self._ensure_ticket_branch(ticket, project_path, session_id, ticket_id)
-                if branch_name:
-                    self._log(ticket.project_id, ticket_id, session_id, "branch_created", f"Branch {branch_name} checked out")
+            git_backend.prepare_work(project_path)
+            self._log(ticket.project_id, ticket_id, session_id, "swarm_prepare", "Base hash checked out (prepare_work)")
 
             # Worker context (same for all phases; worker session is never reset). project_path is the clone dir (from runner).
             worker_context = {
@@ -1036,6 +1029,11 @@ class MiddleAgent:
                             approved_plan_text = (agent_response.get("approved_plan_text") or "").strip() or latest_output[:8000]
                         self._debug_log("Plan approved, entering execution")
                         self._log(ticket.project_id, ticket_id, session_id, "plan_approved", "Plan approved, entering execution")
+                        plan_summary = (approved_plan_text or "")[:400].strip()
+                        git_backend._ah_post(
+                            f"/api/channels/{git_backend._ticket_channel(str(ticket_id))}/posts",
+                            {"content": f"agent_plan: {plan_summary}" if plan_summary else "agent_plan: approved"},
+                        )
                         break
                     else:
                         next_prompt = agent_response.get("next_prompt")
@@ -1115,17 +1113,11 @@ class MiddleAgent:
             self._active_project_id = None
             self._active_ticket_id = None
 
-    def _run_pr_review_flow(
-        self,
-        ticket: TicketLike,
-        session_id: str,
-        context: dict,
-        comment_body: str,
-        project_path: str,
-        base_save_dir: Optional[str],
-        memory_kwargs: dict,
-    ) -> Optional[str]:
-        """Run the simplified PR review flow: one worker call with review comment, then loop until agent marks complete. Returns completion_summary."""
+    def _run_pr_review_flow(self, *args, **kwargs):
+        """Removed: PR-per-ticket review flow."""
+        raise NotImplementedError("PR-per-ticket review has been removed.")
+
+    def _run_pr_review_flow_body_tombstone(self):
         ticket_id = ticket.id
         worker_context = {
             "project_name": context.get("project_name"),
@@ -1221,15 +1213,19 @@ class MiddleAgent:
             self._log(ticket.project_id, ticket_id, session_id, f"worker_turn_{turn + 1}", "Turn completed", raw_output=worker_out)
         return completion_summary
 
-    def process_ticket_review(
+    def process_ticket_review(self, *args, **kwargs) -> None:
+        """Removed: PR-per-ticket review has been removed."""
+        raise NotImplementedError("PR-per-ticket review has been removed.")
+
+    def _process_ticket_review_body_tombstone(
         self,
-        ticket_id: uuid.UUID,
-        comment_body: str,
-        pr_number: int,
-        project_id: uuid.UUID,
-        project_path: str,
+        ticket_id,
+        comment_body,
+        pr_number,
+        project_id,
+        project_path,
     ) -> None:
-        """Run the agent to address PR review feedback. Requires project_id and project_path (caller: coordinator/container)."""
+        """Dead code — original body kept temporarily. Will be fully deleted next pass."""
         context = self._backend.get_context(project_id, ticket_id)
         if not context:
             self._debug_log("Could not load context for review, exiting")
@@ -2121,21 +2117,8 @@ Output a single concise narrative under 200 words. No JSON, no labels—just pro
         director_messages = director_messages or []
         is_plan_review = phase == "plan_review"
         is_execution = phase == "execution"
-        is_review = bool((context or {}).get("pr_review_comment"))
         if is_plan_review:
             system_content = get_agent_system_prompt() + "\n\n" + get_agent_plan_review_instructions()
-        elif is_review:
-            system_content = get_agent_system_prompt() + (
-                "\n\n--- PR REVIEW MODE ---\n"
-                "You are assessing a PR review response, not a fresh ticket implementation. "
-                "The worker has already done the work. Your job is to check whether the review issues are addressed and tests pass — not to micromanage process. "
-                "If the worker shows pytest output with passing tests and describes the fixes, accept it and mark complete. "
-                "Only push back if: (a) the test output is clearly missing or fabricated (e.g. no numbers, no test names), "
-                "(b) a blocking issue from the review comment is explicitly not mentioned, or "
-                "(c) tests are shown as failing. "
-                "Do NOT demand step-by-step TDD re-runs if the worker already shows green tests. "
-                "Trust passing pytest output. Be efficient — unnecessary back-and-forth wastes everyone's time."
-            )
         else:
             system_content = get_agent_system_prompt()
         memory_block = f"{memories}\n\n" if memories else ""
@@ -2186,16 +2169,7 @@ Judge the plan. Respond in JSON only with:
 
 If false, also include next_prompt with the actionable fixes to send the worker (bullet points ok, no code fences, no preamble)."""
             else:
-                pr_comment_first = (context.get("pr_review_comment") or "").strip()
-                if pr_comment_first:
-                    assess_first = (
-                        "Assess: Has the worker addressed the review comment with real test evidence?\n"
-                        "Mark complete if all issues are addressed AND the worker provided actual pytest output (pass counts). "
-                        "Do NOT require step-by-step process. Only send next_prompt if something is genuinely missing or broken.\n"
-                        "Respond in JSON only."
-                    )
-                else:
-                    assess_first = "Assess: Is the ticket complete? Respond in JSON only."
+                assess_first = "Assess: Is the ticket complete? Respond in JSON only."
                 user_msg_content = f"""{setup_hint}{plan_block}Context:
 {json.dumps(context, indent=2)}
 
@@ -2222,30 +2196,12 @@ Judge the plan. Respond in JSON only with:
 
 If false, also include next_prompt with the actionable fixes to send the worker (bullet points ok, no code fences, no preamble)."""
             else:
-                # Re-anchor key context on every subsequent turn so it survives compaction.
-                pr_comment = (context.get("pr_review_comment") or "").strip()
                 ticket_info = context.get("current_ticket") or {}
-                is_review = bool(pr_comment)
                 anchor = ""
-                if pr_comment:
-                    anchor = (
-                        f"Reminder — original PR review comment to address:\n{pr_comment}\n\n"
-                        f"Ticket: {ticket_info.get('title', '')}\n\n"
-                    )
-                if is_review:
-                    assess_instruction = (
-                        "Assess: Has the worker addressed the review comment with real test evidence?\n"
-                        "Mark complete if: all issues from the review comment are addressed AND the worker provided actual pytest output (pass counts, not just prose). "
-                        "Do NOT require step-by-step process — the worker may address everything in one shot. "
-                        "Only send next_prompt if something is genuinely missing or broken (e.g. no test output, a review issue not addressed, tests failing). "
-                        "If stuck on the same sub-step for 3+ turns, simplify the ask or accept it as done if it is a minor nit.\n"
-                        "Respond in JSON only."
-                    )
-                else:
-                    assess_instruction = (
-                        "Assess: Is the ticket complete? Respond in JSON only.\n"
-                        "If the worker has been stuck on the same sub-step for 3+ turns, escalate: either simplify the ask, skip it, or call it done if it is a minor nit."
-                    )
+                assess_instruction = (
+                    "Assess: Is the ticket complete? Respond in JSON only.\n"
+                    "If the worker has been stuck on the same sub-step for 3+ turns, escalate: either simplify the ask, skip it, or call it done if it is a minor nit."
+                )
                 user_msg_content = f"""{setup_hint}{plan_block}{memory_block}{anchor}New worker turn (turn {n} of this session):
 
 ### Turn {n} - Prompt to Worker:
@@ -2346,211 +2302,21 @@ If false, also include next_prompt with the actionable fixes to send the worker 
         updated_director = compacted + [new_user_msg, assistant_msg]
         return response_dict, updated_director
 
-    def _generate_pr_comment_reply(self, comment_body: str, completion_summary: str) -> str:
-        """
-        Ask the LLM for a short direct reply to the reviewer's comment. This reply will be
-        posted as the PR comment so the human sees an answer to their question, not a generic
-        task summary. On failure returns completion_summary.
-        """
-        user_msg = f"""A reviewer left this comment on a PR:
-
-\"\"\"
-{comment_body[:3000]}
-\"\"\"
-
-The implementation work produced this summary:
-
-\"\"\"
-{(completion_summary or "(No summary)")[:1000]}
-\"\"\"
-
-Write a short direct reply to the reviewer (2–5 sentences) that answers their question or addresses their point. If they asked a specific question (e.g. "Do we update X on the backend?"), answer it directly (e.g. "Yes, we update X in ..." or "No; I've added that in ..."). Do not post a generic "ticket completed" summary. Output only the reply text, no preamble or labels. Maximum 100 words."""
-
-        try:
-            content = self._director_request(
-                messages=[{"role": "user", "content": user_msg}],
-                max_tokens=512,
-                temperature=0.2,
-                timeout=60,
-            ).strip()
-            if content:
-                return content
-        except Exception as e:
-            self._debug_log(f"PR comment reply generation failed: {e}, using completion summary")
-        return completion_summary or "Addressed review feedback."
-
-    def _ensure_ticket_branch(
-        self,
-        ticket: TicketLike,
-        project_path: str,
-        session_id: str,
-        ticket_id: uuid.UUID,
-    ) -> Optional[str]:
-        """Create and checkout branch ticket-{ticket_id} from default branch. Returns branch name or None on failure."""
-        branch_name = f"ticket-{ticket_id}"
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", "--is-inside-work-tree"],
-                cwd=project_path,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode != 0:
-                self._debug_log(f"Not a git repo at {project_path}, skipping branch creation")
-                return None
-            subprocess.run(
-                ["git", "fetch", "origin"],
-                cwd=project_path,
-                capture_output=True,
-                timeout=30,
-            )
-            default = None
-            for candidate in ("main", "master"):
-                r = subprocess.run(
-                    ["git", "rev-parse", f"origin/{candidate}"],
-                    cwd=project_path,
-                    capture_output=True,
-                    timeout=5,
-                )
-                if r.returncode == 0:
-                    default = candidate
-                    break
-            if not default:
-                self._debug_log("Could not determine default branch (main/master), skipping branch creation")
-                return None
-            # Update local default branch so the ticket branch is based on latest main.
-            subprocess.run(
-                ["git", "checkout", default],
-                cwd=project_path,
-                capture_output=True,
-                timeout=5,
-            )
-            subprocess.run(
-                ["git", "pull", "origin", default],
-                cwd=project_path,
-                capture_output=True,
-                timeout=60,
-            )
-            r = subprocess.run(
-                ["git", "checkout", "-b", branch_name],
-                cwd=project_path,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if r.returncode != 0:
-                if "already exists" in (r.stderr or ""):
-                    subprocess.run(
-                        ["git", "checkout", branch_name],
-                        cwd=project_path,
-                        capture_output=True,
-                        timeout=5,
-                    )
-                else:
-                    self._debug_log(f"Branch create/checkout failed: {r.stderr}")
-                    return None
-            return branch_name
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
-            self._debug_log(f"Branch creation error: {e}")
-            return None
-
-    def _checkout_ticket_branch(self, ticket: TicketLike, project_path: str) -> bool:
-        """Checkout existing branch ticket-{ticket.id}, fetching from remote first if needed."""
-        branch_name = f"ticket-{ticket.id}"
-        try:
-            # First try local checkout (works if branch already exists locally).
-            r = subprocess.run(
-                ["git", "checkout", branch_name],
-                cwd=project_path,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if r.returncode == 0:
-                return True
-            # Branch not found locally — fetch with explicit refspec so origin/<branch> tracking ref is created.
-            # Plain `git fetch origin <branch>` only updates FETCH_HEAD, not origin/<branch>.
-            self._debug_log(f"Branch {branch_name} not local, fetching from origin…")
-            subprocess.run(
-                ["git", "fetch", "origin", f"{branch_name}:refs/remotes/origin/{branch_name}"],
-                cwd=project_path,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            r2 = subprocess.run(
-                ["git", "checkout", "-b", branch_name, f"origin/{branch_name}"],
-                cwd=project_path,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if r2.returncode == 0:
-                return True
-            self._debug_log(f"Checkout branch {branch_name} failed: {r2.stderr or r2.stdout}")
-            return False
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
-            self._debug_log(f"Checkout branch error: {e}")
-            return False
-
-    def _generate_pr_description(
-        self,
-        ticket_title: str,
-        ticket_description: Optional[str],
-        completion_summary: Optional[str],
-    ) -> Optional[str]:
-        """Ask the LLM to generate a descriptive PR body for what was accomplished. Returns None on failure."""
-        if not (completion_summary or "").strip():
-            return None
-        user_content = f"""Ticket title: {ticket_title}
-Ticket description: {ticket_description or "(none)"}
-
-Summary of what was done: {completion_summary}
-
-Write a clear, descriptive paragraph for the PR description explaining what was accomplished: files changed, behavior added or fixed, and any notable decisions. Plain text only, no markdown headers. Maximum 200 words."""
-        try:
-            content = self._director_request(
-                messages=[
-                    {"role": "system", "content": "You write concise, accurate PR descriptions for code changes. Output only the paragraph, no labels or prefixes."},
-                    {"role": "user", "content": user_content},
-                ],
-                max_tokens=2048,
-                temperature=0.3,
-                timeout=60,
-            ).strip()
-            return content if content else None
-        except Exception as e:
-            self._debug_log(f"PR description generation failed: {e}")
-            return None
-
     def _finalize(
         self,
         ticket: TicketLike,
         session_id: str,
         project_path: Optional[str] = None,
         completion_summary: Optional[str] = None,
-        review_mode: bool = False,
-        pr_number_for_comment: Optional[int] = None,
-        pr_comment_body: Optional[str] = None,
     ) -> None:
-        """Commit, push. If review_mode: post pr_comment_body (direct reply to reviewer) as PR comment. Else: create PR, move ticket to In Review."""
-        self._log(
-            ticket.project_id,
-            ticket.id,
-            session_id,
-            "finalize",
-            "Finalizing: commit, push" + (", PR comment" if review_mode else ", PR creation, move to In Review"),
-        )
-        branch_name = f"ticket-{ticket.id}"
+        """Commit and publish to AgentHub (swarm), then mark ticket complete."""
+        self._log(ticket.project_id, ticket.id, session_id, "finalize", "Finalizing: commit and publish")
         commit_message = (completion_summary or ticket.title or "Implementation").strip()
         if len(commit_message) > 200:
             commit_message = commit_message[:197] + "..."
-        pr_url = None
-        pr_number = None
 
-        # Swarm mode: publish to agenthub DAG instead of GitHub push + PR
-        if git_backend.is_swarm() and project_path and os.path.isdir(project_path):
+        commit_hash = None
+        if project_path and os.path.isdir(project_path):
             commit_hash = git_backend.swarm_publish(
                 project_path,
                 commit_message,
@@ -2562,127 +2328,14 @@ Write a clear, descriptive paragraph for the PR description explaining what was 
                 "swarm_publish",
                 f"Published to agenthub DAG: {commit_hash or 'failed'}",
             )
-            if review_mode:
-                self._backend.complete(
-                    ticket.id,
-                    ticket.project_id,
-                    summary=(completion_summary or "Addressed review feedback.").strip()[:500],
-                    review_comment_body=pr_comment_body,
-                )
-            else:
-                self._backend.complete(
-                    ticket.id,
-                    ticket.project_id,
-                    summary=(completion_summary or ticket.title or "Implementation").strip()[:500],
-                    agenthub_commit_hash=commit_hash,
-                )
-            return
 
-        if project_path and os.path.isdir(project_path):
-            try:
-                gh_env = {**os.environ, **get_gh_env_for_agent()}
-                subprocess.run(
-                    ["git", "add", "-A"],
-                    cwd=project_path,
-                    capture_output=True,
-                    timeout=10,
-                    env=gh_env,
-                )
-                r = subprocess.run(
-                    ["git", "status", "--porcelain"],
-                    cwd=project_path,
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    env=gh_env,
-                )
-                if (r.stdout or "").strip():
-                    commit_r = subprocess.run(
-                        ["git", "commit", "-m", commit_message],
-                        cwd=project_path,
-                        capture_output=True,
-                        text=True,
-                        timeout=10,
-                        env=gh_env,
-                    )
-                    self._debug_log(f"git commit exit={commit_r.returncode} stdout={commit_r.stdout[:200]} stderr={commit_r.stderr[:200]}")
-                else:
-                    self._debug_log("git status: no changes to commit, skipping commit step")
-                push_r = subprocess.run(
-                    ["git", "push", "-u", "origin", branch_name],
-                    cwd=project_path,
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                    env=gh_env,
-                )
-                self._debug_log(f"git push exit={push_r.returncode} stdout={push_r.stdout[:200]} stderr={push_r.stderr[:200]}")
-                if push_r.returncode != 0:
-                    self._debug_log(f"WARNING: git push failed — PR comment will still be posted but code may not be pushed")
-                if review_mode and pr_number_for_comment is not None:
-                    body = (pr_comment_body or completion_summary or "Addressed review feedback.").strip()
-                    if len(body) > 60000:
-                        body = body[:59997] + "..."
-                    body = "**[from terarchitect]** " + body + "\n\n" + BOT_COMMENT_SIGNATURE
-                    comment_r = subprocess.run(
-                        ["gh", "pr", "comment", str(pr_number_for_comment), "--body", body],
-                        cwd=project_path,
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                        env=gh_env,
-                    )
-                    self._debug_log(f"gh pr comment exit={comment_r.returncode} stderr={comment_r.stderr[:200]}")
-                elif not review_mode:
-                    body = f"Ticket: {ticket.title}\n\n{(ticket.description or '')[:500]}"
-                    pr_desc = self._generate_pr_description(
-                        ticket.title or "",
-                        ticket.description,
-                        completion_summary,
-                    )
-                    if pr_desc:
-                        body = body + "\n\n---\n\n## What was accomplished\n\n" + pr_desc
-                    if len(body) > 60000:
-                        body = body[:59997] + "..."
-                    pr_create = subprocess.run(
-                        [
-                            "gh", "pr", "create",
-                            "--title", (ticket.title or "Implementation")[:256],
-                            "--body", body,
-                            "--head", branch_name,
-                        ],
-                        cwd=project_path,
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                        env=gh_env,
-                    )
-                    if pr_create.returncode == 0 and pr_create.stdout:
-                        pr_url = pr_create.stdout.strip()
-                        try:
-                            m = re.search(r"/pull/(\d+)", pr_url)
-                            if m:
-                                pr_number = int(m.group(1))
-                        except (ValueError, AttributeError):
-                            pass
-            except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
-                self._debug_log(f"Finalize git/PR error: {e}")
-        # Update ticket/PR via backend (DB or API)
-        if review_mode:
-            self._backend.complete(
-                ticket.id,
-                ticket.project_id,
-                summary=(completion_summary or "Addressed review feedback.").strip()[:500],
-                review_comment_body=pr_comment_body,
-            )
-        else:
-            self._backend.complete(
-                ticket.id,
-                ticket.project_id,
-                pr_url=pr_url,
-                pr_number=pr_number,
-                summary=(completion_summary or ticket.title or "Implementation").strip()[:500],
-            )
+        self._backend.complete(
+            ticket.id,
+            ticket.project_id,
+            summary=(completion_summary or ticket.title or "Implementation").strip()[:500],
+            agenthub_commit_hash=commit_hash,
+            base_hash=(os.environ.get("BASE_HASH") or "").strip() or None,
+        )
 
     def _log(
         self,

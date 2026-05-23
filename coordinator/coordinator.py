@@ -111,7 +111,8 @@ _COORDINATOR_AGENT_ENV_KEYS = (
     "OPENAI_API_KEY", "openai_api_key",
     "TERARCHITECT_WORKER_API_KEY",
     "OPENCODE_SERVER_URL", "OPENCODE_SERVER_USERNAME", "OPENCODE_SERVER_PASSWORD",
-    "AGENTHUB_URL", "AGENTHUB_API_KEY", "AGENTHUB_AGENT_ID", "AGENTHUB_BRANCH",
+    "AGENTHUB_URL", "AGENTHUB_API_KEY", "AGENTHUB_AGENT_ID",
+    "BASE_HASH", "AGENTHUB_ROOT_HASH",
 )
 
 def _headers() -> dict:
@@ -166,12 +167,28 @@ def claim_job(base_url: str, project_id: Optional[str] = None) -> Optional[dict]
         return None
 
 
-def claim_merge_run(base_url: str) -> Optional[dict]:
-    """POST /api/worker/merge/next. Claims the next queued merge run.
+def claim_workspace_job(base_url: str) -> Optional[dict]:
+    """POST /api/worker/workspaces/next. Claims the next workspace queued for composition."""
+    try:
+        r = requests.post(
+            f"{base_url}/api/worker/workspaces/next",
+            json={}, headers=_headers(), timeout=30,
+        )
+        if r.status_code == 204:
+            return None
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"[coordinator] claim workspace error: {e}", file=sys.stderr)
+        return None
+
+
+def claim_ship_run(base_url: str) -> Optional[dict]:
+    """POST /api/worker/ship-run/next. Claims the next queued merge run.
     Returns the full run payload or None if nothing to do."""
     try:
         r = requests.post(
-            f"{base_url}/api/worker/merge/next",
+            f"{base_url}/api/worker/ship-run/next",
             json={},
             headers=_headers(),
             timeout=30,
@@ -185,30 +202,28 @@ def claim_merge_run(base_url: str) -> Optional[dict]:
         return None
 
 
-# Env vars forwarded from coordinator to merger subprocess.
-_MERGER_ENV_KEYS = (
+# Env vars forwarded from coordinator to workspace composer subprocess.
+_COMPOSER_ENV_KEYS = (
     "TERARCHITECT_API_URL", "TERARCHITECT_WORKER_API_KEY",
     "AGENTHUB_URL", "AGENTHUB_API_KEY",
-    "MERGE_TEST_COMMAND", "MERGE_BRANCH_PREFIX",
+    "WORKSPACE_TEST_COMMAND", "MERGE_TEST_COMMAND",
     "GIT_USER_NAME", "GIT_USER_EMAIL",
-    "GH_TOKEN", "GITHUB_TOKEN",
 )
 
 
-def _run_merger(base_url: str, run_data: dict) -> None:
-    """Run the merger agent as a subprocess on the host (needs project_path filesystem access).
-    The coordinator pre-claimed the run; we pass MERGE_RUN_ID so the merger fetches it directly."""
-    run_id = run_data["run"]["id"]
-    wave_num = run_data["run"].get("wave_num", "?")
-    project_name = run_data["project"].get("name", "")
-    print(f"[coordinator] starting merger run={run_id} wave={wave_num} project={project_name!r}", flush=True)
+def _run_workspace_composer(base_url: str, job_data: dict) -> None:
+    """Run the workspace composer on the host for a claimed workspace."""
+    ws = job_data["workspace"]
+    ws_id = ws["id"]
+    project_name = job_data["project"].get("name", "")
+    print(f"[coordinator] starting workspace composer ws={ws_id} project={project_name!r}", flush=True)
 
     env = {}
-    for key in _MERGER_ENV_KEYS:
+    for key in _COMPOSER_ENV_KEYS:
         val = os.environ.get(key)
         if val:
             env[key] = val
-    env["MERGE_RUN_ID"] = str(run_id)
+    env["WORKSPACE_ID"] = str(ws_id)
 
     repo_root = _repo_root()
     full_env = {**os.environ, **env}
@@ -219,16 +234,62 @@ def _run_merger(base_url: str, run_data: dict) -> None:
 
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "agent.merger"],
+            [sys.executable, "-m", "agent.workspace_composer"],
+            env=full_env, cwd=str(repo_root),
+        )
+        if result.returncode == 0:
+            print(f"[coordinator] workspace composer {ws_id} completed", flush=True)
+        else:
+            print(f"[coordinator] workspace composer {ws_id} exited {result.returncode}",
+                  file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f"[coordinator] workspace composer {ws_id} error: {e}", file=sys.stderr, flush=True)
+
+
+# Env vars forwarded from coordinator to shipper subprocess.
+_SHIPPER_ENV_KEYS = (
+    "TERARCHITECT_API_URL", "TERARCHITECT_WORKER_API_KEY",
+    "AGENTHUB_URL", "AGENTHUB_API_KEY",
+    "MERGE_TEST_COMMAND",
+    "GIT_USER_NAME", "GIT_USER_EMAIL",
+    "GH_TOKEN", "GITHUB_TOKEN",
+)
+
+
+def _run_shipper(base_url: str, run_data: dict) -> None:
+    """Run the shipper agent as a subprocess on the host (needs project_path filesystem access).
+    Coordinator pre-claimed the run; SHIP_RUN_ID tells shipper which run to process."""
+    run_id = run_data["run"]["id"]
+    wave_num = run_data["run"].get("wave_num", "?")
+    project_name = run_data["project"].get("name", "")
+    print(f"[coordinator] starting shipper run={run_id} wave={wave_num} project={project_name!r}", flush=True)
+
+    env = {}
+    for key in _SHIPPER_ENV_KEYS:
+        val = os.environ.get(key)
+        if val:
+            env[key] = val
+    env["SHIP_RUN_ID"] = str(run_id)
+
+    repo_root = _repo_root()
+    full_env = {**os.environ, **env}
+    pythonpath = str(repo_root)
+    if full_env.get("PYTHONPATH"):
+        pythonpath = pythonpath + os.pathsep + full_env["PYTHONPATH"]
+    full_env["PYTHONPATH"] = pythonpath
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "agent.shipper"],
             env=full_env,
             cwd=str(repo_root),
         )
         if result.returncode == 0:
-            print(f"[coordinator] merger run {run_id} completed", flush=True)
+            print(f"[coordinator] shipper run {run_id} completed", flush=True)
         else:
-            print(f"[coordinator] merger run {run_id} exited {result.returncode}", file=sys.stderr, flush=True)
+            print(f"[coordinator] shipper run {run_id} exited {result.returncode}", file=sys.stderr, flush=True)
     except Exception as e:
-        print(f"[coordinator] merger run {run_id} error: {e}", file=sys.stderr, flush=True)
+        print(f"[coordinator] shipper run {run_id} error: {e}", file=sys.stderr, flush=True)
 
 
 def mark_complete(base_url: str, job_id: str) -> None:
@@ -318,7 +379,12 @@ def job_to_env(job: dict, for_docker: bool = False) -> dict:
     env["REPO_URL"] = str(job.get("repo_url", ""))
     env["JOB_ID"] = str(job.get("job_id", ""))
     env["JOB_KIND"] = str(job.get("kind", "ticket"))
-    env["TERARCHITECT_MODE"] = "swarm" if job.get("git_mode") == "swarm" else "structured"
+    env["TERARCHITECT_MODE"] = "swarm"
+    # AgentHub base selection: tell the agent which commit to build on
+    if job.get("base_hash"):
+        env["BASE_HASH"] = str(job["base_hash"])
+    if job.get("shipped_frontier"):
+        env["AGENTHUB_ROOT_HASH"] = str(job["shipped_frontier"])
     # When execution_mode=local, agent runs on host and uses this path instead of cloning
     if job.get("execution_mode") == "local" and job.get("project_path"):
         env["AGENT_WORKSPACE"] = str(job["project_path"]).strip()
@@ -330,11 +396,6 @@ def job_to_env(job: dict, for_docker: bool = False) -> dict:
         val = os.environ.get(key)
         if val is not None and str(val).strip() and (key not in env or not env[key]):
             env[key] = str(val).strip()
-    if job.get("kind") == "review":
-        env["PR_NUMBER"] = str(job.get("pr_number", ""))
-        env["COMMENT_BODY"] = str(job.get("comment_body", ""))
-        if job.get("github_comment_id") is not None:
-            env["GITHUB_COMMENT_ID"] = str(job["github_comment_id"])
     if for_docker:
         # Inside container, localhost is the container. Rewrite any URL with localhost/127.0.0.1 so agent/worker reach host.
         for k, v in list(env.items()):
@@ -478,12 +539,10 @@ def _run_agent_direct(job: dict, docker_error: str, base_url: str, job_id: str =
     """Run the agent on the host (python -m agent.agent_runner). Returns exit code."""
     env = job_to_env(job)
     env["TERARCHITECT_DOCKER_RUN_ERROR"] = docker_error[:8000] if len(docker_error) > 8000 else docker_error
-    kind = (job.get("kind") or "ticket").strip().lower()
-    sub = "review" if kind == "review" else "ticket"
     repo_root = _repo_root()
     full_env = {**os.environ, **env}
     full_env["PYTHONPATH"] = str(repo_root) + (os.pathsep + full_env["PYTHONPATH"] if full_env.get("PYTHONPATH") else "")
-    cmd = [sys.executable, "-m", "agent.agent_runner", sub]
+    cmd = [sys.executable, "-m", "agent.agent_runner", "ticket"]
     if job_id:
         _write_run_command(job_id, "local", local_cmd=cmd, local_env=full_env, cwd=str(repo_root))
     timeout_sec_raw = _env("WORKER_TIMEOUT_SEC", "")
@@ -595,10 +654,16 @@ def main() -> None:
     print(f"[coordinator] state_dir={_state_dir()}, repo_root={_repo_root()}", flush=True)
 
     # Reset any jobs left in 'running' state from a previous crashed coordinator.
+    # Default: reset jobs running for more than 30 minutes. Override with COORDINATOR_STALE_JOB_AGE_SEC.
+    _stale_age_raw = _env("COORDINATOR_STALE_JOB_AGE_SEC", "1800")
+    try:
+        stale_age = max(0, int(_stale_age_raw))
+    except (ValueError, TypeError):
+        stale_age = 1800
     try:
         r = requests.post(
             f"{base_url}/api/worker/jobs/reset-stale",
-            json={"max_age_seconds": 0},
+            json={"max_age_seconds": stale_age},
             headers=_headers(),
             timeout=15,
         )
@@ -608,7 +673,38 @@ def main() -> None:
                 print(f"[coordinator] reset {data['reset']} stale running job(s) from previous session", flush=True)
     except Exception as e:
         print(f"[coordinator] could not reset stale jobs (backend may not be ready yet): {e}", file=sys.stderr)
+
+    # Also reset any ship runs stuck in 'running' from a previous crashed shipper.
+    try:
+        r2 = requests.post(
+            f"{base_url}/api/worker/ship-run/reset-stale",
+            json={"max_age_seconds": stale_age},
+            headers=_headers(),
+            timeout=15,
+        )
+        if r2.status_code == 200:
+            data2 = r2.json()
+            if data2.get("reset", 0) > 0:
+                print(f"[coordinator] reset {data2['reset']} stale running ship run(s) from previous session", flush=True)
+    except Exception as e:
+        print(f"[coordinator] could not reset stale ship runs: {e}", file=sys.stderr)
+
+    # Also reset stale workspace composer runs
+    try:
+        r3 = requests.post(
+            f"{base_url}/api/worker/workspaces/reset-stale",
+            json={"max_age_seconds": stale_age},
+            headers=_headers(), timeout=15,
+        )
+        if r3.status_code == 200:
+            data3 = r3.json()
+            if data3.get("reset", 0) > 0:
+                print(f"[coordinator] reset {data3['reset']} stale workspace composer run(s)", flush=True)
+    except Exception as e:
+        print(f"[coordinator] could not reset stale workspace runs: {e}", file=sys.stderr)
+
     running_mergers: List[threading.Thread] = []
+    running_composers: List[threading.Thread] = []
 
     while True:
         running = [t for t in running if t.is_alive()]
@@ -646,17 +742,26 @@ def main() -> None:
             t.start()
             running.append(t)
 
-        # Claim and dispatch merge runs (independent of ticket agent slots; one merger at a time)
+        # Claim and dispatch ship runs (one shipper at a time)
         if not running_mergers:
-            run_data = claim_merge_run(base_url)
+            run_data = claim_ship_run(base_url)
             if run_data:
                 mt = threading.Thread(
-                    target=_run_merger,
-                    args=(base_url, run_data),
-                    daemon=False,
+                    target=_run_shipper, args=(base_url, run_data), daemon=False,
                 )
                 mt.start()
                 running_mergers.append(mt)
+
+        # Claim and dispatch workspace composer runs (one at a time)
+        running_composers = [t for t in running_composers if t.is_alive()]
+        if not running_composers:
+            ws_data = claim_workspace_job(base_url)
+            if ws_data:
+                ct = threading.Thread(
+                    target=_run_workspace_composer, args=(base_url, ws_data), daemon=False,
+                )
+                ct.start()
+                running_composers.append(ct)
 
         time.sleep(poll_interval)
 
