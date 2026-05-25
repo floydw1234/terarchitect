@@ -8,9 +8,9 @@ This runbook describes how to run the Terarchitect app, coordinator, and agent i
 
 | Component | Role |
 |-----------|------|
-| **App** | Flask API + DB + frontend. Enqueues jobs to `agent_jobs` when a ticket moves to In Progress or a PR review comment is created. Does **not** run the Director or worker. |
+| **App** | Flask API + DB + frontend. Enqueues jobs to `agent_jobs` when a ticket moves to In Progress. Does **not** run the Director or worker. |
 | **Coordinator** | **Host-side Python app** (not a Docker container). It claims jobs via `POST /api/worker/jobs/start`, runs `docker run ... terarchitect-agent` for each job, and calls `POST .../complete` or `.../fail` when the container exits. Must run on a host that has Docker. |
-| **Agent image** | Single Docker image (`terarchitect-agent`). One container per job: clones repo, runs Director + worker (OpenCode, Aider, Claude Code, Gemini, or Codex), pushes and opens PR, exits. |
+| **Agent image** | Single Docker image (`terarchitect-agent`). One container per job: clones or opens the repo, checks out the selected AgentHub base when provided, runs Director + worker (OpenCode, Claude Code, or Codex), publishes an AgentHub attempt, exits. |
 
 **Execution mode (per project):** In the project’s execution settings in the UI you can choose **Docker** (default: coordinator runs agent in a container, repo is cloned at runtime) or **Local** (coordinator runs the agent on the host at a configured project path; no clone).
 
@@ -96,7 +96,7 @@ See comments in `coordinator/terarchitect-coordinator.service` for details.
 
 - **TERARCHITECT_API_URL** — App base URL. When the coordinator runs on the same host as the app, use `http://localhost:5010`. Agent **containers** must reach the app: set `TERARCHITECT_API_URL=http://host.docker.internal:5010` so the coordinator passes that into each container (on Linux the coordinator adds `--add-host=host.docker.internal:host-gateway` when the URL contains `host.docker.internal`).
 - **PROJECT_ID** or **PROJECT_IDS** — Optional. Comma-separated UUIDs to restrict which projects this coordinator serves. If unset, the coordinator fetches all project IDs from `GET /api/worker/projects` at startup (or claims from any project if the fetch fails).
-- **GITHUB_TOKEN** — Passed to the container for git clone/push and `gh pr create`.
+- **GITHUB_TOKEN** — Passed to the container for GitHub clone access and for Ship Room release/export PR creation when using GitHub as the export boundary.
 - **AGENT_IMAGE** — Default `terarchitect-agent`. Override if you use a different tag.
 - **MAX_CONCURRENT_AGENTS** — Default 1. Increase to run multiple jobs in parallel.
 - **POLL_INTERVAL_SEC** — Default 10.
@@ -105,7 +105,7 @@ See comments in `coordinator/terarchitect-coordinator.service` for details.
 - **COORDINATOR_STATE_DIR** — Default `~/.terarchitect/coordinator`. Holds `project_images.json` (project_id → image tag). When a Docker run succeeds for a project, that image is saved so the next job for that project uses it.
 - **COORDINATOR_REPO_ROOT** — Repo root path (for direct agent run when Docker fails). Default: parent of coordinator package. Set if you install elsewhere (e.g. systemd override).
 
-**Fallback when Docker fails:** If `docker run` for a job fails (e.g. image not found, container exits on start), the coordinator runs the agent **on the host** (`python -m agent.agent_runner ticket` or `review`) with the same job env and passes the Docker error in `TERARCHITECT_DOCKER_RUN_ERROR`. The agent logs that error to the ticket so the run can continue or you can fix the image. For fallback to work, install agent deps in the same venv: `pip install -r agent/requirements.txt`.
+**Fallback when Docker fails:** If `docker run` for a job fails (e.g. image not found, container exits on start), the coordinator runs the ticket agent **on the host** (`python -m agent.agent_runner ticket`) with the same job env and passes the Docker error in `TERARCHITECT_DOCKER_RUN_ERROR`. The agent logs that error to the ticket so the run can continue or you can fix the image. For fallback to work, install agent deps in the same venv: `pip install -r agent/requirements.txt`.
 
 ---
 
@@ -156,6 +156,7 @@ See **docs/PHASE1_WORKER_API.md** → Phase 5 for OpenCode and required env. Age
 
 1. **App:** Open http://localhost:3000, create a project, add a ticket, move it to In Progress. A row should appear in `agent_jobs` with `status=pending`.
 2. **Coordinator:** Run the coordinator with that project’s `PROJECT_ID`. It should claim the job, start a container, and after the run call complete or fail.
-3. **Logs:** Ticket logs and PR appear in the UI via the API; the agent posts logs and completion through the worker API.
+3. **Logs and attempts:** Ticket logs and the resulting AgentHub attempt appear in the UI via the API; the agent posts logs and completion through the worker API.
+4. **Ship:** Open Ship Room for the project, compose a ready wave, and ship the release/export artifact when validation passes.
 
 No in-process agent runs in the app; all execution is in containers started by the coordinator.

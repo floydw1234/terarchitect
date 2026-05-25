@@ -177,6 +177,147 @@ export interface WaveDetail {
   stale_count: number;
 }
 
+export type EvidenceTargetType = 'attempt' | 'ship_run' | 'composite_workspace' | 'snapshot';
+export type EvidenceStatus = 'collecting' | 'passed' | 'failed' | 'warning' | 'incomplete';
+export type EvidenceRiskLevel = 'low' | 'medium' | 'high' | 'unknown';
+export type EvidenceCheckStatus = 'passed' | 'failed' | 'warning' | 'skipped';
+export type EvidenceArtifactKind = 'log' | 'report' | 'trace' | 'screenshot' | 'video' | 'diff' | 'coverage' | 'other';
+export type EvidenceRunType = 'command' | 'suite' | 'browser' | 'replay' | 'llm_review' | 'test_adequacy' | 'mutation' | 'property';
+export type EvidenceRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'canceled';
+
+export interface EvidenceArtifact {
+  kind: EvidenceArtifactKind;
+  label?: string;
+  url?: string;
+  path?: string;
+  exists?: boolean;
+}
+
+export interface EvidenceSandboxConfig {
+  enabled?: boolean;
+  inherit_env?: boolean;
+  env?: Record<string, string>;
+}
+
+export interface VerificationPolicy {
+  required_checks: string[];
+  optional_checks: string[];
+  required_llm_reviewers: string[];
+  block_on: string[];
+  check_suites: Array<{
+    check_type: string;
+    command: string | string[];
+    cwd?: string;
+    timeout_seconds?: number;
+    tool_name?: string;
+    artifacts?: EvidenceArtifact[];
+    sandbox?: EvidenceSandboxConfig;
+  }>;
+}
+
+export interface EvidenceCheck {
+  id: string;
+  evidence_bundle_id: string;
+  check_type: string;
+  status: EvidenceCheckStatus;
+  tool_name: string | null;
+  command: string | null;
+  output: string | null;
+  artifact_url: string | null;
+  metadata: Record<string, unknown>;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface EvidenceBundle {
+  id: string;
+  project_id: string;
+  target_type: EvidenceTargetType;
+  target_id: string;
+  base_hash: string | null;
+  candidate_hash: string | null;
+  selected_attempt_ids: string[];
+  selected_leaf_hashes: string[];
+  status: EvidenceStatus;
+  risk_level: EvidenceRiskLevel;
+  summary: string | null;
+  check_counts: Record<string, number>;
+  checks?: EvidenceCheck[];
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface EvidencePolicyEvaluation {
+  allowed: boolean;
+  target_type: EvidenceTargetType;
+  target_id: string;
+  policy: VerificationPolicy;
+  bundle: EvidenceBundle | null;
+  required_checks: Record<string, { status: 'passed' | 'failed' | 'missing' | 'waived'; passed: boolean; waiver?: EvidenceCheck }>;
+  required_llm_reviewers: Record<string, { status: 'passed' | 'failed' | 'warning' | 'missing'; passed: boolean; check?: EvidenceCheck }>;
+  human_approval: EvidenceCheck | null;
+  reasons: string[];
+}
+
+export interface EvidenceLlmFinding {
+  severity: 'info' | 'low' | 'medium' | 'high' | 'critical' | 'warning';
+  path?: string | null;
+  line?: number | string | null;
+  symbol?: string | null;
+  claim: string;
+  evidence?: string | null;
+  suggested_fix?: string | null;
+  blocking?: boolean;
+  confidence?: number | string | null;
+}
+
+export interface EvidenceTestAdequacyFinding {
+  severity: 'info' | 'low' | 'medium' | 'high' | 'critical' | 'warning';
+  criterion?: string | null;
+  test_path?: string | null;
+  covered?: boolean;
+  claim: string;
+  evidence?: string | null;
+  suggested_fix?: string | null;
+  blocking?: boolean;
+  confidence?: number | string | null;
+  weakened_existing_tests?: boolean;
+}
+
+export interface EvidenceRun {
+  id: string;
+  project_id: string;
+  evidence_bundle_id: string | null;
+  run_type: EvidenceRunType;
+  status: EvidenceRunStatus;
+  target_type: EvidenceTargetType;
+  target_id: string;
+  check_type: string | null;
+  request_data: Record<string, unknown>;
+  error: string | null;
+  created_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  updated_at: string | null;
+  bundle?: EvidenceBundle;
+}
+
+export interface EvidenceExternalCheck {
+  check_type?: string;
+  status?: EvidenceCheckStatus;
+  tool_name?: string;
+  command?: string;
+  output?: string;
+  artifact_url?: string;
+  metadata?: Record<string, unknown>;
+  artifacts?: EvidenceArtifact[];
+  findings?: EvidenceLlmFinding[] | EvidenceTestAdequacyFinding[];
+  started_at?: string;
+  finished_at?: string;
+}
+
 async function checkResponse<T = unknown>(response: Response): Promise<T> {
   if (!response.ok) {
     let msg = response.statusText;
@@ -490,9 +631,11 @@ export async function sendWaveFeedback(
 export async function getTicketAttempts(
   projectId: string,
   ticketId: string,
+  includeTestOutput = false,
 ): Promise<TicketAttempt[]> {
+  const query = includeTestOutput ? '?include_test_output=true' : '';
   const response = await fetch(
-    `${API_URL}/api/projects/${projectId}/tickets/${ticketId}/attempts`,
+    `${API_URL}/api/projects/${projectId}/tickets/${ticketId}/attempts${query}`,
   );
   return checkResponse<TicketAttempt[]>(response);
 }
@@ -509,6 +652,480 @@ export async function acceptAttempt(
   return checkResponse<TicketAttempt>(response);
 }
 
+// ---------------------------------------------------------------------------
+// Verification Evidence API (Phase 14)
+// ---------------------------------------------------------------------------
+
+export async function getEvidencePolicy(
+  projectId: string,
+  targetType: EvidenceTargetType,
+  targetId: string,
+): Promise<EvidencePolicyEvaluation> {
+  const params = new URLSearchParams({ target_type: targetType, target_id: targetId });
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence/policy?${params}`);
+  return checkResponse<EvidencePolicyEvaluation>(response);
+}
+
+export async function getEvidence(
+  projectId: string,
+  filters?: { target_type?: EvidenceTargetType; target_id?: string; check_type?: string },
+): Promise<EvidenceBundle[]> {
+  const params = new URLSearchParams();
+  if (filters?.target_type) params.set('target_type', filters.target_type);
+  if (filters?.target_id) params.set('target_id', filters.target_id);
+  if (filters?.check_type) params.set('check_type', filters.check_type);
+  const query = params.toString();
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence${query ? `?${query}` : ''}`);
+  return checkResponse<EvidenceBundle[]>(response);
+}
+
+export async function collectEvidence(
+  projectId: string,
+  data: { target_type: EvidenceTargetType; target_id: string; check_type?: string },
+): Promise<EvidenceBundle> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence/collect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return checkResponse<EvidenceBundle>(response);
+}
+
+export async function runCommandEvidence(
+  projectId: string,
+  data: {
+    target_type: EvidenceTargetType;
+    target_id: string;
+    check_type: string;
+    command: string | string[];
+    cwd?: string;
+    timeout_seconds?: number;
+    artifacts?: EvidenceArtifact[];
+    sandbox?: EvidenceSandboxConfig;
+  },
+): Promise<EvidenceBundle> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence/run-command`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return checkResponse<EvidenceBundle>(response);
+}
+
+export async function runEvidenceSuite(
+  projectId: string,
+  data: {
+    target_type: EvidenceTargetType;
+    target_id: string;
+    timeout_seconds?: number;
+    sandbox?: EvidenceSandboxConfig;
+  },
+): Promise<EvidenceBundle> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence/run-suite`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return checkResponse<EvidenceBundle>(response);
+}
+
+export async function runBrowserEvidence(
+  projectId: string,
+  data: {
+    target_type: EvidenceTargetType;
+    target_id: string;
+    check_type?: string;
+    command: string | string[];
+    preview_url?: string;
+    preview_required?: boolean;
+    preview_command?: string | string[];
+    preview_launch_required?: boolean;
+    preview_ready_timeout_seconds?: number;
+    preview_supervision_enabled?: boolean;
+    auto_detect_preview_command?: boolean;
+    report_path?: string;
+    results_path?: string;
+    trace_path?: string;
+    screenshot_path?: string;
+    video_path?: string;
+    retry_count?: number;
+    shard?: { index: number; total: number };
+    console_errors?: string[];
+    network_failures?: string[];
+    failure_artifacts_only?: boolean;
+    cwd?: string;
+    timeout_seconds?: number;
+    artifacts?: EvidenceArtifact[];
+    sandbox?: EvidenceSandboxConfig;
+  },
+): Promise<EvidenceBundle> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence/run-browser`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return checkResponse<EvidenceBundle>(response);
+}
+
+export async function runReplayEvidence(
+  projectId: string,
+  data: {
+    target_type: EvidenceTargetType;
+    target_id: string;
+    check_type?: string;
+    command: string | string[];
+    traffic_path?: string;
+    contract_path?: string;
+    base_url?: string;
+    stable_url?: string;
+    candidate_url?: string;
+    base_url_required?: boolean;
+    candidate_url_required?: boolean;
+    contract_validation_required?: boolean;
+    contract_parse_required?: boolean;
+    traffic_source?: string;
+    sample_count?: number;
+    traffic_parse_required?: boolean;
+    generate_replay_manifest?: boolean;
+    replay_manifest_path?: string;
+    contract_compatible?: boolean;
+    compared_endpoints?: string[];
+    status_code_regressions?: string[];
+    schema_regressions?: string[];
+    auth_regressions?: string[];
+    behavior_regressions?: string[];
+    diff_path?: string;
+    report_path?: string;
+    cwd?: string;
+    timeout_seconds?: number;
+    artifacts?: EvidenceArtifact[];
+    sandbox?: EvidenceSandboxConfig;
+  },
+): Promise<EvidenceBundle> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence/run-replay`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return checkResponse<EvidenceBundle>(response);
+}
+
+export async function runMutationEvidence(
+  projectId: string,
+  data: {
+    target_type: EvidenceTargetType;
+    target_id: string;
+    command: string | string[];
+    check_type?: string;
+    changed_paths?: string[];
+    mutation_threshold?: number;
+    report_path?: string;
+    html_report_path?: string;
+    cwd?: string;
+    timeout_seconds?: number;
+    artifacts?: EvidenceArtifact[];
+    sandbox?: EvidenceSandboxConfig;
+  },
+): Promise<EvidenceBundle> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence/run-mutation`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return checkResponse<EvidenceBundle>(response);
+}
+
+export async function runPropertyEvidence(
+  projectId: string,
+  data: {
+    target_type: EvidenceTargetType;
+    target_id: string;
+    command: string | string[];
+    check_type?: string;
+    properties?: string[];
+    generated_cases?: number;
+    report_path?: string;
+    examples_path?: string;
+    cwd?: string;
+    timeout_seconds?: number;
+    artifacts?: EvidenceArtifact[];
+    sandbox?: EvidenceSandboxConfig;
+  },
+): Promise<EvidenceBundle> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence/run-property`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return checkResponse<EvidenceBundle>(response);
+}
+
+export async function runLlmReviewEvidence(
+  projectId: string,
+  data: {
+    target_type: EvidenceTargetType;
+    target_id: string;
+    reviewer: string;
+    command?: string | string[];
+    findings?: EvidenceLlmFinding[];
+    model?: string;
+    prompt_version?: string;
+    report_path?: string;
+    cwd?: string;
+    timeout_seconds?: number;
+    artifacts?: EvidenceArtifact[];
+    sandbox?: EvidenceSandboxConfig;
+  },
+): Promise<EvidenceBundle> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence/run-llm-review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return checkResponse<EvidenceBundle>(response);
+}
+
+export async function runTestAdequacyEvidence(
+  projectId: string,
+  data: {
+    target_type: EvidenceTargetType;
+    target_id: string;
+    command?: string | string[];
+    findings?: EvidenceTestAdequacyFinding[];
+    generated_test_paths?: string[];
+    acceptance_criteria?: string[];
+    generate_candidate_tests?: boolean;
+    write_generated_tests?: boolean;
+    overwrite_generated_tests?: boolean;
+    generated_test_prefix?: string;
+    generated_test_framework?: string;
+    generated_test_bodies?: Record<string, string>;
+    report_path?: string;
+    cwd?: string;
+    timeout_seconds?: number;
+    artifacts?: EvidenceArtifact[];
+    sandbox?: EvidenceSandboxConfig;
+  },
+): Promise<EvidenceBundle> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence/run-test-adequacy`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return checkResponse<EvidenceBundle>(response);
+}
+
+export async function getEvidenceRuns(
+  projectId: string,
+  filters?: { status?: EvidenceRunStatus; target_type?: EvidenceTargetType; target_id?: string },
+): Promise<EvidenceRun[]> {
+  const params = new URLSearchParams();
+  if (filters?.status) params.set('status', filters.status);
+  if (filters?.target_type) params.set('target_type', filters.target_type);
+  if (filters?.target_id) params.set('target_id', filters.target_id);
+  const query = params.toString();
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence/runs${query ? `?${query}` : ''}`);
+  return checkResponse<EvidenceRun[]>(response);
+}
+
+export async function queueEvidenceRun(
+  projectId: string,
+  data: {
+    run_type: EvidenceRunType;
+    target_type: EvidenceTargetType;
+    target_id: string;
+    check_type?: string;
+    command?: string | string[];
+    preview_url?: string;
+    preview_required?: boolean;
+    preview_command?: string | string[];
+    preview_launch_required?: boolean;
+    preview_ready_timeout_seconds?: number;
+    preview_supervision_enabled?: boolean;
+    auto_detect_preview_command?: boolean;
+    report_path?: string;
+    results_path?: string;
+    trace_path?: string;
+    screenshot_path?: string;
+    video_path?: string;
+    retry_count?: number;
+    shard?: { index: number; total: number };
+    console_errors?: string[];
+    network_failures?: string[];
+    failure_artifacts_only?: boolean;
+    traffic_path?: string;
+    contract_path?: string;
+    base_url?: string;
+    stable_url?: string;
+    candidate_url?: string;
+    base_url_required?: boolean;
+    candidate_url_required?: boolean;
+    contract_validation_required?: boolean;
+    contract_parse_required?: boolean;
+    traffic_source?: string;
+    sample_count?: number;
+    traffic_parse_required?: boolean;
+    generate_replay_manifest?: boolean;
+    replay_manifest_path?: string;
+    contract_compatible?: boolean;
+    compared_endpoints?: string[];
+    status_code_regressions?: string[];
+    schema_regressions?: string[];
+    auth_regressions?: string[];
+    behavior_regressions?: string[];
+    diff_path?: string;
+    changed_paths?: string[];
+    mutation_threshold?: number;
+    properties?: string[];
+    generated_cases?: number;
+    reviewer?: string;
+    external_worker?: boolean;
+    external_worker_required?: boolean;
+    requires_external_worker?: boolean;
+    findings?: EvidenceLlmFinding[] | EvidenceTestAdequacyFinding[];
+    generated_test_paths?: string[];
+    acceptance_criteria?: string[];
+    generate_candidate_tests?: boolean;
+    write_generated_tests?: boolean;
+    overwrite_generated_tests?: boolean;
+    generated_test_prefix?: string;
+    generated_test_framework?: string;
+    generated_test_bodies?: Record<string, string>;
+    model?: string;
+    prompt_version?: string;
+    cwd?: string;
+    timeout_seconds?: number;
+    artifacts?: EvidenceArtifact[];
+    sandbox?: EvidenceSandboxConfig;
+  },
+): Promise<EvidenceRun> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence/runs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return checkResponse<EvidenceRun>(response);
+}
+
+export async function completeExternalEvidenceRun(
+  runId: string,
+  data: {
+    worker_id?: string;
+    status?: EvidenceStatus;
+    risk_level?: EvidenceRiskLevel;
+    summary?: string;
+    base_hash?: string;
+    candidate_hash?: string;
+    selected_attempt_ids?: string[];
+    selected_leaf_hashes?: string[];
+    checks?: EvidenceExternalCheck[];
+    findings?: EvidenceLlmFinding[];
+    reviewer?: string;
+    model?: string;
+    prompt_version?: string;
+    output?: string;
+    artifacts?: EvidenceArtifact[];
+  },
+): Promise<{ run: EvidenceRun }> {
+  const response = await fetch(`${API_URL}/api/worker/evidence-runs/${runId}/complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return checkResponse<{ run: EvidenceRun }>(response);
+}
+
+export async function failExternalEvidenceRun(
+  runId: string,
+  data: { error: string },
+): Promise<{ run: EvidenceRun }> {
+  const response = await fetch(`${API_URL}/api/worker/evidence-runs/${runId}/fail`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return checkResponse<{ run: EvidenceRun }>(response);
+}
+
+export async function compareEvidence(
+  projectId: string,
+  data: {
+    target_type: EvidenceTargetType;
+    target_id: string;
+    base_hash?: string;
+    candidate_hash?: string;
+    timeout_seconds?: number;
+  },
+): Promise<EvidenceBundle> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence/compare`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return checkResponse<EvidenceBundle>(response);
+}
+
+export async function addEvidenceWaiver(
+  projectId: string,
+  bundleId: string,
+  data: { check_type: string; reason: string; actor?: string },
+): Promise<EvidenceCheck> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence/${bundleId}/waivers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return checkResponse<EvidenceCheck>(response);
+}
+
+export async function addEvidenceApproval(
+  projectId: string,
+  bundleId: string,
+  data: { actor: string; reason: string },
+): Promise<EvidenceCheck> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence/${bundleId}/approvals`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return checkResponse<EvidenceCheck>(response);
+}
+
+export async function createEvidenceRepairTicket(
+  projectId: string,
+  bundleId: string,
+  data?: {
+    title?: string;
+    description?: string;
+    column_id?: string;
+    priority?: string;
+    depends_on_ticket_ids?: string[];
+    auto_dispatch_repair?: boolean;
+    max_repair_attempts?: number;
+    repair_policy?: { auto_dispatch?: boolean; max_attempts?: number };
+  },
+): Promise<Ticket> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence/${bundleId}/repair`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data || {}),
+  });
+  return checkResponse<Ticket>(response);
+}
+
+export async function rerunEvidenceChecks(
+  projectId: string,
+  bundleId: string,
+  data?: { check_ids?: string[]; timeout_seconds?: number },
+): Promise<EvidenceBundle> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/evidence/${bundleId}/rerun`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data || {}),
+  });
+  return checkResponse<EvidenceBundle>(response);
+}
+
 /** An event posted to an AgentHub channel — execution ledger entry. */
 export interface AgentHubEvent {
   id: number;
@@ -516,6 +1133,11 @@ export interface AgentHubEvent {
   agent_id: string;
   parent_id: number | null;
   content: string;
+  message?: string;
+  event_type?: string;
+  metadata?: Record<string, unknown>;
+  raw_content?: string;
+  structured?: boolean;
   created_at: string;
   /** Channel the event was posted to */
   _channel: string;
@@ -523,10 +1145,8 @@ export interface AgentHubEvent {
   _channel_type: 'wave' | 'ticket';
   /** Title of the ticket this event belongs to (ticket events only) */
   _ticket_title?: string;
+  _ticket_id?: string;
 }
-
-/** @deprecated Use AgentHubEvent */
-export type TimelinePost = AgentHubEvent;
 
 /** Current AgentHub root state for a project. */
 export interface ProjectFrontier {
@@ -565,6 +1185,9 @@ export interface CompositeWorkspace {
   test_status: string | null;
   test_output?: string | null;
   preview_url: string | null;
+  preview_status: string | null;
+  preview_command: string[];
+  preview_error: string | null;
   created_by: string | null;
   created_at: string | null;
   updated_at: string | null;
@@ -601,11 +1224,12 @@ export async function createWorkspace(
   projectId: string,
   attemptIds: string[],
   createdBy?: string,
+  preview?: { preview_url?: string; preview_status?: string; preview_command?: string | string[]; preview_error?: string },
 ): Promise<CompositeWorkspace> {
   const response = await fetch(`${API_URL}/api/projects/${projectId}/workspaces`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ attempt_ids: attemptIds, created_by: createdBy }),
+    body: JSON.stringify({ attempt_ids: attemptIds, created_by: createdBy, ...(preview || {}) }),
   });
   return checkResponse<CompositeWorkspace>(response);
 }

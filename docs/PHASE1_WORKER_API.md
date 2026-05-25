@@ -14,7 +14,7 @@ Set `TERARCHITECT_WORKER_API_KEY` in the backend’s `.env` (or process env) whe
 |--------|------|-------------|
 | GET | `/api/projects/<project_id>/tickets/<ticket_id>/worker-context` | Full context (project, graph, ticket, notes, backlog/in_progress/done) + `repo_url`. No `project_path`. |
 | POST | `/api/projects/<project_id>/tickets/<ticket_id>/logs` | Append log. Body: `session_id`, `step`, `summary`, `raw_output` (optional). |
-| POST | `/api/projects/<project_id>/tickets/<ticket_id>/complete` | Mark ticket complete. Body: `pr_url`, `pr_number`, `summary`; optional `review_comment_body`. |
+| POST | `/api/projects/<project_id>/tickets/<ticket_id>/complete` | Mark ticket execution complete and create a `TicketAttempt`. Body: `summary`, `agenthub_commit_hash`, optional `base_hash`. |
 | GET | `/api/projects/<project_id>/tickets/<ticket_id>/cancel-requested` | Poll: `{"cancel_requested": true\|false}`. |
 
 **Memory** (same as app): `POST /api/projects/<project_id>/memory/retrieve` (body: `queries`, optional `num_to_retrieve`), `POST /api/projects/<project_id>/memory/index` (body: `docs`). Use same Bearer token when `TERARCHITECT_WORKER_API_KEY` is set.
@@ -30,7 +30,7 @@ Set `TERARCHITECT_WORKER_API_KEY` in the backend’s `.env` (or process env) whe
 | POST | `/api/worker/jobs/<job_id>/complete` | Mark job completed (container exited successfully). |
 | POST | `/api/worker/jobs/<job_id>/fail` | Mark job failed (container exited with failure). |
 
-**Job response (200):** `job_id`, `ticket_id`, `project_id`, `kind` (`ticket` \| `review`), `repo_url`. For `kind=review`: `pr_number`, `comment_body`, `github_comment_id`.
+**Job response (200):** `job_id`, `ticket_id`, `project_id`, `kind` (`ticket`), `repo_url`, `git_mode`, `base_hash`, and `shipped_frontier`. `base_hash` is the AgentHub commit the worker should build on when present.
 
 ---
 
@@ -55,7 +55,7 @@ cd backend
 TICKET_ID=<uuid> PROJECT_ID=<uuid> TERARCHITECT_API_URL=http://localhost:5000 REPO_URL=https://github.com/owner/repo [GITHUB_TOKEN=...] [TERARCHITECT_WORKER_API_KEY=...] python -m agent_runner ticket
 ```
 
-The runner clones the repo, checks out `ticket-{TICKET_ID}`, and runs the Director + worker via `MiddleAgent(backend=HttpAgentBackend(...))`. Agent config (Director/Worker LLM URL, keys, etc.) comes from the runner’s environment (e.g. set in coordinator env and forwarded into the container).
+The runner clones or opens the repo, checks out the provided AgentHub `BASE_HASH` when present, and runs the Director + worker via `MiddleAgent(backend=HttpAgentBackend(...))`. Agent config (Director/Worker LLM URL, keys, etc.) comes from the runner’s environment (e.g. set in coordinator env and forwarded into the container).
 
 ---
 
@@ -80,7 +80,7 @@ docker run --rm \
 
 **Required env:** `TICKET_ID`, `PROJECT_ID`, `TERARCHITECT_API_URL`, `REPO_URL`. Optional: `GITHUB_TOKEN`, `TERARCHITECT_WORKER_API_KEY`. Agent config (DIRECTOR_LLM_URL, WORKER_LLM_URL, WORKER_MODEL, etc.) must be set in the environment (e.g. coordinator passes them into the container).
 
-Workspace in container: `/workspace` (clone and run happen there). Exit 0 = success; non-zero = failure (coordinator uses this to call jobs/complete or jobs/fail). For **review** jobs the container receives `JOB_KIND=review`, `PR_NUMBER`, `COMMENT_BODY` (and optionally `GITHUB_COMMENT_ID`) and runs `agent_runner review`.
+Workspace in container: `/workspace` (clone and run happen there). Exit 0 = success; non-zero = failure (coordinator uses this to call jobs/complete or jobs/fail). PR-review jobs have been removed; human feedback now flows through AgentHub channels and Ship Room/Workspace actions.
 
 ---
 
@@ -106,7 +106,7 @@ python -m coordinator
 
 **Optional env**
 - **TERARCHITECT_WORKER_API_KEY** — Bearer token for worker API (claim, complete, fail).
-- **GITHUB_TOKEN** — Passed to the container for clone/push and `gh pr create`.
+- **GITHUB_TOKEN** — Passed to the container for GitHub clone access and for Ship Room release/export PR creation when GitHub is used as the export boundary.
 - **AGENT_IMAGE** — Docker image to run (default `terarchitect-agent`).
 - **MAX_CONCURRENT_AGENTS** — Max containers at once (default 1).
 - **POLL_INTERVAL_SEC** — Seconds between claim attempts when no capacity or no job (default 10).

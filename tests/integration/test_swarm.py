@@ -255,11 +255,9 @@ class TestSwarmMode:
                 f"Ticket not in done. stdout:\n{result.stdout[-2000:]}"
             )
 
-            # commit_hash may be stored in the prs table or on the ticket;
-            # check the review endpoint (swarm tickets don't create PRs but may have entries)
-            # or just verify the ticket is done — commit hash storage is a backend detail
-            # tested via the prs table having an entry with commit_hash.
-            # For now, just assert the ticket reached done (hash storage is internal).
+            # Completion creates a TicketAttempt; detailed attempt serialization is
+            # covered by backend integration/unit tests. This scenario only proves
+            # the agent can drive the ticket to a completed state.
 
         finally:
             try:

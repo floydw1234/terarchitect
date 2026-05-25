@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import {
   Box,
   Typography,
@@ -23,6 +23,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import EvidencePanel from '../components/EvidencePanel';
 import {
   getProject,
   getShipWaves,
@@ -82,7 +83,7 @@ const ATTEMPT_COLOR: Record<string, 'default' | 'info' | 'warning' | 'success' |
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function ShipRunPanel({ run }: { run: ShipRun }) {
+function ShipRunPanel({ projectId, run }: { projectId: string; run: ShipRun }) {
   const [testExpanded, setTestExpanded] = useState(false);
   const [filesExpanded, setFilesExpanded] = useState(false);
 
@@ -189,6 +190,13 @@ function ShipRunPanel({ run }: { run: ShipRun }) {
           </Collapse>
         </Box>
       )}
+
+      <EvidencePanel
+        projectId={projectId}
+        targetType="ship_run"
+        targetId={run.id}
+        defaultCheckType="integration"
+      />
     </Paper>
   );
 }
@@ -239,6 +247,15 @@ function ChannelTimeline({ projectId, waveNum }: { projectId: string; waveNum: n
                   variant="outlined"
                   sx={{ height: 14, fontSize: '0.6rem' }}
                 />
+                {p.event_type && (
+                  <Chip
+                    label={p.event_type.replace(/_/g, ' ')}
+                    size="small"
+                    color={p.structured ? 'primary' : 'default'}
+                    variant={p.structured ? 'filled' : 'outlined'}
+                    sx={{ height: 14, fontSize: '0.6rem' }}
+                  />
+                )}
                 <Typography variant="caption" color="text.secondary">
                   {p.created_at ? new Date(p.created_at).toLocaleTimeString() : ''}
                 </Typography>
@@ -247,7 +264,7 @@ function ChannelTimeline({ projectId, waveNum }: { projectId: string; waveNum: n
                 variant="caption"
                 sx={{ display: 'block', mt: 0.25, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
               >
-                {p.content}
+                {p.message || p.content}
               </Typography>
             </Box>
           </Stack>
@@ -447,7 +464,7 @@ function WaveDetailPanel({
       </Stack>
 
       {/* Ship run detail */}
-      {shipRun && <ShipRunPanel run={shipRun} />}
+      {shipRun && <ShipRunPanel projectId={projectId} run={shipRun} />}
 
       <Divider sx={{ my: 2 }} />
 
@@ -478,6 +495,14 @@ function WaveDetailPanel({
                 <Typography variant="caption" color="text.secondary">
                   attempt #{a.attempt_num}
                 </Typography>
+                <Button
+                  component={Link}
+                  to={`/projects/${projectId}/tickets/${a.ticket_id}/attempts/${a.id}`}
+                  size="small"
+                  sx={{ fontSize: '0.65rem' }}
+                >
+                  Detail
+                </Button>
               </Stack>
               {a.validation_error && (
                 <Typography variant="caption" color="error.main" sx={{ display: 'block', mt: 0.5 }}>
@@ -489,6 +514,12 @@ function WaveDetailPanel({
                   {a.summary.slice(0, 200)}{a.summary.length > 200 ? '…' : ''}
                 </Typography>
               )}
+              <EvidencePanel
+                projectId={projectId}
+                targetType="attempt"
+                targetId={a.id}
+                defaultCheckType="validation"
+              />
             </Paper>
           ))}
         </Stack>
@@ -520,8 +551,6 @@ function WaveDetailPanel({
           </ListItem>
         ))}
       </List>
-
-      <Divider sx={{ my: 2 }} />
 
       <Divider sx={{ my: 2 }} />
 

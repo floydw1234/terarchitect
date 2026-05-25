@@ -41,6 +41,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import EvidencePanel from '../components/EvidencePanel';
 import {
   getProject,
   getWorkspaces,
@@ -187,7 +188,7 @@ function WorkspacePanel({
       {ws.status === 'snapshot_candidate' && (
         <Alert severity="info" sx={{ mb: 2 }}>
           <strong>Snapshot Candidate</strong> — frozen for export/deploy policy evaluation.
-          Phase 14 will add the Verification Engine to finalise snapshot criteria.
+          First-class Snapshots will finalize export criteria after evidence policy passes.
         </Alert>
       )}
 
@@ -300,6 +301,13 @@ function WorkspacePanel({
           </Collapse>
         </Box>
       )}
+
+      <EvidencePanel
+        projectId={projectId}
+        targetType="composite_workspace"
+        targetId={ws.id}
+        defaultCheckType="integration"
+      />
 
       {/* Selected attempts */}
       <Typography variant="subtitle2" gutterBottom>

@@ -5,7 +5,12 @@ from flask import current_app
 
 from models.db import db, Project, Ticket, AgentJob, TicketAttempt
 from .attempt_service import SATISFIED_STATUSES as _SATISFIED_STATUSES
-from .channel_service import ticket_channel as _ticket_channel, post_event as _post_event
+from .channel_service import (
+    ticket_channel as _ticket_channel,
+    post_event as _post_event,
+    event_content as _event_content,
+)
+from .job_service import dependency_base_context as _dependency_base_context
 
 
 def _has_accepted_attempt(ticket_id) -> bool:
@@ -119,7 +124,7 @@ def ticket_to_json(t: Ticket) -> dict:
     running_job = AgentJob.query.filter_by(ticket_id=t.id, status="running").first()
     out["is_running"] = running_job is not None
 
-    project = Project.query.get(t.project_id)
+    project = db.session.get(Project, t.project_id)
 
     # Latest and accepted attempts
     latest = (
@@ -201,10 +206,10 @@ def ticket_to_json(t: Ticket) -> dict:
 
 def enqueue_ticket_job(ticket_id):
     """Enqueue a ticket job to agent_jobs. Skip if project missing URL/path or already pending/running."""
-    ticket = Ticket.query.get(ticket_id)
+    ticket = db.session.get(Ticket, ticket_id)
     if not ticket:
         return
-    project = Project.query.get(ticket.project_id)
+    project = db.session.get(Project, ticket.project_id)
     if not project:
         return
     execution_mode = getattr(project, "execution_mode", None) or "docker"
@@ -221,11 +226,27 @@ def enqueue_ticket_job(ticket_id):
     dep_ids = ticket.depends_on_ticket_ids or []
     for dep_id in dep_ids:
         if not _has_accepted_attempt(dep_id):
-            dep = Ticket.query.get(dep_id)
+            dep = db.session.get(Ticket, dep_id)
             current_app.logger.info(
                 "Skipping enqueue: ticket %s blocked by dep %s (%s) — no accepted attempt yet",
                 ticket_id, dep_id, dep.title if dep else "?",
             )
+            return
+
+    is_swarm = (getattr(project, "git_mode", None) or "swarm") == "swarm"
+    if is_swarm:
+        base_context = _dependency_base_context(ticket, project)
+        if base_context.get("temporary_base_required") and not base_context.get("base_hash"):
+            current_app.logger.info(
+                "Skipping enqueue: ticket %s awaiting temporary dependency base workspace=%s status=%s",
+                ticket_id,
+                base_context.get("temporary_base_workspace_id"),
+                base_context.get("temporary_base_status"),
+            )
+            if ticket.column_id == "in_progress":
+                ticket.column_id = "queued"
+                ticket.intent_status = "ready"
+                db.session.commit()
             return
 
     existing = AgentJob.query.filter(
@@ -246,14 +267,18 @@ def enqueue_ticket_job(ticket_id):
     current_app.logger.info("Enqueued ticket job for ticket %s", ticket_id)
     _post_event(
         _ticket_channel(str(ticket_id)),
-        f"ticket_assigned: {ticket.title[:200]}",
+        _event_content(
+            "ticket_assigned",
+            f"Ticket assigned: {ticket.title[:200]}",
+            {"ticket_id": str(ticket_id), "project_id": str(ticket.project_id)},
+        ),
     )
 
 
 def dispatch_unblocked_queued(project_id):
     """Move queued tickets whose dependencies are satisfied to in_progress and enqueue.
     In swarm mode, also holds back tickets whose graph nodes conflict with running tickets."""
-    project = Project.query.get(project_id)
+    project = db.session.get(Project, project_id)
     is_swarm = project and (getattr(project, "git_mode", None) or "swarm") == "swarm"
 
     occupied_nodes: set = set()
@@ -270,6 +295,16 @@ def dispatch_unblocked_queued(project_id):
         if dep_ids and not all(_has_accepted_attempt(d) for d in dep_ids):
             continue
         if is_swarm:
+            base_context = _dependency_base_context(t, project)
+            if base_context.get("temporary_base_required") and not base_context.get("base_hash"):
+                current_app.logger.info(
+                    "dispatch waiting ticket=%s reason=temporary_dependency_base status=%s workspace=%s deps=%s",
+                    t.id,
+                    base_context.get("temporary_base_status"),
+                    base_context.get("temporary_base_workspace_id"),
+                    dep_ids,
+                )
+                continue
             ticket_nodes = set(t.associated_node_ids or [])
             ticket_edges = set(t.associated_edge_ids or [])
             if ticket_nodes & occupied_nodes or ticket_edges & occupied_edges:

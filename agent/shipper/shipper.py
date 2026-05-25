@@ -90,6 +90,19 @@ def _post_to_channel(channel: str, content: str) -> None:
         pass
 
 
+def _event_content(event_type: str, message: str, metadata: dict | None = None) -> str:
+    return json.dumps(
+        {
+            "terarchitect_event": 1,
+            "type": event_type,
+            "message": message,
+            "metadata": metadata or {},
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def _git(args: list, cwd: str, check: bool = True, timeout: int = 60) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     name = _env("GIT_USER_NAME", "Terarchitect Shipper")
@@ -407,14 +420,28 @@ def run_once() -> bool:
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         # --- Compose release branch ---
-        _post_to_channel(wave_ch, f"release_composition_started: {len(commit_hashes)} attempt(s)")
+        _post_to_channel(
+            wave_ch,
+            _event_content(
+                "release_composition_started",
+                f"Release composition started for {len(commit_hashes)} attempt(s)",
+                {"wave_num": wave_num, "ship_run_id": run_id, "attempt_count": len(commit_hashes)},
+            ),
+        )
         try:
             branch, base_main_hash = _compose_release_branch(
                 commit_hashes, project_path, wave_num, run_short_id, tmp_dir
             )
         except ComposeError as e:
             print(f"[shipper] Compose conflict: {e}", file=sys.stderr)
-            _post_to_channel(wave_ch, f"release_composition_failed: {str(e)[:300]}")
+            _post_to_channel(
+                wave_ch,
+                _event_content(
+                    "release_composition_failed",
+                    str(e)[:300],
+                    {"wave_num": wave_num, "ship_run_id": run_id, "error": str(e)[:2000]},
+                ),
+            )
             _api_post(f"/api/worker/ship-run/{run_id}/fail", {
                 "error": str(e),
                 "compose_failed": True,
@@ -427,7 +454,14 @@ def run_once() -> bool:
         # --- Run tests ---
         test_status, test_output = _run_tests(project_path)
         if test_status == "failed":
-            _post_to_channel(wave_ch, f"release_composition_failed: tests failed\n{test_output[:300]}")
+            _post_to_channel(
+                wave_ch,
+                _event_content(
+                    "release_composition_failed",
+                    f"Tests failed: {test_output[:300]}",
+                    {"wave_num": wave_num, "ship_run_id": run_id, "test_status": test_status},
+                ),
+            )
             _api_post(f"/api/worker/ship-run/{run_id}/fail", {
                 "error": f"Tests failed after composition:\n{test_output[:2000]}",
                 "compose_failed": True,
@@ -469,8 +503,20 @@ def run_once() -> bool:
         # --- Report composed ---
         _post_to_channel(
             wave_ch,
-            f"release_pr_opened: PR #{pr_number} branch {branch!r} "
-            f"tests={test_status} files={len(changed_files)}",
+            _event_content(
+                "release_pr_opened",
+                f"PR #{pr_number} opened for {branch}; tests={test_status}; files={len(changed_files)}",
+                {
+                    "wave_num": wave_num,
+                    "ship_run_id": run_id,
+                    "release_pr_number": pr_number,
+                    "release_pr_url": pr_url,
+                    "release_branch": branch,
+                    "test_status": test_status,
+                    "changed_file_count": len(changed_files),
+                    "composed_commit_hash": composed_commit_hash,
+                },
+            ),
         )
         _api_post(f"/api/worker/ship-run/{run_id}/composed", {
             "release_branch": branch,

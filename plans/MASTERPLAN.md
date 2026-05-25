@@ -64,13 +64,13 @@ The Go service is the cleanest component in the codebase — proper middleware, 
 ### What is Architecturally Weak
 
 **~~The backend is a monolith inside a monolith.~~** ✅ *Refactored May 2026*
-`backend/api/routes.py` has been decomposed from ~2,500 lines into a proper services layer: `graph_service.py`, `job_service.py`, `merge_service.py`, `notes_service.py`, `pr_service.py`, `project_service.py`, and `ticket_service.py`. Routes.py is now ~1,400 lines of HTTP glue importing from these modules. Bugs are now isolatable at the right boundary. Integration tests added for swarm/Docker mode (`tests/integration/test_swarm_docker.py`).
+`backend/api/routes.py` has been decomposed from ~2,500 lines into a proper services layer including attempts, channels, graph, GitHub export, jobs, notes, projects, tickets, shipping, and workspace services. The old per-ticket PR service has been removed. Bugs are now isolatable at the right boundary. Integration tests added for swarm/Docker mode (`tests/integration/test_swarm_docker.py`).
 
 **Auth is broken by design, not just by accident.**
 The UI auth / worker auth conflict (where setting `TERARCHITECT_UI_API_KEY` silently breaks all worker endpoints because they live under `/projects/...` instead of `/worker/...`) is not a small bug — it means auth cannot actually be enabled in production without breaking everything. The frontend and CLI don't send auth headers at all. This needs a proper auth layer (e.g. a single middleware that understands request source — UI bearer vs worker bearer vs unauthenticated local dev) before this can be deployed to anyone other than the author.
 
-**Finalization still carries PR-era semantics.**
-The old structured path can complete at the backend level even when git push or PR creation failed, leaving tickets in "In Review" with no actual PR. In swarm mode, tickets move to `done` when an AgentHub commit is published, even though the code has not necessarily reached `main`. Both are trust problems. The lifecycle needs AgentHub-native states: attempt produced, accepted, composed into a release branch, shipped to main, failed, or blocked.
+**Finalization still needs stronger AgentHub-native evidence.**
+The PR-per-ticket path has been removed, and normal worker completion now publishes a `TicketAttempt`. The remaining trust problem is validation depth: attempts can become accepted/composed/shipped, but the system still needs richer evidence, timeline, and audit data before a blessed AgentHub state should be treated as production-grade.
 
 **No migration story.**
 `db.create_all()` + Docker init SQL means existing databases can't evolve. Every schema change requires wiping state or manual ALTER TABLE. For a tool that's supposed to run persistently across months of a project, this is a critical gap. Alembic or equivalent is required.
@@ -114,7 +114,7 @@ Do only the foundation work needed to iterate safely on the AgentHub conversion.
 2. **Add Alembic or an equivalent migration path** - the AgentHub conversion needs schema changes (`ticket_attempts`, merge-run fields, eventual PR table deprecation). Do not continue relying on `db.create_all()` for persistent installs.
 3. **Fix auth routing if it blocks local swarm usage** - worker endpoints need to keep working when UI auth is enabled. This can be minimal; full auth productization can wait.
 4. **Fix coordinator startup reset** - `max_age_seconds` should be configurable and default to something sane (e.g. 30 minutes, not 0).
-5. ✅ **Decompose backend/api/routes.py** *(done May 2026)* - split into 7 service modules (`graph_service`, `job_service`, `merge_service`, `notes_service`, `pr_service`, `project_service`, `ticket_service`). Integration test suite added for swarm/Docker mode.
+5. ✅ **Decompose backend/api/routes.py** *(done May 2026)* - split into focused service modules for graph, jobs, notes, projects, tickets, attempts, channels, GitHub export, shipping, and workspace. Integration test suite added for swarm/Docker mode.
 
 This phase should be short: days, not weeks. Anything that does not directly unblock AgentHub-native execution should move later.
 

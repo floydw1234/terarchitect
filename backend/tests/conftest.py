@@ -15,6 +15,7 @@ def app():
     """Minimal Flask app wired to an in-memory SQLite DB."""
     os.environ["SQLALCHEMY_DATABASE_URI"] = "sqlite:///:memory:"
     os.environ.setdefault("MEMORY_SAVE_DIR", "/tmp/terarchitect_test")
+    os.environ["ENABLE_COMPOSITE_WORKSPACE"] = "1"
     from main import create_app
     application = create_app()
     application.config["TESTING"] = True
@@ -33,7 +34,10 @@ def client(app):
 @pytest.fixture
 def project(client):
     """Swarm project."""
-    resp = client.post("/api/projects", json={"name": "test-proj", "git_mode": "swarm"})
+    resp = client.post(
+        "/api/projects",
+        json={"name": "test-proj", "git_mode": "swarm", "is_existing_repo": True},
+    )
     assert resp.status_code == 201
     return resp.get_json()
 

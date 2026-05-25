@@ -136,12 +136,122 @@ def test_compose_rejects_no_accepted_attempts(client, project):
     assert "No accepted attempts" in resp.get_json().get("error", "")
 
 
+def test_compose_rejects_wave_with_unshipped_dependency(client, project):
+    """A later wave cannot compose until earlier dependency leaves are shipped."""
+    pid = project["id"]
+    from models.db import db, Ticket, TicketAttempt
+    parent_hash = "p" * 40
+    child_hash = "c" * 40
+
+    with client.application.app_context():
+        parent = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Parent",
+            intent_status="active",
+        )
+        db.session.add(parent)
+        db.session.flush()
+        child = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Child",
+            intent_status="active",
+            depends_on_ticket_ids=[str(parent.id)],
+        )
+        db.session.add(child)
+        db.session.flush()
+        db.session.add(TicketAttempt(
+            project_id=pid,
+            ticket_id=parent.id,
+            agenthub_commit_hash=parent_hash,
+            base_hash="f" * 40,
+            wave_num=0,
+            attempt_num=1,
+            status="accepted",
+            summary="parent",
+        ))
+        db.session.add(TicketAttempt(
+            project_id=pid,
+            ticket_id=child.id,
+            agenthub_commit_hash=child_hash,
+            base_hash=parent_hash,
+            wave_num=1,
+            attempt_num=1,
+            status="accepted",
+            summary="child",
+        ))
+        db.session.commit()
+
+    resp = client.post(f"/api/projects/{pid}/ship/waves/1/compose", json={})
+
+    assert resp.status_code == 409
+    data = resp.get_json()
+    assert "Wave composition validation failed" in data.get("error", "")
+    assert any("not shipped" in detail for detail in data.get("details", []))
+
+
+def test_compose_allows_wave_after_dependency_shipped(client, project):
+    """Once a dependency is shipped into the frontier, the next wave may compose."""
+    pid = project["id"]
+    from models.db import db, Ticket, TicketAttempt
+    parent_hash = "p" * 40
+    child_hash = "c" * 40
+
+    client.post(f"/api/projects/{pid}/frontier", json={"hash": parent_hash, "source": "test"})
+
+    with client.application.app_context():
+        parent = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Parent",
+            intent_status="active",
+        )
+        db.session.add(parent)
+        db.session.flush()
+        child = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Child",
+            intent_status="active",
+            depends_on_ticket_ids=[str(parent.id)],
+        )
+        db.session.add(child)
+        db.session.flush()
+        db.session.add(TicketAttempt(
+            project_id=pid,
+            ticket_id=parent.id,
+            agenthub_commit_hash=parent_hash,
+            base_hash="f" * 40,
+            wave_num=0,
+            attempt_num=1,
+            status="shipped",
+            summary="parent",
+        ))
+        db.session.add(TicketAttempt(
+            project_id=pid,
+            ticket_id=child.id,
+            agenthub_commit_hash=child_hash,
+            base_hash=parent_hash,
+            wave_num=1,
+            attempt_num=1,
+            status="accepted",
+            summary="child",
+        ))
+        db.session.commit()
+
+    resp = client.post(f"/api/projects/{pid}/ship/waves/1/compose", json={})
+
+    assert resp.status_code == 201
+    assert resp.get_json()["status"] == "queued"
+
+
 # ---------------------------------------------------------------------------
 # 12.2d  Worker fail endpoint records compose_failed
 # ---------------------------------------------------------------------------
 
 def test_worker_fail_records_compose_failed(client, project):
-    from models.db import db, ShipRun
+    from models.db import db, ShipRun, Project
     with client.application.app_context():
         run = ShipRun(project_id=project["id"], wave_num=0, status="running")
         db.session.add(run)
@@ -159,9 +269,9 @@ def test_worker_fail_records_compose_failed(client, project):
     assert resp.get_json()["status"] == "compose_failed"
 
     with client.application.app_context():
-        run = ShipRun.query.get(run_id)
+        run = db.session.get(ShipRun, run_id)
         assert run.status == "compose_failed"
-        assert "Conflict" in run.conflict_summary
+        assert "Conflict" in run.error
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +281,7 @@ def test_worker_fail_records_compose_failed(client, project):
 def test_ship_no_github_advances_frontier_directly(client, project, accepted_ticket_and_attempt):
     """Ship without GitHub URL: frontier advances from composed_commit_hash, no gh calls."""
     pid = project["id"]
-    from models.db import db, ShipRun
+    from models.db import db, ShipRun, Project
     with client.application.app_context():
         run = ShipRun(
             project_id=pid, wave_num=0, status="ready_to_ship",
@@ -188,7 +298,7 @@ def test_ship_no_github_advances_frontier_directly(client, project, accepted_tic
 
     from models.db import Project
     with client.application.app_context():
-        p = Project.query.get(pid)
+        p = db.session.get(Project, pid)
         assert p.shipped_frontier == "z" * 40
 
 
@@ -198,10 +308,12 @@ def test_ship_updates_frontier_after_merge(client, project, accepted_ticket_and_
 
     # Set github_url and create a ready_to_ship run
     from models.db import db, ShipRun, Project
+    update_resp = client.put(
+        f"/api/projects/{pid}",
+        json={"github_url": "https://github.com/owner/repo"},
+    )
+    assert update_resp.status_code == 200
     with client.application.app_context():
-        p = Project.query.get(pid)
-        p.github_url = "https://github.com/owner/repo"
-        db.session.commit()
         run = ShipRun(
             project_id=pid,
             wave_num=0,
@@ -234,7 +346,7 @@ def test_ship_updates_frontier_after_merge(client, project, accepted_ticket_and_
     assert data["shipped_commit_hash"] == new_sha
 
     with client.application.app_context():
-        p = Project.query.get(pid)
+        p = db.session.get(Project, pid)
         assert p.shipped_frontier == new_sha
 
 
@@ -269,8 +381,205 @@ def test_dependent_ticket_not_dispatched_until_dep_accepted(client, project):
     from api.services.ticket_service import dispatch_unblocked_queued
     with client.application.app_context():
         dispatch_unblocked_queued(project["id"])
-        child = Ticket.query.get(child_id)
+        child = db.session.get(Ticket, child_id)
         assert child.column_id == "queued", "Child should remain queued when dep has no accepted attempt"
+
+
+def test_multi_dependency_ticket_waits_for_temporary_base(client, project):
+    """Multiple unshipped dependency leaves queue temporary base composition before dispatch."""
+    from models.db import db, Ticket, TicketAttempt, CompositeWorkspace
+    pid = project["id"]
+
+    with client.application.app_context():
+        parent_a = Ticket(project_id=pid, column_id="done", title="Parent A", intent_status="active")
+        parent_b = Ticket(project_id=pid, column_id="done", title="Parent B", intent_status="active")
+        db.session.add_all([parent_a, parent_b])
+        db.session.flush()
+        child = Ticket(
+            project_id=pid,
+            column_id="queued",
+            title="Child needs both parents",
+            intent_status="ready",
+            depends_on_ticket_ids=[str(parent_a.id), str(parent_b.id)],
+        )
+        db.session.add(child)
+        db.session.flush()
+        db.session.add_all([
+            TicketAttempt(
+                project_id=pid,
+                ticket_id=parent_a.id,
+                agenthub_commit_hash="a" * 40,
+                base_hash="f" * 40,
+                wave_num=0,
+                attempt_num=1,
+                status="accepted",
+                summary="parent a",
+            ),
+            TicketAttempt(
+                project_id=pid,
+                ticket_id=parent_b.id,
+                agenthub_commit_hash="b" * 40,
+                base_hash="f" * 40,
+                wave_num=0,
+                attempt_num=1,
+                status="accepted",
+                summary="parent b",
+            ),
+        ])
+        db.session.commit()
+        child_id = str(child.id)
+
+    from api.services.ticket_service import dispatch_unblocked_queued
+    with client.application.app_context():
+        dispatch_unblocked_queued(pid)
+        child = db.session.get(Ticket, child_id)
+        assert child.column_id == "queued"
+        workspace = CompositeWorkspace.query.filter_by(
+            project_id=pid,
+            created_by="dependency_base_composer",
+            status="queued",
+        ).one()
+        assert workspace.selected_leaf_hashes == ["a" * 40, "b" * 40]
+        assert workspace.selected_attempt_ids
+        assert workspace.base_root_hash is None
+
+
+def test_multi_dependency_ticket_dispatches_after_temporary_base_composes(client, project):
+    """A composed temporary base becomes the child's base hash and unblocks dispatch."""
+    from models.db import db, Ticket, TicketAttempt, CompositeWorkspace, AgentJob
+    from api.services.job_service import job_to_response
+
+    pid = project["id"]
+    client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
+
+    with client.application.app_context():
+        parent_a = Ticket(project_id=pid, column_id="done", title="Mock schema migration", intent_status="active")
+        parent_b = Ticket(project_id=pid, column_id="done", title="Mock API contract", intent_status="active")
+        db.session.add_all([parent_a, parent_b])
+        db.session.flush()
+        child = Ticket(
+            project_id=pid,
+            column_id="queued",
+            title="Mock integration consumer",
+            intent_status="ready",
+            depends_on_ticket_ids=[str(parent_a.id), str(parent_b.id)],
+        )
+        db.session.add(child)
+        db.session.flush()
+        db.session.add_all([
+            TicketAttempt(
+                project_id=pid,
+                ticket_id=parent_a.id,
+                agenthub_commit_hash="1" * 40,
+                base_hash="f" * 40,
+                wave_num=0,
+                attempt_num=1,
+                status="accepted",
+                summary="mock schema leaf",
+            ),
+            TicketAttempt(
+                project_id=pid,
+                ticket_id=parent_b.id,
+                agenthub_commit_hash="2" * 40,
+                base_hash="f" * 40,
+                wave_num=0,
+                attempt_num=1,
+                status="accepted",
+                summary="mock API leaf",
+            ),
+        ])
+        db.session.commit()
+        child_id = str(child.id)
+
+    from api.services.ticket_service import dispatch_unblocked_queued
+    with client.application.app_context():
+        dispatch_unblocked_queued(pid)
+        child = db.session.get(Ticket, child_id)
+        assert child.column_id == "queued"
+        workspace = CompositeWorkspace.query.filter_by(
+            project_id=pid,
+            created_by="dependency_base_composer",
+        ).one()
+        workspace_id = str(workspace.id)
+        assert workspace.selected_leaf_hashes == ["1" * 40, "2" * 40]
+
+    resp = client.post(
+        f"/api/worker/workspaces/{workspace_id}/composed",
+        json={
+            "composed_commit_hash": "c" * 40,
+            "test_status": "passed",
+            "changed_files": ["backend/mock_schema.py", "backend/mock_api.py"],
+        },
+        headers=_worker_headers(),
+    )
+    assert resp.status_code == 200
+
+    with client.application.app_context():
+        child = db.session.get(Ticket, child_id)
+        assert child.column_id == "in_progress"
+        job = AgentJob.query.filter_by(ticket_id=child_id, status="pending").one()
+        payload = job_to_response(job)
+
+    assert payload["base_hash"] == "c" * 40
+    assert payload["base_selection"] == {
+        "base_hash": "c" * 40,
+        "base_source": "temporary_dependency_base",
+        "dependency_parent_hashes": ["1" * 40, "2" * 40],
+        "temporary_base_workspace_id": workspace_id,
+        "temporary_base_status": "preview_ready",
+        "temporary_base_required": True,
+    }
+
+
+def test_multi_dependency_ticket_dispatches_after_parents_ship(client, project):
+    """Once all parent leaves are shipped into the frontier, no temporary base is needed."""
+    from models.db import db, Ticket, TicketAttempt
+    pid = project["id"]
+
+    with client.application.app_context():
+        parent_a = Ticket(project_id=pid, column_id="done", title="Parent A", intent_status="active")
+        parent_b = Ticket(project_id=pid, column_id="done", title="Parent B", intent_status="active")
+        db.session.add_all([parent_a, parent_b])
+        db.session.flush()
+        child = Ticket(
+            project_id=pid,
+            column_id="queued",
+            title="Child needs shipped parents",
+            intent_status="ready",
+            depends_on_ticket_ids=[str(parent_a.id), str(parent_b.id)],
+        )
+        db.session.add(child)
+        db.session.flush()
+        db.session.add_all([
+            TicketAttempt(
+                project_id=pid,
+                ticket_id=parent_a.id,
+                agenthub_commit_hash="a" * 40,
+                base_hash="f" * 40,
+                wave_num=0,
+                attempt_num=1,
+                status="shipped",
+                summary="parent a",
+            ),
+            TicketAttempt(
+                project_id=pid,
+                ticket_id=parent_b.id,
+                agenthub_commit_hash="b" * 40,
+                base_hash="f" * 40,
+                wave_num=0,
+                attempt_num=1,
+                status="shipped",
+                summary="parent b",
+            ),
+        ])
+        db.session.commit()
+        child_id = str(child.id)
+
+    from api.services.ticket_service import dispatch_unblocked_queued
+    with client.application.app_context():
+        dispatch_unblocked_queued(pid)
+        child = db.session.get(Ticket, child_id)
+        assert child.column_id == "in_progress"
 
 
 # ---------------------------------------------------------------------------

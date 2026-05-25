@@ -1,17 +1,38 @@
 """
 Database Models for Terarchitect
 """
+import uuid
+
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy import Float
+from sqlalchemy.types import TypeDecorator
 
 db = SQLAlchemy()
+
+JSON_TYPE = JSONB().with_variant(db.JSON(), "sqlite")
+EMBEDDING_TYPE = ARRAY(Float).with_variant(db.JSON(), "sqlite")
+class StringUUID(TypeDecorator):
+    impl = db.UUID(as_uuid=False)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return str(value)
+
+
+UUID_TYPE = StringUUID()
+
+
+def new_uuid() -> str:
+    return str(uuid.uuid4())
 
 
 class Project(db.Model):
     __tablename__ = "projects"
 
-    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
+    id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
     name = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text)
     project_path = db.Column(db.Text)  # When execution_mode=local: path on host for agent to run in
@@ -23,6 +44,7 @@ class Project(db.Model):
     shipped_frontier_updated_at = db.Column(db.TIMESTAMP)
     # The currently blessed composite workspace (preferred candidate state, pre-ship)
     blessed_workspace_id = db.Column(db.String(255))
+    verification_policy = db.Column(JSON_TYPE, default=dict)
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
 
@@ -32,6 +54,8 @@ class Project(db.Model):
     notes = db.relationship("Note", backref="project", cascade="all, delete-orphan")
     execution_logs = db.relationship("ExecutionLog", backref="project", cascade="all, delete-orphan")
     ship_runs = db.relationship("ShipRun", backref="project", cascade="all, delete-orphan")
+    evidence_bundles = db.relationship("EvidenceBundle", backref="project", cascade="all, delete-orphan")
+    evidence_runs = db.relationship("EvidenceRun", backref="project", cascade="all, delete-orphan")
     # No cascade, noload: embedding column is pgvector (OID 16397); ORM must never SELECT it (unknown to ARRAY(Float)).
     rag_embeddings = db.relationship("RAGEmbedding", backref="project", cascade="save-update", lazy="noload")
 
@@ -39,10 +63,10 @@ class Project(db.Model):
 class Graph(db.Model):
     __tablename__ = "graphs"
 
-    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
-    project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
-    nodes = db.Column(JSONB, default=[])
-    edges = db.Column(JSONB, default=[])
+    id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
+    project_id = db.Column(UUID_TYPE, db.ForeignKey("projects.id"), nullable=False)
+    nodes = db.Column(JSON_TYPE, default=[])
+    edges = db.Column(JSON_TYPE, default=[])
     version = db.Column(db.Integer, default=1)
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
@@ -51,9 +75,9 @@ class Graph(db.Model):
 class KanbanBoard(db.Model):
     __tablename__ = "kanban_boards"
 
-    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
-    project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
-    columns = db.Column(JSONB, default=[])
+    id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
+    project_id = db.Column(UUID_TYPE, db.ForeignKey("projects.id"), nullable=False)
+    columns = db.Column(JSON_TYPE, default=[])
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
 
@@ -61,17 +85,17 @@ class KanbanBoard(db.Model):
 class Ticket(db.Model):
     __tablename__ = "tickets"
 
-    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
-    project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
+    id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
+    project_id = db.Column(UUID_TYPE, db.ForeignKey("projects.id"), nullable=False)
     column_id = db.Column(db.Text, nullable=False)
     title = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text)
-    associated_node_ids = db.Column(JSONB, default=[])
-    associated_edge_ids = db.Column(JSONB, default=[])
+    associated_node_ids = db.Column(JSON_TYPE, default=[])
+    associated_edge_ids = db.Column(JSON_TYPE, default=[])
     priority = db.Column(db.String(50), default="medium")
     status = db.Column(db.String(50), default="todo")
     failed_count = db.Column(db.Integer, default=0, nullable=False)
-    depends_on_ticket_ids = db.Column(JSONB, default=list)
+    depends_on_ticket_ids = db.Column(JSON_TYPE, default=list)
     # Intent fields (Phase 2 — tickets as first-class intent objects)
     # intent_status: draft | ready | active | blocked | archived
     intent_status = db.Column(db.String(50), nullable=False, default="ready")
@@ -94,8 +118,8 @@ class Ticket(db.Model):
 class TicketComment(db.Model):
     __tablename__ = "ticket_comments"
 
-    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
-    ticket_id = db.Column(db.UUID, db.ForeignKey("tickets.id"), nullable=False)
+    id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
+    ticket_id = db.Column(UUID_TYPE, db.ForeignKey("tickets.id"), nullable=False)
     content = db.Column(db.Text, nullable=False)
     is_summary = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
@@ -104,8 +128,8 @@ class TicketComment(db.Model):
 class Note(db.Model):
     __tablename__ = "notes"
 
-    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
-    project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
+    id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
+    project_id = db.Column(UUID_TYPE, db.ForeignKey("projects.id"), nullable=False)
     node_id = db.Column(db.Text)
     edge_id = db.Column(db.Text)
     title = db.Column(db.String(255))
@@ -117,9 +141,9 @@ class Note(db.Model):
 class ExecutionLog(db.Model):
     __tablename__ = "execution_logs"
 
-    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
-    project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
-    ticket_id = db.Column(db.UUID, db.ForeignKey("tickets.id"))
+    id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
+    project_id = db.Column(UUID_TYPE, db.ForeignKey("projects.id"), nullable=False)
+    ticket_id = db.Column(UUID_TYPE, db.ForeignKey("tickets.id"))
     session_id = db.Column(db.String(255))
     step = db.Column(db.String(100))
     summary = db.Column(db.Text)
@@ -131,13 +155,13 @@ class ExecutionLog(db.Model):
 
 
 class AgentJob(db.Model):
-    """Queue for agent work: ticket or PR review. Coordinator claims via POST /api/worker/jobs/start."""
+    """Queue for ticket agent work. Coordinator claims via POST /api/worker/jobs/start."""
 
     __tablename__ = "agent_jobs"
 
-    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
-    ticket_id = db.Column(db.UUID, db.ForeignKey("tickets.id"), nullable=False)
-    project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
+    id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
+    ticket_id = db.Column(UUID_TYPE, db.ForeignKey("tickets.id"), nullable=False)
+    project_id = db.Column(UUID_TYPE, db.ForeignKey("projects.id"), nullable=False)
     kind = db.Column(db.String(50), nullable=False, default="ticket")
     status = db.Column(db.String(50), nullable=False, default="pending")  # pending | running | completed | failed
     cancel_requested = db.Column(db.Boolean, nullable=False, default=False)
@@ -151,9 +175,9 @@ class TicketAttempt(db.Model):
 
     __tablename__ = "ticket_attempts"
 
-    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
-    project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
-    ticket_id = db.Column(db.UUID, db.ForeignKey("tickets.id"), nullable=False)
+    id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
+    project_id = db.Column(UUID_TYPE, db.ForeignKey("projects.id"), nullable=False)
+    ticket_id = db.Column(UUID_TYPE, db.ForeignKey("tickets.id"), nullable=False)
     agenthub_commit_hash = db.Column(db.String(255))
     base_hash = db.Column(db.String(255))
     wave_num = db.Column(db.Integer, default=0)
@@ -175,8 +199,8 @@ class ShipRun(db.Model):
 
     __tablename__ = "ship_runs"
 
-    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
-    project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
+    id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
+    project_id = db.Column(UUID_TYPE, db.ForeignKey("projects.id"), nullable=False)
     wave_num = db.Column(db.Integer, nullable=False)
     # queued | running | compose_failed | ready_to_ship | shipping | shipped | failed
     status = db.Column(db.String(50), nullable=False, default="queued")
@@ -185,7 +209,7 @@ class ShipRun(db.Model):
     release_branch = db.Column(db.Text)
     base_main_hash = db.Column(db.String(255))        # main tip at compose time
     composed_commit_hash = db.Column(db.String(255))  # HEAD of release branch after composition
-    changed_files = db.Column(JSONB, default=list)
+    changed_files = db.Column(JSON_TYPE, default=list)
     summary = db.Column(db.Text)
     # Tests
     test_status = db.Column(db.String(50))   # passed | failed | skipped
@@ -196,9 +220,6 @@ class ShipRun(db.Model):
     # Ship record
     shipped_at = db.Column(db.TIMESTAMP)
     shipped_commit_hash = db.Column(db.String(255))
-    # Legacy field from old swarm-branch merger — kept for existing rows
-    commit_hash = db.Column(db.String(255))
-    pr_url = db.Column(db.Text)
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
 
@@ -210,38 +231,107 @@ class CompositeWorkspace(db.Model):
 
     __tablename__ = "composite_workspaces"
 
-    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
-    project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
+    id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
+    project_id = db.Column(UUID_TYPE, db.ForeignKey("projects.id"), nullable=False)
     # The root the workspace was based on (project.shipped_frontier at creation time)
     base_root_hash = db.Column(db.String(255))
     # Selected attempt IDs and their resolved leaf hashes
-    selected_attempt_ids = db.Column(JSONB, default=list)   # [uuid, ...]
-    selected_leaf_hashes = db.Column(JSONB, default=list)   # [commit_hash, ...]
+    selected_attempt_ids = db.Column(JSON_TYPE, default=list)   # [uuid, ...]
+    selected_leaf_hashes = db.Column(JSON_TYPE, default=list)   # [commit_hash, ...]
     # draft | composing | conflicted | test_failed | preview_ready | blessed | snapshot_candidate | discarded
     status = db.Column(db.String(50), nullable=False, default="draft")
     # Composition results
     composed_commit_hash = db.Column(db.String(255))
     conflict_summary = db.Column(db.Text)
-    changed_files = db.Column(JSONB, default=list)
+    changed_files = db.Column(JSON_TYPE, default=list)
     summary = db.Column(db.Text)
     # Tests
     test_status = db.Column(db.String(50))
     test_output = db.Column(db.Text)
     # Preview (optional — future phase)
     preview_url = db.Column(db.Text)
+    preview_status = db.Column(db.String(50))
+    preview_command = db.Column(JSON_TYPE, default=list)
+    preview_error = db.Column(db.Text)
     # Who created this workspace
     created_by = db.Column(db.String(255))
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
 
 
+class EvidenceBundle(db.Model):
+    """Verification evidence for an attempt, ShipRun, Composite Workspace, or future Snapshot."""
+
+    __tablename__ = "evidence_bundles"
+
+    id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
+    project_id = db.Column(UUID_TYPE, db.ForeignKey("projects.id"), nullable=False)
+    target_type = db.Column(db.String(50), nullable=False)
+    target_id = db.Column(UUID_TYPE, nullable=False)
+    base_hash = db.Column(db.String(255))
+    candidate_hash = db.Column(db.String(255))
+    selected_attempt_ids = db.Column(JSON_TYPE, default=list)
+    selected_leaf_hashes = db.Column(JSON_TYPE, default=list)
+    status = db.Column(db.String(50), nullable=False, default="collecting")
+    risk_level = db.Column(db.String(50), nullable=False, default="unknown")
+    summary = db.Column(db.Text)
+    created_at = db.Column(db.TIMESTAMP, default=db.func.now())
+    updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
+
+    checks = db.relationship("EvidenceCheck", backref="bundle", cascade="all, delete-orphan",
+                             order_by="EvidenceCheck.created_at")
+
+
+class EvidenceCheck(db.Model):
+    """One verification result within an evidence bundle."""
+
+    __tablename__ = "evidence_checks"
+
+    id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
+    evidence_bundle_id = db.Column(UUID_TYPE, db.ForeignKey("evidence_bundles.id"), nullable=False)
+    check_type = db.Column(db.String(50), nullable=False)
+    status = db.Column(db.String(50), nullable=False, default="skipped")
+    tool_name = db.Column(db.String(255))
+    command = db.Column(db.Text)
+    output = db.Column(db.Text)
+    artifact_url = db.Column(db.Text)
+    check_metadata = db.Column(JSON_TYPE, default=dict)
+    started_at = db.Column(db.TIMESTAMP)
+    finished_at = db.Column(db.TIMESTAMP)
+    created_at = db.Column(db.TIMESTAMP, default=db.func.now())
+    updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
+
+
+class EvidenceRun(db.Model):
+    """Queue entry for asynchronous evidence execution."""
+
+    __tablename__ = "evidence_runs"
+
+    id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
+    project_id = db.Column(UUID_TYPE, db.ForeignKey("projects.id"), nullable=False)
+    evidence_bundle_id = db.Column(UUID_TYPE, db.ForeignKey("evidence_bundles.id"))
+    run_type = db.Column(db.String(50), nullable=False)
+    status = db.Column(db.String(50), nullable=False, default="queued")
+    target_type = db.Column(db.String(50), nullable=False)
+    target_id = db.Column(UUID_TYPE, nullable=False)
+    check_type = db.Column(db.String(50))
+    request_data = db.Column(JSON_TYPE, default=dict)
+    error = db.Column(db.Text)
+    created_at = db.Column(db.TIMESTAMP, default=db.func.now())
+    started_at = db.Column(db.TIMESTAMP)
+    finished_at = db.Column(db.TIMESTAMP)
+    updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
+
+    bundle = db.relationship("EvidenceBundle")
+
+
 class RAGEmbedding(db.Model):
     __tablename__ = "rag_embeddings"
 
-    id = db.Column(db.UUID, primary_key=True, default=db.func.uuid_generate_v4())
-    project_id = db.Column(db.UUID, db.ForeignKey("projects.id"), nullable=False)
+    id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
+    project_id = db.Column(UUID_TYPE, db.ForeignKey("projects.id"), nullable=False)
     source_type = db.Column(db.String(50), nullable=False)  # "node", "edge", "note", "ticket", "ticket_comment"
-    source_id = db.Column(db.UUID, nullable=False)
+    source_id = db.Column(UUID_TYPE, nullable=False)
     content = db.Column(db.Text, nullable=False)
-    embedding = db.Column(ARRAY(Float), nullable=False)  # 768 dimensions (embedding service)
+    embedding = db.Column(EMBEDDING_TYPE, nullable=False)  # 768 dimensions (embedding service)
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())

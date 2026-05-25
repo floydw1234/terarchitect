@@ -20,6 +20,7 @@ Env vars consumed:
 import os
 import subprocess
 import tempfile
+import json
 from typing import Any, Optional
 
 import requests
@@ -74,6 +75,19 @@ def _ah_post(path: str, body: dict) -> Optional[dict]:
     except Exception:
         pass
     return None
+
+
+def _event_content(event_type: str, message: str, metadata: dict | None = None) -> str:
+    return json.dumps(
+        {
+            "terarchitect_event": 1,
+            "type": event_type,
+            "message": message,
+            "metadata": metadata or {},
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +206,7 @@ def prepare_work(project_path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# swarm_publish — called from _finalize instead of git push + gh pr create
+# swarm_publish - publishes worker output as an AgentHub attempt.
 # ---------------------------------------------------------------------------
 
 def swarm_publish(
@@ -238,7 +252,11 @@ def swarm_publish(
 
     # Post completion notice to ticket channel (auto-created if it doesn't exist)
     channel = _ticket_channel(ticket_id)
-    body = f"done: {summary[:400]}\ncommit: {commit_hash[:12]}" if summary else f"done\ncommit: {commit_hash[:12]}"
+    body = _event_content(
+        "attempt_published",
+        f"done: {summary[:400]}" if summary else "done",
+        {"ticket_id": ticket_id, "commit_hash": commit_hash, "commit_short": commit_hash[:12]},
+    )
     _ah_post(f"/api/channels/{channel}/posts", {"content": body})
 
     return commit_hash if push_r.returncode == 0 else None

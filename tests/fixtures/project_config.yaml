@@ -2,7 +2,7 @@ name: "CLI Test Project"
 description: "Created from config file by integration test"
 github_url: "https://github.com/test-org/test-repo"
 execution_mode: "docker"
-git_mode: "structured"
+git_mode: "swarm"
 is_existing_repo: true
 
 default_tickets:

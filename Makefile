@@ -19,15 +19,15 @@ test-smoke:
 test-smoke-live:
 	$(PYTEST) tests/integration/test_api_smoke.py -m smoke --no-compose -v
 
-## Run Tier 2 full-stack tests (stub LLM + mock gh + stub worker; starts backend+postgres)
+## Run Tier 2 full-stack tests (stub LLM + stub AgentHub + stub worker; starts backend+postgres)
 test-full:
 	$(COMPOSE) up -d --wait backend postgres
-	$(PYTEST) tests/integration/test_structured.py -m integration -v || true
+	$(PYTEST) tests/integration/test_swarm.py -m swarm -v || true
 	$(COMPOSE) down -v --remove-orphans
 
 ## Run Tier 2 full-stack tests against an ALREADY RUNNING backend (skips compose)
 test-full-live:
-	$(PYTEST) tests/integration/test_structured.py -m integration --no-compose -v
+	$(PYTEST) tests/integration/test_swarm.py -m swarm --no-compose -v
 
 ## Run Tier 2 swarm tests (stub LLM + stub agenthub + stub worker; starts backend+postgres)
 test-swarm:

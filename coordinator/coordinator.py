@@ -715,7 +715,7 @@ def main() -> None:
             print(f"[coordinator] max_concurrent changed: {max_concurrent} → {new_max}", flush=True)
             max_concurrent = new_max
 
-        # Claim and start new ticket/review jobs up to max_concurrent
+        # Claim and start new ticket jobs up to max_concurrent
         while len(running) < max_concurrent:
             job = None
             if project_ids:

@@ -66,7 +66,7 @@ class TestProjectCRUD:
             "description": "Full field test",
             "github_url": "https://github.com/test/repo",
             "execution_mode": "docker",
-            "git_mode": "structured",
+            "git_mode": "swarm",
             "is_existing_repo": True,
         }
         p = api.post("/api/projects", payload)
@@ -75,7 +75,7 @@ class TestProjectCRUD:
             assert p["description"] == "Full field test"
             assert p["github_url"] == "https://github.com/test/repo"
             assert p["execution_mode"] == "docker"
-            assert p["git_mode"] == "structured"
+            assert p["git_mode"] == "swarm"
         finally:
             api.delete(f"/api/projects/{p['id']}", {"confirm_name": "smoke-full"})
 
@@ -110,8 +110,6 @@ class TestProjectCRUD:
     def test_update_project_git_mode(self, api: API, project: dict):
         updated = api.put(f"/api/projects/{project['id']}", {"git_mode": "swarm"})
         assert updated["git_mode"] == "swarm"
-        # Switch back
-        api.put(f"/api/projects/{project['id']}", {"git_mode": "structured"})
 
     def test_update_project_execution_mode(self, api: API, project: dict):
         updated = api.put(f"/api/projects/{project['id']}", {"execution_mode": "local"})
@@ -215,11 +213,11 @@ class TestTicketCRUD:
         t = api.post(f"/api/projects/{project_id}/tickets", {
             "title": "Move me", "column_id": "backlog", "priority": "low", "status": "todo",
         })
-        # Move to in_review (not in_progress — that would enqueue a job)
+        # Move to queued (not in_progress — that would enqueue a job)
         updated = api.patch(f"/api/projects/{project_id}/tickets/{t['id']}", {
-            "column_id": "in_review",
+            "column_id": "queued",
         })
-        assert updated["column_id"] == "in_review"
+        assert updated["column_id"] == "queued"
 
     def test_queued_column_is_valid(self, api: API, project_id: str):
         """Tickets can be moved to the 'queued' state (pre-dispatch holding area)."""

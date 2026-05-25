@@ -28,7 +28,7 @@ The backend uses **only** these env vars. Director/Worker/OpenCode URLs and keys
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL (default: `postgresql://terarchitect:terarchitect@localhost:5433/terarchitect`, port 5433 to avoid conflict with other Postgres on 5432) |
-| `github_agent_token` / `GITHUB_TOKEN` / `GH_TOKEN` | GitHub PAT for UI actions and for passing to the agent (clone, PR). At least one required for execution readiness. |
+| `github_agent_token` / `GITHUB_TOKEN` / `GH_TOKEN` | GitHub PAT for UI actions, cloning private repos, and Ship Room release/export PRs. At least one required for GitHub-backed execution readiness. |
 | `GIT_USER_NAME`, `GIT_USER_EMAIL` | Git identity for agent commits (optional). |
 | `TERARCHITECT_WORKER_API_KEY` | Optional. When set, worker API endpoints require Bearer token auth. |
 | `MEMORY_SAVE_DIR` | Directory for HippoRAG project memory (default: `/tmp/terarchitect`). |
@@ -68,4 +68,4 @@ Integration test uses an OpenAI-compatible LLM (for OpenIE) and an OpenAI-compat
 
 ## Execution (coordinator + agent image)
 
-When a ticket is moved to "In Progress" (or a PR review comment is created), the app inserts a row into `agent_jobs`. A **coordinator** process (run on the host, not in Docker) claims jobs via `POST /api/worker/jobs/start` and runs the **agent image** (`terarchitect-agent`) for each job. The container clones the **project** repo (the project’s GitHub URL), creates branch `ticket-{id}`, and runs the Director + OpenCode. Run the coordinator from the **repo root**: `PYTHONPATH=/path/to/terarchitect TERARCHITECT_API_URL=... PROJECT_ID=... python -m coordinator` (or install as a systemd service). See [docs/RUNBOOK.md](../docs/RUNBOOK.md) and [docs/PHASE1_WORKER_API.md](../docs/PHASE1_WORKER_API.md).
+When a ticket is moved to "In Progress", the app inserts a row into `agent_jobs`. A **coordinator** process (run on the host, not in Docker) claims jobs via `POST /api/worker/jobs/start` and runs the **agent image** (`terarchitect-agent`) for each job. The container clones or opens the **project** repo, checks out the selected AgentHub base when one is provided, and runs the Director + worker. Completion creates a `TicketAttempt`; Ship Room later composes accepted attempts into a release/export artifact. Run the coordinator from the **repo root**: `PYTHONPATH=/path/to/terarchitect TERARCHITECT_API_URL=... PROJECT_ID=... python -m coordinator` (or install as a systemd service). See [docs/RUNBOOK.md](../docs/RUNBOOK.md) and [docs/PHASE1_WORKER_API.md](../docs/PHASE1_WORKER_API.md).

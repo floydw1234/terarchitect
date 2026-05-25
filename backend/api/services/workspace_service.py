@@ -22,6 +22,9 @@ def workspace_to_json(ws: CompositeWorkspace, *, include_test_output: bool = Fal
         "summary": ws.summary,
         "test_status": ws.test_status,
         "preview_url": ws.preview_url,
+        "preview_status": ws.preview_status,
+        "preview_command": ws.preview_command or [],
+        "preview_error": ws.preview_error,
         "created_by": ws.created_by,
         "created_at": ws.created_at.isoformat() if ws.created_at else None,
         "updated_at": ws.updated_at.isoformat() if ws.updated_at else None,
@@ -46,7 +49,7 @@ def analyze_compatibility(project_id: str, attempt_ids: list[str]) -> dict:
       "dep_order": [attempt_id, ...],  # safe merge order
     }
     """
-    project = Project.query.get(project_id)
+    project = db.session.get(Project, project_id)
     frontier = getattr(project, "shipped_frontier", None) if project else None
 
     issues = []
@@ -54,7 +57,7 @@ def analyze_compatibility(project_id: str, attempt_ids: list[str]) -> dict:
     ticket_ids_in_selection: set[str] = set()
 
     for aid in attempt_ids:
-        attempt = TicketAttempt.query.get(aid)
+        attempt = db.session.get(TicketAttempt, aid)
         if not attempt:
             issues.append({"attempt_id": aid, "level": "error", "message": "Attempt not found."})
             continue
@@ -100,10 +103,10 @@ def analyze_compatibility(project_id: str, attempt_ids: list[str]) -> dict:
 
     # Dependency ordering check
     for aid in attempt_ids:
-        attempt = TicketAttempt.query.get(aid)
+        attempt = db.session.get(TicketAttempt, aid)
         if not attempt:
             continue
-        ticket = Ticket.query.get(attempt.ticket_id)
+        ticket = db.session.get(Ticket, attempt.ticket_id)
         if not ticket:
             continue
         dep_ids = ticket.depends_on_ticket_ids or []
@@ -116,7 +119,7 @@ def analyze_compatibility(project_id: str, attempt_ids: list[str]) -> dict:
                     .first()
                 )
                 if not dep_attempt:
-                    dep_ticket = Ticket.query.get(dep_ticket_id)
+                    dep_ticket = db.session.get(Ticket, dep_ticket_id)
                     dep_title = dep_ticket.title if dep_ticket else str(dep_ticket_id)[:8]
                     issues.append({
                         "attempt_id": aid,
@@ -131,10 +134,10 @@ def analyze_compatibility(project_id: str, attempt_ids: list[str]) -> dict:
     # Architecture scope overlap detection
     scope_map: dict[str, list[str]] = {}  # node/edge_id → [attempt_id, ...]
     for s in selected:
-        att = TicketAttempt.query.get(s["attempt_id"])
+        att = db.session.get(TicketAttempt, s["attempt_id"])
         if not att:
             continue
-        ticket = Ticket.query.get(att.ticket_id)
+        ticket = db.session.get(Ticket, att.ticket_id)
         if not ticket:
             continue
         for nid in (ticket.associated_node_ids or []):
@@ -164,7 +167,7 @@ def analyze_compatibility(project_id: str, attempt_ids: list[str]) -> dict:
     }
     # Fill in attempt_num from DB objects already fetched above
     for s in selected:
-        att = TicketAttempt.query.get(s["attempt_id"])
+        att = db.session.get(TicketAttempt, s["attempt_id"])
         if att:
             sort_keys[s["attempt_id"]] = (att.wave_num, att.attempt_num)
     dep_order = sorted(attempt_ids, key=lambda aid: sort_keys.get(str(aid), (0, 0)))

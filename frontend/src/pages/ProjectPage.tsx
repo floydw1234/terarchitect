@@ -187,7 +187,7 @@ const ProjectPage: React.FC = () => {
           <Typography sx={infoTextSx}>
             Git mode:{' '}
             <span style={{ color: project.git_mode === 'swarm' ? '#a78bfa' : '#22d3ee' }}>
-              {project.git_mode === 'swarm' ? 'Swarm (AgentHub)' : 'Structured (GitHub)'}
+              {project.git_mode === 'swarm' ? 'Swarm (AgentHub)' : 'Legacy structured'}
             </span>
           </Typography>
           {project.execution_mode === 'local' && project.project_path && (
@@ -241,13 +241,13 @@ const ProjectPage: React.FC = () => {
         </Grid>
 
         <Grid item xs={12} sm={6}>
-          <Paper component={Link} to={`/projects/${projectId}/review`} sx={toolCardSx}>
+          <Paper component={Link} to={`/projects/${projectId}/ship`} sx={toolCardSx}>
             <Box>
               <Typography variant="h6" sx={{ mb: 1 }}>
-                Review
+                Ship Room
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                PR summary and commits for quick review
+                Compose accepted attempts and ship release artifacts
               </Typography>
             </Box>
             <Box sx={{ mt: 3 }}>

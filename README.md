@@ -1,12 +1,12 @@
 # Terarchitect
 
-Terarchitect is a visual-first SDLC orchestrator: model your system as a graph, write tickets on a Kanban board, and let a **Director → Worker** agent pair implement changes in your repo and open PRs.
+Terarchitect is a visual-first SDLC orchestrator: model your system as a graph, define intents, and let a **Director → Worker** agent pair publish implementation attempts to an AgentHub DAG.
 
-- **You stay in control**: every change ships as a PR you review.
+- **You stay in control**: agent attempts become shippable only through Ship Room release/export flow.
 - **One container per job**: reproducible, isolated runs.
 - **Coordinator-friendly**: run the coordinator on the same machine as the app, or on a completely separate machine.
 
-If you’ve ever wanted “Kanban → PRs” with guardrails, this is it.
+If you’ve ever wanted architecture-aware agent swarms with a clear human shipping boundary, this is it.
 
 <p align="center">
   <img src="pictures/project_view.png" alt="Terarchitect UI (project view)" width="960" />
@@ -24,9 +24,9 @@ If you’ve ever wanted “Kanban → PRs” with guardrails, this is it.
 ## What you get
 
 - **Architecture graph**: encode components + interfaces, not just TODO lists
-- **Kanban-driven execution**: moving a ticket to *In Progress* enqueues an agent job
+- **Intent-driven execution**: moving an intent/ticket to *In Progress* enqueues an agent job
 - **Director/Worker separation**: strategy (Director) vs local execution + tools (Worker — OpenCode or Claude Code)
-- **PR-first workflow**: branch per ticket (`ticket-{id}`), PR opened automatically
+- **AgentHub-native workflow**: agents publish attempts/leaves; Ship Room composes accepted leaves into release/export artifacts
 - **Runs anywhere Docker runs**: single-box dev or two-box production
 
 ---
@@ -92,9 +92,9 @@ Details: `docs/PHASE1_WORKER_API.md`.
 |-----------|--------------|---------------|
 | **App** | Flask API + Postgres + React frontend. Stores projects/graph/tickets/logs and enqueues jobs. Does **not** execute the agent. | **Docker Compose** (`postgres`, `backend`, `frontend`) |
 | **Coordinator** | Claims jobs from the API and starts one agent container per job. | **Host process** (can be a different machine with Docker) |
-| **Agent image** | Director + Worker (OpenCode or Claude Code). Clones the project repo, implements the ticket, pushes, opens PR, exits. | **Docker container** started by the coordinator |
+| **Agent image** | Director + Worker (OpenCode, Claude Code, or Codex). Clones or opens the project repo, implements the ticket, publishes an AgentHub attempt, exits. | **Docker container** started by the coordinator |
 
-High-level flow: **UI → enqueue → coordinator claims → agent container runs → PR created → human reviews**.
+High-level flow: **UI → enqueue → coordinator claims → agent container runs → AgentHub attempt created → Ship Room composes accepted leaves → release/export PR or local frontier advance**.
 
 ---
 
@@ -152,7 +152,8 @@ Tip: set `PYTHONPATH=/path/to/terarchitect` if your environment needs it.
 
 Agent containers only need:
 - network access to the app (worker-context, logs, complete/fail)
-- network access to GitHub (clone/push/PR)
+- network access to GitHub when cloning from GitHub or creating a release/export PR
+- network access to AgentHub when publishing/fetching attempts
 
 They do **not** need direct DB access.
 
@@ -162,16 +163,18 @@ Full ops notes (systemd, env, verification): see `docs/RUNBOOK.md`.
 
 ## How execution works
 
-1. You create a project (with a GitHub repo URL), then add tickets.
+1. You create a project (with a GitHub repo URL or local project path), then add intents/tickets.
 2. Moving a ticket to **In Progress** enqueues a job.
 3. The coordinator claims the job and runs:
    - `docker run ... -e REPO_URL=... -e TICKET_ID=... terarchitect-agent`
 4. Inside the container, the agent:
    - clones your repo
-   - creates branch `ticket-{id}`
-   - runs Director + Worker (OpenCode or Claude Code) to implement
-   - pushes branch and opens a PR
+   - checks out the selected AgentHub base/root when one is provided
+   - runs Director + Worker (OpenCode, Claude Code, or Codex) to implement
+   - commits and publishes an AgentHub attempt
    - exits
+5. Terarchitect records the attempt as a `TicketAttempt`; accepted attempts appear in Ship Room.
+6. Ship Room composes accepted leaves into a release branch and optional release/export PR, then advances the shipped frontier when shipped.
 
 No mixing with your project’s Dockerfile. The agent image is built once and reused.
 
@@ -192,12 +195,14 @@ No mixing with your project’s Dockerfile. The agent image is built once and re
 
 - `docs/RUNBOOK.md`: deployments, coordinator env, systemd, verification
 - `docs/PHASE1_WORKER_API.md`: worker API contract and behavior
+- `plans/`: product and architecture planning notes
 
 ---
 
 ## Highlights
 
-- **PR review automation**: the app can poll PRs in review, enqueue “review jobs”, and let the agent address comments.
+- **Ship Room**: compose accepted AgentHub attempts into a coherent release/export artifact and advance the shipped frontier.
+- **Composite Workspace**: behind `ENABLE_COMPOSITE_WORKSPACE`, select leaves into a lab-grade previewable candidate state before shipping.
 - **Cancelable runs**: worker-facing cancel flag + polling endpoint so you can stop a run cleanly.
 - **Per-project execution mode**: run jobs in Docker (clone in container) or Local (run at a configured host path).
 - **Env-only config**: each service (backend, coordinator) uses a simple `.env` that fits its needs; no shared settings store. See `example.env`.

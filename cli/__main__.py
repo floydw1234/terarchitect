@@ -12,7 +12,6 @@ Commands:
     workspace  leaves | list | create | show | compose | analyze | bless | promote | discard
     graph      get | set
     plan       <project-id>  — generate tickets from graph + notes via LLM
-    review     [DEPRECATED — per-ticket PRs removed, use 'ta ship']
 
 Product model:
     Tickets are intents: goal, rationale, acceptance criteria, constraints, architecture scope.
@@ -30,7 +29,7 @@ import sys
 
 from cli._api import API
 from cli._config import get_api_url
-from cli.commands import graph, plan, project, review, ship, ticket, workspace
+from cli.commands import graph, plan, project, ship, ticket, workspace
 
 
 def main() -> None:
@@ -61,7 +60,6 @@ def main() -> None:
     workspace.register(subparsers)
     graph.register(subparsers)
     plan.register(subparsers)
-    review.register(subparsers)  # deprecated stub
 
     args = parser.parse_args()
     api = API(args.api_url or get_api_url())

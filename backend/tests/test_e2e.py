@@ -41,9 +41,9 @@ if _BACKEND_DIR not in sys.path:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _create_ticket(client, project_id, title, deps=None):
+def _create_ticket(client, project_id, title, deps=None, column_id="backlog"):
     resp = client.post(f"/api/projects/{project_id}/tickets", json={
-        "column_id": "backlog",
+        "column_id": column_id,
         "title": title,
         "depends_on_ticket_ids": deps or [],
         "intent_status": "ready",
@@ -56,7 +56,7 @@ def _move_to_in_progress(client, project_id, ticket_id):
     """Move a ticket to in_progress, bypassing graph/readiness checks in test."""
     from models.db import db, Ticket
     with client.application.app_context():
-        t = Ticket.query.get(ticket_id)
+        t = db.session.get(Ticket, ticket_id)
         t.column_id = "in_progress"
         t.intent_status = "active"
         db.session.commit()
@@ -85,7 +85,7 @@ def test_e2e_ship_happy_path(client, project):
 
     # Step 1+2: Create two dependency-linked tickets
     t_a = _create_ticket(client, pid, "Ticket A — no deps")
-    t_b = _create_ticket(client, pid, "Ticket B — depends on A", deps=[t_a["id"]])
+    t_b = _create_ticket(client, pid, "Ticket B — depends on A", deps=[t_a["id"]], column_id="queued")
 
     # Step 3: Move A to in_progress and complete it
     _move_to_in_progress(client, pid, t_a["id"])
@@ -104,8 +104,8 @@ def test_e2e_ship_happy_path(client, project):
     from api.services.ticket_service import dispatch_unblocked_queued
     with client.application.app_context():
         dispatch_unblocked_queued(pid)
-        from models.db import Ticket
-        t_b_db = Ticket.query.get(t_b["id"])
+        from models.db import db, Ticket
+        t_b_db = db.session.get(Ticket, t_b["id"])
         # B should have moved to in_progress since A has an accepted attempt
         assert t_b_db.column_id == "in_progress", \
             f"B should be in_progress after A accepted, got {t_b_db.column_id}"
@@ -140,17 +140,18 @@ def test_e2e_ship_happy_path(client, project):
     assert data["shipped_commit_hash"] == "c" * 40
 
     # Step 10: shipped_frontier advanced
-    from models.db import Project
     with client.application.app_context():
-        p = Project.query.get(pid)
+        from models.db import db, Project
+        p = db.session.get(Project, pid)
         assert p.shipped_frontier == "c" * 40, "Frontier must advance after ship"
 
     # Verify no per-ticket PR was created (plan 12.5 acceptance criteria)
     with client.application.app_context():
         from models.db import TicketAttempt
         attempts = TicketAttempt.query.filter_by(project_id=pid).all()
-        for attempt in attempts:
-            assert attempt.status == "shipped"
+        statuses_by_commit = {a.agenthub_commit_hash: a.status for a in attempts}
+        assert statuses_by_commit["a" * 40] == "shipped"
+        assert statuses_by_commit["b" * 40] == "accepted"
 
 
 # ---------------------------------------------------------------------------
@@ -209,8 +210,8 @@ def test_e2e_workspace_bless_and_promote(client, project):
 
     # blessed_workspace_id set on project
     with client.application.app_context():
-        from models.db import Project
-        p = Project.query.get(pid)
+        from models.db import db, Project
+        p = db.session.get(Project, pid)
         assert p.blessed_workspace_id == ws_id
 
     # Step 7: Promote to ShipRun
@@ -235,7 +236,7 @@ def test_e2e_workspace_bless_and_promote(client, project):
         db.session.commit()
 
         from models.db import Project
-        p = Project.query.get(pid)
+        p = db.session.get(Project, pid)
         base = compute_base_hash(new_ticket, p)
         # Base should be the blessed composite's composed hash
         assert base == "3" * 40, \
@@ -249,13 +250,17 @@ def test_e2e_workspace_bless_and_promote(client, project):
 def test_workspace_compose_without_frontier(client, project):
     """Workspace can be created and composed even when shipped_frontier is not set."""
     pid = project["id"]
-    t = _create_ticket(client, pid, "Ticket without frontier")
-    _move_to_in_progress(client, pid, t["id"])
-    _complete_ticket(client, pid, t["id"], "a" * 40)
+    t = _create_ticket(client, pid, "Ticket without frontier", column_id="in_progress")
+    complete_resp = _complete_ticket(client, pid, t["id"], "a" * 40)
+    assert complete_resp.status_code == 200, complete_resp.get_json()
 
     with client.application.app_context():
         from models.db import TicketAttempt
-        att = TicketAttempt.query.filter_by(ticket_id=t["id"]).first()
+        att = next(
+            (a for a in TicketAttempt.query.filter_by(project_id=pid).all() if str(a.ticket_id) == t["id"]),
+            None,
+        )
+        assert att is not None
         att_id = str(att.id)
 
     ws_resp = client.post(f"/api/projects/{pid}/workspaces", json={

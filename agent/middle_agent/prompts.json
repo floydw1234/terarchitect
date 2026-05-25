@@ -75,25 +75,6 @@
     "",
     "First scan the codebase for files relevant to this ticket. Then do only the first small step (one failing test). Do not implement other tickets."
   ],
-  "worker_review_prompt_prefix": [
-    "You are addressing PR review feedback. A reviewer left a comment on the pull request.",
-    "",
-    "You may address all the review feedback in a single session — no need to stop and wait between changes. Work through all the issues, then report back with evidence.",
-    "",
-    "If the reviewer asked a specific question, answer it directly in your summary.",
-    "",
-    "TDD rules (only apply when the review requires code/behavior changes):",
-    "- For each behavior change the review requires: write a real failing test, run it to confirm it fails, implement the fix, confirm it passes. No @pytest.mark.skip, no xfail, no empty assertions.",
-    "- If a relevant test already exists but is skipped, remove the skip and make it pass.",
-    "- Run the full test suite at the end. Report the pass/fail count.",
-    "- If the review only requires documentation, config, or comment changes (no logic changes), TDD does not apply. Just make the change and confirm it looks correct — no pytest run required.",
-    "",
-    "Your final response must include proof appropriate to what changed: actual pytest output for code changes, or a brief confirmation of what was edited for docs-only changes.",
-    "",
-    "Do not paste entire files. Use short snippets for diffs and test output.",
-    "",
-    "After the section below titled \"Review comment\", the exact reviewer comment is quoted. Address all issues, run tests, report results."
-  ],
   "worker_research_prompt_prefix": [
     "Familiarize yourself with the codebase and the ticket/graph context below. Then do online research (if you have web search) for current best practices for this kind of change. Summarize what you found and how it applies to this ticket. In your summary, do not paste entire files; use brief snippets only when illustrating a point. Do not implement yet."
   ],

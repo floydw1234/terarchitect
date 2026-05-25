@@ -10,6 +10,7 @@ import AgenthubPage from './pages/AgenthubPage';
 import ShipRoomPage from './pages/ShipRoomPage';
 import WorkspacePage from './pages/WorkspacePage';
 import IntentInboxPage from './pages/IntentInboxPage';
+import AttemptDetailPage from './pages/AttemptDetailPage';
 
 const theme = createTheme({
   palette: {
@@ -105,6 +106,7 @@ function App() {
               <Route path="/projects/:projectId" element={<ProjectPage />} />
               <Route path="/projects/:projectId/graph" element={<GraphEditorPage />} />
               <Route path="/projects/:projectId/kanban" element={<KanbanPage />} />
+              <Route path="/projects/:projectId/tickets/:ticketId/attempts/:attemptId" element={<AttemptDetailPage />} />
               <Route path="/projects/:projectId/ship" element={<ShipRoomPage />} />
               <Route path="/projects/:projectId/workspace" element={<WorkspacePage />} />
               <Route path="/projects/:projectId/intents" element={<IntentInboxPage />} />

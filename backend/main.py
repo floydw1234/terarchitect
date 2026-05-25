@@ -18,7 +18,9 @@ from models.db import db
 
 def _run_migrations() -> None:
     """Run any pending Alembic migrations. Safe to call on every startup."""
-    cfg = AlembicConfig(str(Path(__file__).resolve().parent / "alembic.ini"))
+    backend_dir = Path(__file__).resolve().parent
+    cfg = AlembicConfig(str(backend_dir / "alembic.ini"))
+    cfg.set_main_option("script_location", str(backend_dir / "alembic"))
     alembic_command.upgrade(cfg, "head")
 
 
@@ -69,7 +71,10 @@ def create_app():
 
     db.init_app(app)
     with app.app_context():
-        _run_migrations()
+        if db_uri.startswith("sqlite:"):
+            db.create_all()
+        else:
+            _run_migrations()
 
     # Register blueprints
     from api import api_bp

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Phase 3/4: Container entrypoint. Run one job (ticket or review); exit 0 = success, non-zero = failure.
-# Coordinator passes: JOB_KIND, TICKET_ID, PROJECT_ID, TERARCHITECT_API_URL, REPO_URL; for review: PR_NUMBER, COMMENT_BODY.
+# Phase 3/4: Container entrypoint. Run one ticket job; exit 0 = success, non-zero = failure.
+# Coordinator passes: JOB_KIND, TICKET_ID, PROJECT_ID, TERARCHITECT_API_URL, REPO_URL.
 
 set -e
 
@@ -65,7 +65,4 @@ if [ "$_worker_mode" != "claude-code" ]; then
   export OPENCODE_SERVER_URL="http://127.0.0.1:${_oc_port}"
 fi
 
-case "${JOB_KIND}" in
-  review) exec python -m agent_runner review ;;
-  *)      exec python -m agent_runner ticket ;;
-esac
+exec python -m agent_runner ticket

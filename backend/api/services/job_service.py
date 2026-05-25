@@ -1,4 +1,6 @@
 """Worker job queue helpers: swarm job claiming and response serialisation."""
+from collections import Counter
+
 from flask import current_app
 
 from models.db import db, Project, Ticket, AgentJob, TicketAttempt, CompositeWorkspace
@@ -12,7 +14,7 @@ def occupied_nodes_edges(project_id) -> tuple:
     occupied_nodes: set = set()
     occupied_edges: set = set()
     for rj in running_jobs:
-        ticket = Ticket.query.get(rj.ticket_id)
+        ticket = db.session.get(Ticket, rj.ticket_id)
         if not ticket:
             continue
         for n in (ticket.associated_node_ids or []):
@@ -42,7 +44,7 @@ def claim_swarm_job(project_id):
     )
 
     for job in pending_jobs:
-        ticket = Ticket.query.get(job.ticket_id)
+        ticket = db.session.get(Ticket, job.ticket_id)
         if not ticket:
             continue
 
@@ -78,11 +80,17 @@ def compute_base_hash(ticket: Ticket, project: Project) -> str | None:
 
     Priority (from AGENTHUB-CONVERSION.md §Agent Base Selection):
       1. Single explicit dependency → use that dep's accepted attempt hash.
-      2. Multiple dependencies → use the dep with the highest wave_num.
-         (Full multi-dep composition into a temp commit is Phase 4 work.)
+      2. Multiple unshipped dependencies → use their composed temporary base.
       3. No deps → use project.shipped_frontier.
     """
+    context = dependency_base_context(ticket, project)
+    return context.get("base_hash")
+
+
+def dependency_base_context(ticket: Ticket, project: Project) -> dict:
+    """Return base-selection context for a ticket and create temp composition work if needed."""
     dep_ids = ticket.depends_on_ticket_ids or []
+    frontier = (project.shipped_frontier or None) if project else None
 
     if not dep_ids:
         # Prefer blessed composite's composed commit over raw frontier
@@ -93,17 +101,61 @@ def compute_base_hash(ticket: Ticket, project: Project) -> str | None:
                 id=blessed_ws_id, status="blessed"
             ).first()
             if blessed and blessed.composed_commit_hash:
-                return blessed.composed_commit_hash
-        return (project.shipped_frontier or None) if project else None
+                return {
+                    "base_hash": blessed.composed_commit_hash,
+                    "base_source": "blessed_workspace",
+                    "dependency_parent_hashes": [],
+                    "temporary_base_workspace_id": str(blessed.id),
+                    "temporary_base_status": blessed.status,
+                    "temporary_base_required": False,
+                }
+        return {
+            "base_hash": frontier,
+            "base_source": "frontier",
+            "dependency_parent_hashes": [],
+            "temporary_base_workspace_id": None,
+            "temporary_base_status": None,
+            "temporary_base_required": False,
+        }
 
-    # Plan 4.6: if dep is already shipped into main, its changes are in shipped_frontier.
-    # Use shipped_frontier as base (not the pre-merge AgentHub hash).
-    # For unshipped accepted deps, use the dep's AgentHub commit hash.
-    best_hash = None
-    best_wave = -1
-    all_shipped = True
+    unshipped_attempts = unshipped_dependency_attempts(ticket)
+    if not unshipped_attempts:
+        return {
+            "base_hash": frontier,
+            "base_source": "frontier",
+            "dependency_parent_hashes": [],
+            "temporary_base_workspace_id": None,
+            "temporary_base_status": None,
+            "temporary_base_required": False,
+        }
+    if len(unshipped_attempts) == 1:
+        parent_hash = unshipped_attempts[0].agenthub_commit_hash or frontier
+        return {
+            "base_hash": parent_hash,
+            "base_source": "single_dependency",
+            "dependency_parent_hashes": [parent_hash] if parent_hash else [],
+            "temporary_base_workspace_id": None,
+            "temporary_base_status": None,
+            "temporary_base_required": False,
+        }
 
-    for dep_id in dep_ids:
+    workspace = ensure_temporary_dependency_base(ticket, project, unshipped_attempts)
+    parent_hashes = _attempt_hashes(unshipped_attempts)
+    ready = workspace and workspace.composed_commit_hash and workspace.status in {"preview_ready", "blessed", "snapshot_candidate"}
+    return {
+        "base_hash": workspace.composed_commit_hash if ready else None,
+        "base_source": "temporary_dependency_base",
+        "dependency_parent_hashes": parent_hashes,
+        "temporary_base_workspace_id": str(workspace.id) if workspace else None,
+        "temporary_base_status": workspace.status if workspace else None,
+        "temporary_base_required": True,
+    }
+
+
+def unshipped_dependency_attempts(ticket: Ticket) -> list[TicketAttempt]:
+    """Return satisfied dependency attempts that are not yet shipped into the frontier."""
+    attempts: list[TicketAttempt] = []
+    for dep_id in ticket.depends_on_ticket_ids or []:
         attempt = (
             TicketAttempt.query
             .filter_by(ticket_id=dep_id)
@@ -111,39 +163,77 @@ def compute_base_hash(ticket: Ticket, project: Project) -> str | None:
             .order_by(TicketAttempt.attempt_num.desc())
             .first()
         )
-        if not attempt:
-            continue
-        if attempt.status == "shipped":
-            # This dep is in main; its contribution is captured in shipped_frontier.
-            continue
-        all_shipped = False
-        if attempt.agenthub_commit_hash and attempt.wave_num > best_wave:
-            best_hash = attempt.agenthub_commit_hash
-            best_wave = attempt.wave_num
+        if attempt and attempt.status != "shipped":
+            attempts.append(attempt)
+    return attempts
 
-    # If all deps are shipped (in main), or no unshipped dep hash found, use frontier
-    frontier = (project.shipped_frontier or None) if project else None
-    if all_shipped or not best_hash:
-        return frontier
-    return best_hash
+
+def ensure_temporary_dependency_base(ticket: Ticket, project: Project, attempts: list[TicketAttempt]) -> CompositeWorkspace | None:
+    """Find or create a Composite Workspace that composes multiple dependency leaves."""
+    parent_hashes = _attempt_hashes(attempts)
+    if len(parent_hashes) < 2:
+        return None
+    existing = _find_temporary_dependency_workspace(project.id, parent_hashes)
+    if existing:
+        return existing
+    workspace = CompositeWorkspace(
+        project_id=project.id,
+        selected_attempt_ids=[str(attempt.id) for attempt in attempts],
+        selected_leaf_hashes=parent_hashes,
+        base_root_hash=project.shipped_frontier,
+        status="queued",
+        summary=f"Temporary dependency base for {ticket.title or ticket.id}",
+        created_by="dependency_base_composer",
+    )
+    db.session.add(workspace)
+    db.session.commit()
+    current_app.logger.info(
+        "base_selection created temporary dependency workspace=%s ticket=%s parents=%s",
+        workspace.id,
+        getattr(ticket, "id", None),
+        parent_hashes,
+    )
+    return workspace
+
+
+def _find_temporary_dependency_workspace(project_id, parent_hashes: list[str]) -> CompositeWorkspace | None:
+    candidates = (
+        CompositeWorkspace.query
+        .filter_by(project_id=project_id, created_by="dependency_base_composer")
+        .filter(CompositeWorkspace.status.in_(["queued", "composing", "preview_ready", "blessed", "snapshot_candidate"]))
+        .order_by(CompositeWorkspace.created_at.desc())
+        .all()
+    )
+    wanted = Counter(parent_hashes)
+    for workspace in candidates:
+        if Counter(workspace.selected_leaf_hashes or []) == wanted:
+            return workspace
+    return None
+
+
+def _attempt_hashes(attempts: list[TicketAttempt]) -> list[str]:
+    return [attempt.agenthub_commit_hash for attempt in attempts if attempt.agenthub_commit_hash]
 
 
 def job_to_response(job):
     """Build JSON payload for a claimed job. Includes base_hash for AgentHub base selection."""
-    project = Project.query.get(job.project_id)
-    ticket = Ticket.query.get(job.ticket_id)
+    project = db.session.get(Project, job.project_id)
+    ticket = db.session.get(Ticket, job.ticket_id)
     repo_url = (project.github_url or "") if project else ""
     execution_mode = getattr(project, "execution_mode", None) or "docker" if project else "docker"
     git_mode = getattr(project, "git_mode", None) or "swarm" if project else "swarm"
     shipped_frontier = (getattr(project, "shipped_frontier", None) or None) if project else None
 
+    base_context = {}
     base_hash = None
     if ticket and project and git_mode == "swarm":
-        base_hash = compute_base_hash(ticket, project)
+        base_context = dependency_base_context(ticket, project)
+        base_hash = base_context.get("base_hash")
         current_app.logger.info(
-            "base_selection project=%s ticket=%s base=%s frontier=%s deps=%s",
+            "base_selection project=%s ticket=%s base=%s source=%s frontier=%s deps=%s",
             job.project_id, job.ticket_id,
             (base_hash or "")[:12] or "none",
+            base_context.get("base_source"),
             (shipped_frontier or "")[:12] or "none",
             ticket.depends_on_ticket_ids or [],
         )
@@ -159,5 +249,6 @@ def job_to_response(job):
         "project_path": (project.project_path or "").strip() or None if project else None,
         "base_hash": base_hash,
         "shipped_frontier": shipped_frontier,
+        "base_selection": base_context,
     }
     return out

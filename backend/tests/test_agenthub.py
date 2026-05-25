@@ -215,3 +215,72 @@ def test_compute_base_hash_uses_frontier_when_no_deps(app):
 
         result = compute_base_hash(ticket, project)
         assert result == "my_frontier"
+
+
+# ---------------------------------------------------------------------------
+# 8.4  Debug/audit endpoint
+# ---------------------------------------------------------------------------
+
+def test_project_debug_reports_frontier_attempts_runs_and_jobs(client, project):
+    pid = project["id"]
+    frontier = "f" * 40
+
+    resp = client.post(f"/api/projects/{pid}/frontier", json={
+        "hash": frontier,
+        "source": "test",
+    })
+    assert resp.status_code == 200
+
+    from models.db import db, Ticket, TicketAttempt, ShipRun, AgentJob
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Debug ticket",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+
+        accepted = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="a" * 40,
+            base_hash="old" * 13 + "o",
+            wave_num=0,
+            attempt_num=1,
+            status="accepted",
+            summary="done",
+        )
+        proposed = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="b" * 40,
+            base_hash=frontier,
+            wave_num=0,
+            attempt_num=2,
+            status="proposed",
+            summary="new try",
+        )
+        run = ShipRun(project_id=pid, wave_num=0, status="queued")
+        job = AgentJob(project_id=pid, ticket_id=ticket.id, kind="ticket", status="pending")
+        db.session.add_all([accepted, proposed, run, job])
+        db.session.commit()
+
+    resp = client.get(f"/api/projects/{pid}/debug")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["project_id"] == pid
+    assert data["shipped_frontier"] == frontier
+    assert data["ticket_count"] == 1
+    assert data["stale_attempt_count"] == 1
+    assert len(data["stale_attempts"]) == 1
+    assert data["stale_attempts"][0]["agenthub_commit_hash"] == "a" * 40
+    assert data["accepted_attempts_by_wave"]["0"][0]["status"] == "accepted"
+    assert data["pending_leaves"][0]["status"] == "accepted"
+    assert {leaf["status"] for leaf in data["pending_leaves"]} == {"accepted", "proposed"}
+    assert data["wave_summary"][0]["accepted_count"] == 1
+    assert data["wave_summary"][0]["stale_count"] == 1
+    assert data["open_ship_runs"][0]["status"] == "queued"
+    assert data["active_jobs"][0]["status"] == "pending"

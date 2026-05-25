@@ -17,11 +17,6 @@ from typing import Any, Dict, List, Optional, Protocol
 from utils.app_settings import get_gh_env_for_agent, get_setting_or_env
 from middle_agent import git_backend
 
-# Invisible HTML comment appended to all agent-posted PR comments.
-# Must match the constant in backend/api/routes.py — used by the PR polling loop
-# to distinguish agent replies from human reviewer comments when both share the same token.
-
-
 class TicketLike(Protocol):
     """Minimal ticket interface for Director (no DB dependency). Used by process_ticket."""
 
@@ -41,7 +36,7 @@ PROJECT_SETUP_TICKET_TITLE = "Project setup"
 _PROMPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROMPTS_PATH = os.path.join(_PROMPTS_DIR, "prompts.json")
 _FEEDBACK_STYLE_PATH = os.path.join(_PROMPTS_DIR, "feedback_example.txt")
-_REQUIRED_PROMPT_KEYS = ("agent_system_prompt", "worker_first_prompt_prefix", "worker_review_prompt_prefix")
+_REQUIRED_PROMPT_KEYS = ("agent_system_prompt", "worker_first_prompt_prefix")
 # Optional keys for planning phase (fallbacks used if missing).
 _OPTIONAL_PLANNING_KEYS = ("worker_research_prompt_prefix", "worker_plan_prompt_prefix", "agent_plan_review_instructions")
 
@@ -100,10 +95,6 @@ def get_agent_system_prompt() -> str:
         + "\n\n---\nCommunication style (use this tone when directing the worker; draw from these examples):\n\n"
         + style
     )
-
-
-def get_worker_review_prompt_prefix() -> str:
-    return _load_prompts()["worker_review_prompt_prefix"]
 
 
 def _get_optional_prompt(key: str, fallback: str) -> str:
@@ -653,7 +644,7 @@ class MiddleAgent:
         flow_label: Optional[str] = None,
     ) -> Optional[str]:
         """Run the execution loop until the agent marks the ticket complete. Returns completion_summary or None.
-        flow_label: optional prefix for logs (e.g. 'Setup' or 'PR review') so shared logs are unambiguous."""
+        flow_label: optional prefix for logs (e.g. 'Setup') so shared logs are unambiguous."""
         ticket_id = ticket.id
         prefix = f"[{flow_label}] " if flow_label else ""
         completion_summary: Optional[str] = None
@@ -1101,8 +1092,7 @@ class MiddleAgent:
                     flow_label=None,
                 )
 
-            self._debug_log("Finalizing: commit, push, PR")
-            # Step 4: Finalize (commit, push, PR, move to In Review)
+            self._debug_log("Finalizing: commit and publish AgentHub attempt")
             self._finalize(
                 ticket,
                 session_id,
@@ -1113,178 +1103,6 @@ class MiddleAgent:
             self._active_project_id = None
             self._active_ticket_id = None
 
-    def _run_pr_review_flow(self, *args, **kwargs):
-        """Removed: PR-per-ticket review flow."""
-        raise NotImplementedError("PR-per-ticket review has been removed.")
-
-    def _run_pr_review_flow_body_tombstone(self):
-        ticket_id = ticket.id
-        worker_context = {
-            "project_name": context.get("project_name"),
-            "project_path": project_path,
-            "current_ticket": context.get("current_ticket"),
-            "graph_relevant_to_current_ticket": context.get("graph_relevant_to_current_ticket"),
-        }
-        task_instruction = (
-            get_worker_review_prompt_prefix()
-            + "\n\nReview comment:\n"
-            + comment_body
-            + "\n\nContext:\n"
-            + json.dumps(worker_context, indent=2)
-        )
-        start_memory_passages = self._retrieve_memory_passages(
-            ticket=ticket,
-            queries=[f"PR review: {comment_body[:200]}"],
-            base_save_dir=base_save_dir,
-            memory_kwargs=memory_kwargs,
-            session_id=session_id,
-            ticket_id=ticket_id,
-            step_name="memory_retrieve_review",
-        )
-        self._trace_log(session_id, f"Prompt to worker (review turn 0):\n{task_instruction}", project_path)
-        self._log(
-            ticket.project_id, ticket_id, session_id,
-            "worker_turn_0_prompt", "Review prompt sent to worker", raw_output=task_instruction,
-        )
-        self._debug_log(f"[Director -> Worker] PR review turn 0:\n" + (task_instruction[:800] + "..." if len(task_instruction) > 800 else task_instruction))
-        response = self._send_to_worker(task_instruction, session_id, project_path, resume=False)
-        turn0_out = response.get("output") or ""
-        self._debug_log(f"[Worker -> Director] PR review turn 0 response:\n" + (turn0_out[:800] + "..." if len(turn0_out) > 800 else turn0_out))
-        self._log(ticket.project_id, ticket_id, session_id, "worker_turn_0", "Review prompt sent", raw_output=turn0_out)
-        conversation_history: List[str] = [turn0_out]
-        prompt_history: List[str] = [task_instruction]
-        director_messages: List[Dict[str, str]] = []
-        completion_summary: Optional[str] = None
-        self._debug_log("[PR review] Loop until agent marks complete")
-        max_turns = 50
-        for turn in range(max_turns):
-            self._debug_log(f"PR review turn {turn + 1}")
-            if self._backend.cancel_requested(ticket.project_id, ticket.id):
-                return completion_summary
-            latest_output = conversation_history[-1] if conversation_history else ""
-            last_prompt = prompt_history[-1] if prompt_history else task_instruction
-            combined_query = f"{last_prompt[:500]}\n{latest_output[:500]}".strip()
-            turn_memory_passages = self._retrieve_memory_passages(
-                ticket=ticket,
-                queries=[combined_query],
-                base_save_dir=base_save_dir,
-                memory_kwargs=memory_kwargs,
-                session_id=session_id,
-                ticket_id=ticket_id,
-                step_name=f"memory_retrieve_review_turn_{turn}",
-            )
-            memory_passages = list(start_memory_passages)
-            for passage in turn_memory_passages:
-                if passage not in memory_passages:
-                    memory_passages.append(passage)
-            memories = self._format_memories(memory_passages)
-            agent_response, director_messages = self._agent_assess(
-                context,
-                prompt_history,
-                conversation_history,
-                memories=memories,
-                director_messages=director_messages,
-                session_id=session_id,
-                project_path=project_path,
-            )
-            if agent_response.get("complete"):
-                self._debug_log("PR review complete")
-                completion_summary = agent_response.get("summary", "Addressed review feedback.")
-                self._log(ticket.project_id, ticket_id, session_id, "review_complete", completion_summary)
-                return completion_summary
-            next_prompt = agent_response.get("next_prompt")
-            if not next_prompt:
-                raise AgentAPIError("Director API returned no next_prompt when task is incomplete")
-            if _director_prompt_is_stuck(prompt_history, next_prompt):
-                raise AgentAPIError(
-                    "Director is stuck: same prompt sent 3 times in a row with no progress. "
-                    "Aborting to avoid infinite loop."
-                )
-            self._log(
-                ticket.project_id, ticket_id, session_id,
-                f"worker_turn_{turn + 1}_prompt", f"Director prompt (turn {turn + 1})", raw_output=next_prompt,
-            )
-            self._debug_log(f"[Director -> Worker] PR review turn {turn + 1}:\n" + (next_prompt[:800] + "..." if len(next_prompt) > 800 else next_prompt))
-            response = self._send_to_worker(next_prompt, session_id, project_path, resume=True)
-            worker_out = response.get("output") or ""
-            prompt_history.append(next_prompt)
-            conversation_history.append(worker_out)
-            self._debug_log(f"[Worker -> Director] PR review turn {turn + 1} response:\n" + (worker_out[:800] + "..." if len(worker_out) > 800 else worker_out))
-            self._log(ticket.project_id, ticket_id, session_id, f"worker_turn_{turn + 1}", "Turn completed", raw_output=worker_out)
-        return completion_summary
-
-    def process_ticket_review(self, *args, **kwargs) -> None:
-        """Removed: PR-per-ticket review has been removed."""
-        raise NotImplementedError("PR-per-ticket review has been removed.")
-
-    def _process_ticket_review_body_tombstone(
-        self,
-        ticket_id,
-        comment_body,
-        pr_number,
-        project_id,
-        project_path,
-    ) -> None:
-        """Dead code — original body kept temporarily. Will be fully deleted next pass."""
-        context = self._backend.get_context(project_id, ticket_id)
-        if not context:
-            self._debug_log("Could not load context for review, exiting")
-            sys.exit(1)
-        self._reapply_container_urls_from_env()
-        context["pr_review_comment"] = comment_body
-        class _TicketLike:
-            def __init__(self, pid: uuid.UUID, tid: uuid.UUID, ctx: dict):
-                self.project_id = pid
-                self.id = tid
-                cur = ctx.get("current_ticket") or {}
-                self.title = cur.get("title") or ""
-                self.description = cur.get("description") or ""
-        ticket = _TicketLike(project_id, ticket_id, context)
-        session_id = str(uuid.uuid4())
-        # Store active IDs so _send_to_worker can post intra-turn logs (OpenCode streaming).
-        self._active_project_id = project_id
-        self._active_ticket_id = ticket_id
-        self._log(project_id, ticket_id, session_id, "review_started", "Started PR review feedback session")
-        if not self._validate_config(project_id, ticket_id, session_id):
-            sys.exit(1)
-        self._debug_log("Flow: PR review (address comment → loop until complete)")
-        self._log(project_id, ticket_id, session_id, "context_loaded", "Loaded context for PR review")
-        if not project_path or not os.path.isdir(project_path):
-            self._log(project_id, ticket_id, session_id, "invalid_project_path", "Invalid project_path for review")
-            sys.exit(1)
-        if self._backend.cancel_requested(project_id, ticket_id):
-            return
-        if not self._checkout_ticket_branch(ticket, project_path):
-            self._log(project_id, ticket_id, session_id, "checkout_failed", "Could not checkout ticket branch for review")
-            sys.exit(1)
-        self._log(project_id, ticket_id, session_id, "branch_checked_out", "Checked out ticket branch for review")
-        base_save_dir = None
-        memory_kwargs = {}
-        completion_summary = self._run_pr_review_flow(
-            ticket=ticket,
-            session_id=session_id,
-            context=context,
-            comment_body=comment_body,
-            project_path=project_path,
-            base_save_dir=base_save_dir,
-            memory_kwargs=memory_kwargs,
-        )
-        self._debug_log("Posting reply to PR comment, then finalizing")
-        self._cleanup_after_completion(session_id, project_path, ticket.id)
-        pr_comment_body = self._generate_pr_comment_reply(comment_body, completion_summary or "")
-        try:
-            self._finalize(
-                ticket,
-                session_id,
-                project_path=project_path,
-                completion_summary=completion_summary,
-                review_mode=True,
-                pr_number_for_comment=pr_number,
-                pr_comment_body=pr_comment_body,
-            )
-        finally:
-            self._active_project_id = None
-            self._active_ticket_id = None
     @staticmethod
     def _ticket_summary(t: TicketLike, mark_current: bool = False) -> dict:
         """Minimal ticket payload for context (id, title, description, priority, column_id, status)."""
@@ -1722,7 +1540,7 @@ class MiddleAgent:
         if self.worker_mode == "codex":
             return self._call_codex_worker(prompt, session_id, project_path, resume)
         # Use caller-supplied IDs or fall back to the instance-level active context
-        # set by process_ticket / process_ticket_review.
+        # set by process_ticket.
         _pid = project_id or getattr(self, "_active_project_id", None)
         _tid = ticket_id or getattr(self, "_active_ticket_id", None)
         # --- OpenCode HTTP server ---
@@ -2112,7 +1930,7 @@ Output a single concise narrative under 200 words. No JSON, no labels—just pro
         setup_ticket: bool = False,
     ) -> tuple[Dict[str, Any], List[Dict[str, str]]]:
         """Call OpenAI-compatible API to assess completion and generate next prompt. Returns (response_dict, updated director_messages).
-        phase: None (default) = normal ticket/PR review; 'plan_review' = judge plan; 'execution' = inject approved_plan_text and assess completion.
+        phase: None (default) = normal ticket assessment; 'plan_review' = judge plan; 'execution' = inject approved_plan_text and assess completion.
         setup_ticket: when True with phase='execution', do not require tests; judge completion against ticket description only (structure/config)."""
         director_messages = director_messages or []
         is_plan_review = phase == "plan_review"
@@ -2435,5 +2253,3 @@ def build_worker_context(ticket: Any) -> dict:
     context["in_progress_tickets"] = in_progress_summaries[:5]
     context["done_tickets"] = [MiddleAgent._ticket_summary(t) for t in done[:5]]
     return context
-
-

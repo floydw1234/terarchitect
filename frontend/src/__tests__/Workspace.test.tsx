@@ -26,6 +26,18 @@ jest.mock('../utils/api', () => ({
   snapshotWorkspace: jest.fn(),
   promoteWorkspace: jest.fn(),
   discardWorkspace: jest.fn(),
+  getEvidencePolicy: jest.fn(),
+  getEvidence: jest.fn(),
+  getEvidenceRuns: jest.fn(),
+  collectEvidence: jest.fn(),
+  runCommandEvidence: jest.fn(),
+  queueEvidenceRun: jest.fn(),
+  compareEvidence: jest.fn(),
+  addEvidenceWaiver: jest.fn(),
+  addEvidenceApproval: jest.fn(),
+  createEvidenceRepairTicket: jest.fn(),
+  rerunEvidenceChecks: jest.fn(),
+  runEvidenceSuite: jest.fn(),
   AGENTHUB_URL: '',
 }));
 
@@ -85,6 +97,16 @@ beforeEach(() => {
   (api.getProject as jest.Mock).mockResolvedValue(mockProject);
   (api.getTickets as jest.Mock).mockResolvedValue([]);
   (api.getTicketAttempts as jest.Mock).mockResolvedValue([]);
+  (api.getEvidencePolicy as jest.Mock).mockResolvedValue({
+    allowed: true,
+    policy: { required_checks: [], optional_checks: [], required_llm_reviewers: [], block_on: [], check_suites: [] },
+    bundle: null,
+    required_checks: {},
+    human_approval: null,
+    reasons: [],
+  });
+  (api.getEvidence as jest.Mock).mockResolvedValue([]);
+  (api.getEvidenceRuns as jest.Mock).mockResolvedValue([]);
 });
 
 // ---------------------------------------------------------------------------

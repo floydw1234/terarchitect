@@ -6,10 +6,10 @@ import os
 import subprocess
 from uuid import UUID
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, abort, current_app, jsonify, request
 from sqlalchemy import text
 
-from models.db import db, Project, Graph, KanbanBoard, Ticket, Note, ExecutionLog, AgentJob, ShipRun, TicketAttempt, CompositeWorkspace
+from models.db import db, Project, Graph, KanbanBoard, Ticket, Note, ExecutionLog, AgentJob, ShipRun, TicketAttempt, CompositeWorkspace, EvidenceBundle, EvidenceRun
 from utils.embedding_client import embed_single
 from utils.rag import upsert_embedding, delete_embeddings_for_source
 from utils.app_settings import (
@@ -26,7 +26,9 @@ from .services.job_service import (
     job_to_response as _job_to_response,
 )
 from .services.merge_service import (
+    ACTIVE_SHIP_RUN_STATUSES as _ACTIVE_SHIP_RUN_STATUSES,
     compute_waves as _compute_waves,
+    lock_project_for_update as _lock_project_for_update,
     maybe_trigger_wave_merge as _maybe_trigger_wave_merge,
     ship_run_to_json as _ship_run_to_json,
 )
@@ -61,14 +63,65 @@ from .services.channel_service import (
     ticket_channel as _ticket_channel,
     wave_channel as _wave_channel,
     post_event as _post_event,
+    event_content as _event_content,
     fetch_channel_posts as _fetch_channel_posts,
+    parse_event_post as _parse_event_post,
 )
 from .services.workspace_service import (
     workspace_to_json as _workspace_to_json,
     analyze_compatibility as _analyze_compatibility,
 )
+from .services.evidence_service import (
+    add_evidence_check as _add_evidence_check,
+    add_evidence_approval as _add_evidence_approval,
+    add_evidence_waiver as _add_evidence_waiver,
+    cancel_evidence_run as _cancel_evidence_run,
+    claim_next_evidence_run as _claim_next_evidence_run,
+    complete_external_evidence_run as _complete_external_evidence_run,
+    compare_candidate_evidence as _compare_candidate_evidence,
+    collect_existing_target_evidence as _collect_existing_target_evidence,
+    create_evidence_repair_ticket as _create_evidence_repair_ticket,
+    create_evidence_bundle as _create_evidence_bundle,
+    create_evidence_run as _create_evidence_run,
+    evidence_bundle_to_json as _evidence_bundle_to_json,
+    evidence_check_to_json as _evidence_check_to_json,
+    evidence_run_to_json as _evidence_run_to_json,
+    evaluate_evidence_policy as _evaluate_evidence_policy,
+    execute_evidence_run as _execute_evidence_run,
+    fail_external_evidence_run as _fail_external_evidence_run,
+    normalize_verification_policy as _normalize_verification_policy,
+    rerun_failed_evidence_checks as _rerun_failed_evidence_checks,
+    run_browser_evidence as _run_browser_evidence,
+    run_check_suite_evidence as _run_check_suite_evidence,
+    run_command_evidence as _run_command_evidence,
+    run_llm_review_evidence as _run_llm_review_evidence,
+    run_mutation_evidence as _run_mutation_evidence,
+    run_property_evidence as _run_property_evidence,
+    run_replay_evidence as _run_replay_evidence,
+    run_test_adequacy_evidence as _run_test_adequacy_evidence,
+)
 
 api_bp = Blueprint("api", __name__)
+
+
+def _get_project_or_404(project_id):
+    project = db.session.get(Project, project_id)
+    if not project:
+        abort(404)
+    return project
+
+
+def _evidence_gate_response(project, target_type: str, target_id) -> tuple[dict | None, int | None]:
+    evaluation = _evaluate_evidence_policy(project, target_type, str(target_id))
+    if evaluation["allowed"]:
+        return None, None
+    return {
+        "error": "Required evidence policy has not passed.",
+        "target_type": target_type,
+        "target_id": str(target_id),
+        "evidence_policy": evaluation,
+    }, 409
+
 
 # Worker-facing route prefixes are already protected by _require_worker_auth (Bearer TERARCHITECT_WORKER_API_KEY).
 # All other routes are protected by _require_ui_auth (Bearer TERARCHITECT_UI_API_KEY) when that key is set.
@@ -275,7 +328,7 @@ def projects():
 @api_bp.route("/projects/<uuid:project_id>", methods=["GET", "PUT", "DELETE"])
 def project_detail(project_id):
     """Get, update, or delete a project."""
-    project = Project.query.get_or_404(project_id)
+    project = _get_project_or_404(project_id)
 
     if request.method == "GET":
         return jsonify(_project_to_json(project))
@@ -322,7 +375,9 @@ def project_frontier(project_id):
     Body: { "hash": "<commit>", "source": "manual" }
     Also accepts source "local_git" to auto-read from project_path.
     """
-    project = Project.query.get_or_404(project_id)
+    project = _lock_project_for_update(project_id)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
     data = request.json or {}
     source = (data.get("source") or "manual").strip()
     new_hash = (data.get("hash") or "").strip()
@@ -362,13 +417,26 @@ def _require_workspace_enabled():
         }), 503
     return None, None
 
+
+def _normalize_optional_command(value):
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        parts = value.strip().split()
+    elif isinstance(value, list):
+        parts = [str(part).strip() for part in value]
+    else:
+        raise ValueError("preview_command must be a string or list")
+    return [part for part in parts if part]
+
+
 @api_bp.route("/projects/<uuid:project_id>/workspaces", methods=["GET", "POST"])
 def workspaces(project_id):
     """List workspaces or create a new draft."""
     err, status = _require_workspace_enabled()
     if err is not None:
         return err, status
-    Project.query.get_or_404(project_id)
+    _get_project_or_404(project_id)
 
     if request.method == "GET":
         wss = (
@@ -385,13 +453,13 @@ def workspaces(project_id):
     if not attempt_ids:
         return jsonify({"error": "attempt_ids is required"}), 400
 
-    project = Project.query.get(project_id)
+    project = db.session.get(Project, project_id)
     frontier = getattr(project, "shipped_frontier", None) or None
 
     # Collect leaf hashes from selected attempts
     leaf_hashes = []
     for aid in attempt_ids:
-        attempt = TicketAttempt.query.get(aid)
+        attempt = db.session.get(TicketAttempt, aid)
         if attempt and attempt.agenthub_commit_hash:
             leaf_hashes.append(attempt.agenthub_commit_hash)
 
@@ -401,6 +469,10 @@ def workspaces(project_id):
         selected_attempt_ids=[str(a) for a in attempt_ids],
         selected_leaf_hashes=leaf_hashes,
         status="draft",
+        preview_url=(data.get("preview_url") or "").strip() or None,
+        preview_status=(data.get("preview_status") or "").strip() or None,
+        preview_command=_normalize_optional_command(data.get("preview_command")),
+        preview_error=(data.get("preview_error") or "")[:8000] or None,
         created_by=(data.get("created_by") or "").strip() or None,
     )
     db.session.add(ws)
@@ -414,7 +486,7 @@ def workspace_analyze(project_id):
     err, status = _require_workspace_enabled()
     if err is not None:
         return err, status
-    Project.query.get_or_404(project_id)
+    _get_project_or_404(project_id)
     data = request.json or {}
     attempt_ids = data.get("attempt_ids") or []
     if not attempt_ids:
@@ -467,8 +539,12 @@ def workspace_bless(project_id, workspace_id):
     ).first_or_404()
     if ws.status not in ("preview_ready", "blessed"):
         return jsonify({"error": f"Cannot bless a workspace in status '{ws.status}' — compose it first"}), 409
+    project = db.session.get(Project, project_id)
+    if project:
+        gate, gate_status = _evidence_gate_response(project, "composite_workspace", workspace_id)
+        if gate:
+            return jsonify(gate), gate_status
     ws.status = "blessed"
-    project = Project.query.get(project_id)
     if project:
         project.blessed_workspace_id = str(workspace_id)
     db.session.commit()
@@ -478,7 +554,7 @@ def workspace_bless(project_id, workspace_id):
 
 @api_bp.route("/projects/<uuid:project_id>/workspaces/<uuid:workspace_id>/snapshot", methods=["POST"])
 def workspace_snapshot(project_id, workspace_id):
-    """Create a Snapshot candidate from this workspace (stub — Phase 14 implements Snapshots)."""
+    """Create a Snapshot candidate from this workspace (stub until the Snapshot phase)."""
     err, status = _require_workspace_enabled()
     if err is not None:
         return err, status
@@ -491,7 +567,7 @@ def workspace_snapshot(project_id, workspace_id):
     db.session.commit()
     return jsonify({
         **_workspace_to_json(ws),
-        "snapshot_note": "Snapshot creation is a stub — Phase 14 will add the Verification Engine.",
+        "snapshot_note": "Snapshot creation is a stub until first-class Snapshots are implemented.",
     })
 
 
@@ -507,11 +583,16 @@ def workspace_promote(project_id, workspace_id):
     ).first_or_404()
     if ws.status not in ("preview_ready", "blessed", "snapshot_candidate"):
         return jsonify({"error": f"Cannot promote a workspace in status '{ws.status}'"}), 409
+    project = db.session.get(Project, project_id)
+    if project:
+        gate, gate_status = _evidence_gate_response(project, "composite_workspace", workspace_id)
+        if gate:
+            return jsonify(gate), gate_status
 
     # Determine wave_num from the selected attempts (use the max wave)
     wave_num = 0
     for aid in (ws.selected_attempt_ids or []):
-        attempt = TicketAttempt.query.get(aid)
+        attempt = db.session.get(TicketAttempt, aid)
         if attempt:
             wave_num = max(wave_num, attempt.wave_num)
 
@@ -547,11 +628,328 @@ def workspace_discard(project_id, workspace_id):
     ).first_or_404()
     ws.status = "discarded"
     # Clear blessed if this was the blessed workspace
-    project = Project.query.get(project_id)
+    project = db.session.get(Project, project_id)
     if project and str(project.blessed_workspace_id) == str(workspace_id):
         project.blessed_workspace_id = None
     db.session.commit()
     return jsonify(_workspace_to_json(ws))
+
+
+# ---------------------------------------------------------------------------
+# Evidence Bundles — Phase 14
+# Storage/query, policy explanation, and bless/promote/ship gate surface.
+# ---------------------------------------------------------------------------
+
+@api_bp.route("/projects/<uuid:project_id>/verification-policy", methods=["GET", "PUT"])
+def project_verification_policy(project_id):
+    project = _get_project_or_404(project_id)
+    if request.method == "GET":
+        return jsonify(_normalize_verification_policy(project.verification_policy))
+
+    try:
+        project.verification_policy = _normalize_verification_policy(request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    db.session.commit()
+    return jsonify(project.verification_policy)
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/policy", methods=["GET"])
+def evidence_policy(project_id):
+    project = _get_project_or_404(project_id)
+    target_type = (request.args.get("target_type") or "").strip()
+    target_id = (request.args.get("target_id") or "").strip()
+    if not target_type or not target_id:
+        return jsonify({"error": "target_type and target_id are required"}), 400
+    return jsonify(_evaluate_evidence_policy(project, target_type, target_id))
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/collect", methods=["POST"])
+def evidence_collect(project_id):
+    _get_project_or_404(project_id)
+    try:
+        bundle = _collect_existing_target_evidence(project_id, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_evidence_bundle_to_json(bundle, include_checks=True)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/run-command", methods=["POST"])
+def evidence_run_command(project_id):
+    _get_project_or_404(project_id)
+    try:
+        bundle = _run_command_evidence(project_id, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_evidence_bundle_to_json(bundle, include_checks=True)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/run-suite", methods=["POST"])
+def evidence_run_suite(project_id):
+    _get_project_or_404(project_id)
+    try:
+        bundle = _run_check_suite_evidence(project_id, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_evidence_bundle_to_json(bundle, include_checks=True)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/run-browser", methods=["POST"])
+def evidence_run_browser(project_id):
+    _get_project_or_404(project_id)
+    try:
+        bundle = _run_browser_evidence(project_id, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_evidence_bundle_to_json(bundle, include_checks=True)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/run-replay", methods=["POST"])
+def evidence_run_replay(project_id):
+    _get_project_or_404(project_id)
+    try:
+        bundle = _run_replay_evidence(project_id, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_evidence_bundle_to_json(bundle, include_checks=True)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/run-mutation", methods=["POST"])
+def evidence_run_mutation(project_id):
+    _get_project_or_404(project_id)
+    try:
+        bundle = _run_mutation_evidence(project_id, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_evidence_bundle_to_json(bundle, include_checks=True)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/run-property", methods=["POST"])
+def evidence_run_property(project_id):
+    _get_project_or_404(project_id)
+    try:
+        bundle = _run_property_evidence(project_id, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_evidence_bundle_to_json(bundle, include_checks=True)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/run-llm-review", methods=["POST"])
+def evidence_run_llm_review(project_id):
+    _get_project_or_404(project_id)
+    try:
+        bundle = _run_llm_review_evidence(project_id, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_evidence_bundle_to_json(bundle, include_checks=True)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/run-test-adequacy", methods=["POST"])
+def evidence_run_test_adequacy(project_id):
+    _get_project_or_404(project_id)
+    try:
+        bundle = _run_test_adequacy_evidence(project_id, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_evidence_bundle_to_json(bundle, include_checks=True)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/runs", methods=["GET", "POST"])
+def evidence_runs(project_id):
+    _get_project_or_404(project_id)
+    if request.method == "GET":
+        status = (request.args.get("status") or "").strip()
+        target_type = (request.args.get("target_type") or "").strip()
+        target_id = (request.args.get("target_id") or "").strip()
+        q = EvidenceRun.query.filter_by(project_id=project_id)
+        if status:
+            q = q.filter_by(status=status)
+        if target_type:
+            q = q.filter_by(target_type=target_type)
+        if target_id:
+            q = q.filter_by(target_id=target_id)
+        runs = q.order_by(EvidenceRun.created_at.desc()).all()
+        return jsonify([_evidence_run_to_json(run) for run in runs])
+
+    try:
+        run = _create_evidence_run(project_id, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_evidence_run_to_json(run)), 202
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/runs/<uuid:run_id>", methods=["GET"])
+def evidence_run_detail(project_id, run_id):
+    _get_project_or_404(project_id)
+    run = EvidenceRun.query.filter_by(project_id=project_id, id=run_id).first_or_404()
+    return jsonify(_evidence_run_to_json(run, include_bundle=True))
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/runs/<uuid:run_id>/cancel", methods=["POST"])
+def evidence_run_cancel(project_id, run_id):
+    _get_project_or_404(project_id)
+    run = EvidenceRun.query.filter_by(project_id=project_id, id=run_id).first_or_404()
+    try:
+        run = _cancel_evidence_run(run)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_evidence_run_to_json(run, include_bundle=True))
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/compare", methods=["POST"])
+def evidence_compare(project_id):
+    _get_project_or_404(project_id)
+    try:
+        bundle = _compare_candidate_evidence(project_id, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_evidence_bundle_to_json(bundle, include_checks=True)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence", methods=["GET", "POST"])
+def project_evidence(project_id):
+    _get_project_or_404(project_id)
+
+    if request.method == "GET":
+        target_type = (request.args.get("target_type") or "").strip()
+        target_id = (request.args.get("target_id") or "").strip()
+        check_type = (request.args.get("check_type") or "").strip()
+
+        q = EvidenceBundle.query.filter_by(project_id=project_id)
+        if target_type:
+            q = q.filter_by(target_type=target_type)
+        if target_id:
+            q = q.filter_by(target_id=target_id)
+        if check_type:
+            q = q.join(EvidenceBundle.checks).filter_by(check_type=check_type)
+        bundles = q.order_by(EvidenceBundle.created_at.desc()).all()
+        return jsonify([_evidence_bundle_to_json(b) for b in bundles])
+
+    try:
+        bundle = _create_evidence_bundle(project_id, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_evidence_bundle_to_json(bundle, include_checks=True)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/<uuid:bundle_id>", methods=["GET"])
+def evidence_detail(project_id, bundle_id):
+    _get_project_or_404(project_id)
+    bundle = EvidenceBundle.query.filter_by(project_id=project_id, id=bundle_id).first_or_404()
+    return jsonify(_evidence_bundle_to_json(bundle, include_checks=True))
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/<uuid:bundle_id>/checks", methods=["POST"])
+def evidence_checks(project_id, bundle_id):
+    _get_project_or_404(project_id)
+    bundle = EvidenceBundle.query.filter_by(project_id=project_id, id=bundle_id).first_or_404()
+    try:
+        check = _add_evidence_check(bundle, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_evidence_check_to_json(check)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/<uuid:bundle_id>/waivers", methods=["POST"])
+def evidence_waivers(project_id, bundle_id):
+    _get_project_or_404(project_id)
+    bundle = EvidenceBundle.query.filter_by(project_id=project_id, id=bundle_id).first_or_404()
+    try:
+        check = _add_evidence_waiver(bundle, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_evidence_check_to_json(check)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/<uuid:bundle_id>/approvals", methods=["POST"])
+def evidence_approvals(project_id, bundle_id):
+    _get_project_or_404(project_id)
+    bundle = EvidenceBundle.query.filter_by(project_id=project_id, id=bundle_id).first_or_404()
+    try:
+        check = _add_evidence_approval(bundle, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_evidence_check_to_json(check)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/<uuid:bundle_id>/repair", methods=["POST"])
+def evidence_repair(project_id, bundle_id):
+    _get_project_or_404(project_id)
+    bundle = EvidenceBundle.query.filter_by(project_id=project_id, id=bundle_id).first_or_404()
+    try:
+        ticket = _create_evidence_repair_ticket(bundle, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_ticket_to_json(ticket)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/evidence/<uuid:bundle_id>/rerun", methods=["POST"])
+def evidence_rerun(project_id, bundle_id):
+    _get_project_or_404(project_id)
+    bundle = EvidenceBundle.query.filter_by(project_id=project_id, id=bundle_id).first_or_404()
+    try:
+        rerun_bundle = _rerun_failed_evidence_checks(bundle, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_evidence_bundle_to_json(rerun_bundle, include_checks=True)), 201
+
+
+# ---------------------------------------------------------------------------
+# Worker-facing evidence endpoints
+# ---------------------------------------------------------------------------
+
+@api_bp.route("/worker/evidence-runs/next", methods=["POST"])
+def worker_evidence_run_next():
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
+    data = request.json or {}
+    project_id = data.get("project_id")
+    if project_id:
+        _get_project_or_404(project_id)
+    run = _claim_next_evidence_run(project_id)
+    if not run:
+        return jsonify({"run": None})
+    return jsonify({"run": _evidence_run_to_json(run)})
+
+
+@api_bp.route("/worker/evidence-runs/<uuid:run_id>/execute", methods=["POST"])
+def worker_evidence_run_execute(run_id):
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
+    run = EvidenceRun.query.filter_by(id=run_id).first_or_404()
+    try:
+        run = _execute_evidence_run(run)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"run": _evidence_run_to_json(run, include_bundle=True)})
+
+
+@api_bp.route("/worker/evidence-runs/<uuid:run_id>/complete", methods=["POST"])
+def worker_evidence_run_complete(run_id):
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
+    run = EvidenceRun.query.filter_by(id=run_id).first_or_404()
+    try:
+        run = _complete_external_evidence_run(run, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"run": _evidence_run_to_json(run, include_bundle=True)})
+
+
+@api_bp.route("/worker/evidence-runs/<uuid:run_id>/fail", methods=["POST"])
+def worker_evidence_run_fail(run_id):
+    err, status = _require_worker_auth()
+    if err is not None:
+        return err, status
+    run = EvidenceRun.query.filter_by(id=run_id).first_or_404()
+    try:
+        run = _fail_external_evidence_run(run, request.json or {})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"run": _evidence_run_to_json(run, include_bundle=True)})
 
 
 # ---------------------------------------------------------------------------
@@ -575,7 +973,7 @@ def worker_workspace_next():
     if not ws:
         return "", 204
 
-    project = Project.query.get(ws.project_id)
+    project = db.session.get(Project, ws.project_id)
     return jsonify({
         "workspace": _workspace_to_json(ws),
         "project": {
@@ -595,7 +993,7 @@ def worker_workspace_get(workspace_id):
     if err is not None:
         return err, status
     ws = CompositeWorkspace.query.filter_by(id=workspace_id).first_or_404()
-    project = Project.query.get(ws.project_id)
+    project = db.session.get(Project, ws.project_id)
     return jsonify({
         "workspace": _workspace_to_json(ws),
         "project": {
@@ -620,10 +1018,19 @@ def worker_workspace_composed(workspace_id):
     ws.test_status = (data.get("test_status") or "").strip() or None
     ws.test_output = (data.get("test_output") or "")[:8000] or None
     ws.changed_files = data.get("changed_files") or []
+    ws.preview_url = (data.get("preview_url") or ws.preview_url or "").strip() or None
+    ws.preview_status = (data.get("preview_status") or ("ready" if ws.preview_url else "")).strip() or None
+    ws.preview_command = _normalize_optional_command(data.get("preview_command")) or ws.preview_command or []
+    ws.preview_error = (data.get("preview_error") or "")[:8000] or None
     db.session.commit()
     current_app.logger.info("Workspace %s composed: hash=%s tests=%s files=%d",
                             workspace_id, ws.composed_commit_hash, ws.test_status,
                             len(ws.changed_files or []))
+    if ws.created_by == "dependency_base_composer" and ws.composed_commit_hash:
+        try:
+            _dispatch_unblocked_queued(ws.project_id)
+        except Exception as exc:
+            current_app.logger.warning("Dependency base dispatch failed for workspace %s: %s", workspace_id, exc)
     return jsonify(_workspace_to_json(ws))
 
 
@@ -677,39 +1084,85 @@ def worker_workspace_reset_stale():
 def project_debug(project_id):
     """Debug/observability endpoint. Returns frontier, accepted attempts by wave,
     open ship runs, and stale attempt count. Useful for diagnosing stuck states."""
-    project = Project.query.get_or_404(project_id)
+    project = _get_project_or_404(project_id)
     frontier = getattr(project, "shipped_frontier", None) or None
 
     tickets = Ticket.query.filter_by(project_id=project_id).all()
     waves = _compute_waves(tickets)
 
-    accepted = (
+    attempts = (
         TicketAttempt.query
         .filter_by(project_id=project_id)
-        .filter(TicketAttempt.status.in_(_SATISFIED_STATUSES))
-        .order_by(TicketAttempt.wave_num, TicketAttempt.attempt_num)
+        .order_by(TicketAttempt.wave_num, TicketAttempt.created_at, TicketAttempt.attempt_num)
         .all()
     )
 
     by_wave: dict = {}
+    pending_leaves = []
+    stale_attempts = []
     stale_count = 0
-    for a in accepted:
+    for a in attempts:
         w = a.wave_num
-        by_wave.setdefault(w, []).append({
+        is_stale = (a.base_hash != frontier) if (frontier and a.base_hash) else None
+        attempt_record = {
             "id": str(a.id),
             "ticket_id": str(a.ticket_id),
             "attempt_num": a.attempt_num,
             "status": a.status,
+            "agenthub_commit_hash": a.agenthub_commit_hash,
             "short_hash": (a.agenthub_commit_hash or "")[:12] or None,
-            "base_hash": (a.base_hash or "")[:12] or None,
-            "stale": (a.base_hash != frontier) if (frontier and a.base_hash) else None,
-        })
-        if frontier and a.base_hash and a.base_hash != frontier:
+            "base_hash": a.base_hash,
+            "base_short_hash": (a.base_hash or "")[:12] or None,
+            "stale": is_stale,
+            "validation_error": a.validation_error,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+            "updated_at": a.updated_at.isoformat() if a.updated_at else None,
+        }
+        if a.status in _SATISFIED_STATUSES:
+            by_wave.setdefault(str(w), []).append(attempt_record)
+        if a.agenthub_commit_hash and a.status not in ("shipped", "rejected", "superseded", "failed"):
+            pending_leaves.append(attempt_record)
+        if is_stale:
             stale_count += 1
+            stale_attempts.append(attempt_record)
 
     open_runs = ShipRun.query.filter_by(project_id=project_id).filter(
         ShipRun.status.in_(["queued", "running", "ready_to_ship", "shipping"])
     ).all()
+
+    jobs = AgentJob.query.filter_by(project_id=project_id).filter(
+        AgentJob.status.in_(["pending", "running"])
+    ).order_by(AgentJob.created_at.asc()).all()
+
+    wave_summary: dict = {}
+    for ticket in tickets:
+        w = waves.get(str(ticket.id), 0)
+        summary = wave_summary.setdefault(str(w), {
+            "wave_num": w,
+            "ticket_count": 0,
+            "accepted_count": 0,
+            "stale_count": 0,
+            "tickets": [],
+        })
+        accepted_attempt = _get_accepted_attempt(ticket.id)
+        accepted_stale = (
+            accepted_attempt.base_hash != frontier
+            if accepted_attempt and frontier and accepted_attempt.base_hash
+            else None
+        )
+        summary["ticket_count"] += 1
+        if accepted_attempt:
+            summary["accepted_count"] += 1
+        if accepted_stale:
+            summary["stale_count"] += 1
+        summary["tickets"].append({
+            "id": str(ticket.id),
+            "title": ticket.title,
+            "column_id": ticket.column_id,
+            "intent_status": ticket.intent_status,
+            "accepted_attempt_id": str(accepted_attempt.id) if accepted_attempt else None,
+            "accepted_attempt_stale": accepted_stale,
+        })
 
     return jsonify({
         "project_id": str(project_id),
@@ -718,9 +1171,26 @@ def project_debug(project_id):
             project.shipped_frontier_updated_at.isoformat()
             if project.shipped_frontier_updated_at else None
         ),
+        "wave_summary": [
+            wave_summary[key] for key in sorted(wave_summary.keys(), key=lambda value: int(value))
+        ],
         "accepted_attempts_by_wave": by_wave,
+        "pending_leaves": pending_leaves,
         "stale_attempt_count": stale_count,
+        "stale_attempts": stale_attempts,
         "open_ship_runs": [_ship_run_to_json(r) for r in open_runs],
+        "active_jobs": [
+            {
+                "id": str(job.id),
+                "ticket_id": str(job.ticket_id),
+                "kind": job.kind,
+                "status": job.status,
+                "cancel_requested": job.cancel_requested,
+                "created_at": job.created_at.isoformat() if job.created_at else None,
+                "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+            }
+            for job in jobs
+        ],
         "ticket_count": len(tickets),
     })
 
@@ -833,7 +1303,7 @@ def ticket_detail(project_id, ticket_id):
             data.get("column_id") == "in_progress" and ticket.column_id != "in_progress"
         )
         if moved_to_in_progress:
-            project = Project.query.get(project_id)
+            project = db.session.get(Project, project_id)
             if not project:
                 return jsonify({"error": "Project not found"}), 404
             execution_mode = getattr(project, "execution_mode", None) or "docker"
@@ -862,7 +1332,7 @@ def ticket_detail(project_id, ticket_id):
             if dep_ids:
                 # A dependency is satisfied when it has an accepted attempt
                 blocking = [
-                    Ticket.query.get(d) for d in dep_ids
+                    db.session.get(Ticket, d) for d in dep_ids
                     if not TicketAttempt.query.filter_by(ticket_id=d).filter(
                         TicketAttempt.status.in_(_SATISFIED_STATUSES)
                     ).first()
@@ -922,7 +1392,7 @@ def ticket_detail(project_id, ticket_id):
             if has_attempts:
                 _post_event(
                     _ticket_channel(str(ticket_id)),
-                    "retry_requested: ticket manually re-queued",
+                    _event_content("retry_requested", "Ticket manually re-queued"),
                 )
         return jsonify(_ticket_to_json(ticket))
 
@@ -961,7 +1431,7 @@ def worker_context(project_id, ticket_id):
     if err is not None:
         return err, status
     ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
-    project = Project.query.get_or_404(project_id)
+    project = _get_project_or_404(project_id)
     try:
         from worker_context import build_worker_context
         context = build_worker_context(ticket)
@@ -1025,7 +1495,7 @@ def ticket_complete(project_id, ticket_id):
     ticket.intent_status = "active"
 
     # Record AgentHub attempt for all completions
-    project = Project.query.get(project_id)
+    project = db.session.get(Project, project_id)
     is_swarm = project and (getattr(project, "git_mode", None) or "swarm") == "swarm"
     attempt = None
     if is_swarm:
@@ -1041,19 +1511,69 @@ def ticket_complete(project_id, ticket_id):
             summary=summary or None,
             initial_status="proposed",
         )
+        _post_event(
+            _ticket_channel(str(ticket_id)),
+            _event_content(
+                "validation_started",
+                f"Validation started for attempt #{attempt.attempt_num}",
+                {
+                    "attempt_id": str(attempt.id),
+                    "attempt_num": attempt.attempt_num,
+                    "commit_hash": commit_hash,
+                    "base_hash": base_hash,
+                    "wave_num": attempt.wave_num,
+                },
+            ),
+        )
         # Validate immediately: check commit exists in AgentHub
         _validate_attempt(attempt)
         # Post validation result to ticket channel
         if attempt.status == "accepted":
             _post_event(
                 _ticket_channel(str(ticket_id)),
-                f"attempt_published: attempt #{attempt.attempt_num}"
-                + (f" commit {commit_hash[:12]}" if commit_hash else ""),
+                _event_content(
+                    "validation_passed",
+                    f"Validation passed for attempt #{attempt.attempt_num}",
+                    {
+                        "attempt_id": str(attempt.id),
+                        "attempt_num": attempt.attempt_num,
+                        "commit_hash": commit_hash,
+                        "base_hash": base_hash,
+                        "wave_num": attempt.wave_num,
+                    },
+                ),
+            )
+            _post_event(
+                _ticket_channel(str(ticket_id)),
+                _event_content(
+                    "attempt_published",
+                    f"Attempt #{attempt.attempt_num} published"
+                    + (f" at {commit_hash[:12]}" if commit_hash else ""),
+                    {
+                        "attempt_id": str(attempt.id),
+                        "attempt_num": attempt.attempt_num,
+                        "commit_hash": commit_hash,
+                        "base_hash": base_hash,
+                        "wave_num": attempt.wave_num,
+                        "status": attempt.status,
+                    },
+                ),
             )
         else:
             _post_event(
                 _ticket_channel(str(ticket_id)),
-                f"validation_failed: {attempt.validation_error or 'unknown error'}",
+                _event_content(
+                    "validation_failed",
+                    attempt.validation_error or "Attempt validation failed",
+                    {
+                        "attempt_id": str(attempt.id),
+                        "attempt_num": attempt.attempt_num,
+                        "commit_hash": commit_hash,
+                        "base_hash": base_hash,
+                        "wave_num": attempt.wave_num,
+                        "status": attempt.status,
+                    },
+                ),
             )
 
     db.session.commit()
@@ -1085,7 +1605,7 @@ def ticket_attempts_list(project_id, ticket_id):
         .all()
     )
     include_output = request.args.get("include_test_output", "false").lower() == "true"
-    project = Project.query.get(project_id)
+    project = db.session.get(Project, project_id)
     frontier = getattr(project, "shipped_frontier", None) or None
     return jsonify([
         _attempt_to_json(a, include_test_output=include_output, shipped_frontier=frontier)
@@ -1111,8 +1631,17 @@ def ticket_attempt_accept(project_id, ticket_id, attempt_id):
         db.session.commit()
         _post_event(
             _ticket_channel(str(ticket_id)),
-            f"attempt_accepted: attempt #{attempt.attempt_num}"
-            + (f" commit {attempt.agenthub_commit_hash[:12]}" if attempt.agenthub_commit_hash else ""),
+            _event_content(
+                "attempt_accepted",
+                f"Attempt #{attempt.attempt_num} accepted"
+                + (f" at {attempt.agenthub_commit_hash[:12]}" if attempt.agenthub_commit_hash else ""),
+                {
+                    "attempt_id": str(attempt.id),
+                    "attempt_num": attempt.attempt_num,
+                    "commit_hash": attempt.agenthub_commit_hash,
+                    "wave_num": attempt.wave_num,
+                },
+            ),
         )
     except ValueError as e:
         db.session.rollback()
@@ -1133,8 +1662,16 @@ def ticket_attempt_reject(project_id, ticket_id, attempt_id):
         db.session.commit()
         _post_event(
             _ticket_channel(str(ticket_id)),
-            f"attempt_rejected: attempt #{attempt.attempt_num}"
-            + (f" — {reason}" if reason else ""),
+            _event_content(
+                "attempt_rejected",
+                f"Attempt #{attempt.attempt_num} rejected" + (f": {reason}" if reason else ""),
+                {
+                    "attempt_id": str(attempt.id),
+                    "attempt_num": attempt.attempt_num,
+                    "reason": reason,
+                    "wave_num": attempt.wave_num,
+                },
+            ),
         )
     except ValueError as e:
         db.session.rollback()
@@ -1155,35 +1692,6 @@ def ticket_cancel_requested(project_id, ticket_id):
     ).order_by(AgentJob.created_at.desc()).first()
     requested = bool(job and job.cancel_requested)
     return jsonify({"cancel_requested": requested})
-
-
-@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/review", methods=["GET"])
-def ticket_review(project_id, ticket_id):
-    """Removed: per-ticket PR review is gone. Returns 410 Gone."""
-    return jsonify({"error": "Per-ticket PR review has been removed. Use the Ship Room."}), 410
-
-
-@api_bp.route("/projects/<uuid:project_id>/review", methods=["GET"])
-def project_review_list(project_id):
-    """Removed: per-ticket PR review list is gone. Returns 410 Gone."""
-    return jsonify({"error": "Per-ticket PR review has been removed. Use the Ship Room."}), 410
-
-
-@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/review/comment", methods=["POST"])
-def ticket_review_comment(project_id, ticket_id):
-    return jsonify({"error": "Per-ticket PR review has been removed."}), 410
-
-
-@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/review/approve", methods=["POST"])
-def ticket_review_approve(project_id, ticket_id):
-    return jsonify({"error": "Per-ticket PR review has been removed."}), 410
-
-
-@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/review/merge", methods=["POST"])
-def ticket_review_merge(project_id, ticket_id):
-    return jsonify({"error": "Per-ticket PR review has been removed."}), 410
-
-
 
 
 @api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/cancel", methods=["POST"])
@@ -1235,7 +1743,7 @@ def worker_jobs_start():
             project_id = UUID(project_id) if isinstance(project_id, str) else project_id
         except (ValueError, TypeError):
             return jsonify({"error": "project_id must be a valid UUID"}), 400
-        project = Project.query.get(project_id)
+        project = db.session.get(Project, project_id)
         if project is None:
             return jsonify({"error": "Project not found"}), 404
 
@@ -1296,7 +1804,11 @@ def worker_jobs_fail(job_id):
     if job.ticket_id:
         _post_event(
             _ticket_channel(str(job.ticket_id)),
-            f"retry_requested: job {str(job_id)[:8]} failed — ticket re-queued for retry",
+            _event_content(
+                "retry_requested",
+                f"Job {str(job_id)[:8]} failed; ticket re-queued for retry",
+                {"job_id": str(job_id), "ticket_id": str(job.ticket_id)},
+            ),
         )
     return jsonify({"message": "Job failed", "job_id": str(job_id)})
 
@@ -1353,7 +1865,10 @@ def migration_readiness():
                 "ticket_attempts": "ticket_attempts" in tables,
                 "ship_runs": "ship_runs" in tables,
                 "composite_workspaces": "composite_workspaces" in tables,
+                "evidence_bundles": "evidence_bundles" in tables,
+                "evidence_checks": "evidence_checks" in tables,
                 "tickets.shipped_frontier_on_projects": _has_column("projects", "shipped_frontier"),
+                "projects.verification_policy": _has_column("projects", "verification_policy"),
                 "tickets.intent_status": _has_column("tickets", "intent_status"),
                 "tickets.acceptance_criteria": _has_column("tickets", "acceptance_criteria"),
                 "prs_table_dropped": "prs" not in tables,
@@ -1407,6 +1922,14 @@ def migration_readiness():
                 "prs_table_dropped": "prs" not in tables,
                 "pr_review_comments_dropped": "pr_review_comments" not in tables,
                 "merge_runs_renamed_to_ship_runs": "merge_runs" not in tables and "ship_runs" in tables,
+            },
+        },
+        "H_verification_engine": {
+            "description": "Evidence bundles and policy configuration are available",
+            "checks": {
+                "evidence_bundles_exists": "evidence_bundles" in tables,
+                "evidence_checks_exists": "evidence_checks" in tables,
+                "projects_has_verification_policy": _has_column("projects", "verification_policy"),
             },
         },
     }
@@ -1520,7 +2043,7 @@ def rag_search():
         project_uuid = UUID(project_id)
     except (ValueError, TypeError):
         return jsonify({"error": "Invalid project_id"}), 400
-    if Project.query.get(project_uuid) is None:
+    if db.session.get(Project, project_uuid) is None:
         return jsonify({"error": "Project not found"}), 404
 
     try:
@@ -1563,7 +2086,7 @@ def memory_index(project_id):
     err, status = _require_worker_auth()
     if err is not None:
         return err, status
-    if Project.query.get(project_id) is None:
+    if db.session.get(Project, project_id) is None:
         return jsonify({"error": "Project not found"}), 404
     data = request.json or {}
     docs = data.get("docs")
@@ -1589,7 +2112,7 @@ def memory_retrieve(project_id):
     err, status = _require_worker_auth()
     if err is not None:
         return err, status
-    if Project.query.get(project_id) is None:
+    if db.session.get(Project, project_id) is None:
         return jsonify({"error": "Project not found"}), 404
     data = request.json or {}
     queries = data.get("queries")
@@ -1608,7 +2131,7 @@ def memory_retrieve(project_id):
         )
         # If no memory yet (e.g. existing project), bootstrap one doc then retry so agent gets something
         if results and all(len((r.get("docs") or [])) == 0 for r in results):
-            project = Project.query.get(project_id)
+            project = db.session.get(Project, project_id)
             if project:
                 _bootstrap_project_memory(project)
                 results = memory_retrieve_fn(
@@ -1630,7 +2153,7 @@ def memory_delete(project_id):
     err, status = _require_worker_auth()
     if err is not None:
         return err, status
-    if Project.query.get(project_id) is None:
+    if db.session.get(Project, project_id) is None:
         return jsonify({"error": "Project not found"}), 404
     data = request.json or {}
     docs = data.get("docs")
@@ -1654,7 +2177,7 @@ def memory_delete(project_id):
 def project_start(project_id):
     """Move all backlog tickets to queued, then immediately dispatch those with no unfinished deps.
     This is the 'Go' button — VP approves the full backlog to run autonomously."""
-    Project.query.get_or_404(project_id)
+    _get_project_or_404(project_id)
     backlog_tickets = Ticket.query.filter_by(project_id=project_id, column_id="backlog").all()
     for t in backlog_tickets:
         t.column_id = "queued"
@@ -1687,7 +2210,7 @@ def _wave_detail(project_id, wave_num: int) -> dict:
         if a:
             accepted_attempts.append(a)
 
-    project = Project.query.get(project_id)
+    project = db.session.get(Project, project_id)
     frontier = getattr(project, "shipped_frontier", None) or None
 
     # Most recent non-failed ship run for this wave
@@ -1730,7 +2253,7 @@ def _wave_detail(project_id, wave_num: int) -> dict:
 @api_bp.route("/projects/<uuid:project_id>/ship/waves", methods=["GET"])
 def ship_waves(project_id):
     """List all waves with accepted attempt counts and ship run status."""
-    Project.query.get_or_404(project_id)
+    _get_project_or_404(project_id)
     tickets = Ticket.query.filter_by(project_id=project_id).all()
     if not tickets:
         return jsonify([])
@@ -1763,14 +2286,16 @@ def ship_waves(project_id):
 @api_bp.route("/projects/<uuid:project_id>/ship/waves/<int:wave_num>", methods=["GET"])
 def ship_wave_detail(project_id, wave_num):
     """Full detail for a wave: tickets, accepted attempts, ship run, staleness."""
-    Project.query.get_or_404(project_id)
+    _get_project_or_404(project_id)
     return jsonify(_wave_detail(project_id, wave_num))
 
 
 @api_bp.route("/projects/<uuid:project_id>/ship/waves/<int:wave_num>/compose", methods=["POST"])
 def ship_wave_compose(project_id, wave_num):
     """Queue a ship run for this wave. Coordinator will pick it up and run the shipper."""
-    project = Project.query.get_or_404(project_id)
+    project = _lock_project_for_update(project_id)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
     if (getattr(project, "git_mode", None) or "swarm") != "swarm":
         return jsonify({"error": "Project is not in swarm mode"}), 400
 
@@ -1788,13 +2313,20 @@ def ship_wave_compose(project_id, wave_num):
         missing = [wave_tickets[i].title for i, a in enumerate(accepted) if not a]
         return jsonify({"error": f"Some tickets have no accepted attempt yet: {', '.join(missing[:3])}"}), 409
 
-    # Idempotent: return the existing run if one is already active.
-    # Rare concurrent double-compose is handled gracefully: the shipper detects
-    # an existing PR for the same branch and returns it rather than creating a duplicate.
+    validation_errors = _validate_wave_composition(project, wave_num, tickets, waves, wave_tickets)
+    if validation_errors:
+        return jsonify({
+            "error": "Wave composition validation failed.",
+            "details": validation_errors,
+            "hint": "Ship prerequisite waves first, then recompose this wave from the current frontier.",
+        }), 409
+
+    # Idempotent: return the existing run if compose/ship is already active for this wave.
     existing = (
         ShipRun.query
         .filter_by(project_id=project_id, wave_num=wave_num)
-        .filter(ShipRun.status.in_(["queued", "running"]))
+        .filter(ShipRun.status.in_(_ACTIVE_SHIP_RUN_STATUSES))
+        .order_by(ShipRun.created_at.desc())
         .first()
     )
     if existing:
@@ -1815,7 +2347,9 @@ def ship_wave_ship(project_id, wave_num):
       - With github_url + release_pr_number: merge the release PR via gh, then advance.
       - Without (local-mode or no-main): advance frontier directly from composed_commit_hash.
     """
-    project = Project.query.get_or_404(project_id)
+    project = _lock_project_for_update(project_id)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
     slug = _repo_slug_from_github_url(project.github_url) if project.github_url else None
 
     run = (
@@ -1827,16 +2361,34 @@ def ship_wave_ship(project_id, wave_num):
     if not run:
         return jsonify({"error": "No ship run in ready_to_ship state for this wave"}), 409
 
+    gate, gate_status = _evidence_gate_response(project, "ship_run", run.id)
+    if gate:
+        return jsonify(gate), gate_status
+
     # Decide path: GitHub PR merge OR direct frontier advance
     use_github = bool(slug and run.release_pr_number)
+    if not use_github and not run.composed_commit_hash:
+        return jsonify({
+            "error": "Ship run has no composed commit hash. Recompose the wave before shipping.",
+        }), 409
 
     # Ancestry validation (plan 8.2): each accepted attempt's base must be traceable
     # to the project's shipped_frontier or another accepted attempt's commit.
+    tickets_all_check = Ticket.query.filter_by(project_id=project_id).all()
+    waves_check = _compute_waves(tickets_all_check)
+    wave_tickets_check = [t for t in tickets_all_check if waves_check.get(str(t.id), 0) == wave_num]
+    validation_errors = _validate_wave_composition(
+        project, wave_num, tickets_all_check, waves_check, wave_tickets_check
+    )
+    if validation_errors:
+        return jsonify({
+            "error": "Wave composition validation failed.",
+            "details": validation_errors,
+            "hint": "Ship prerequisite waves first, then recompose this wave from the current frontier.",
+        }), 409
+
     frontier = getattr(project, "shipped_frontier", None)
     if frontier:
-        tickets_all_check = Ticket.query.filter_by(project_id=project_id).all()
-        waves_check = _compute_waves(tickets_all_check)
-        wave_tickets_check = [t for t in tickets_all_check if waves_check.get(str(t.id), 0) == wave_num]
         accepted_hashes = set()
         for t in wave_tickets_check:
             a = _get_accepted_attempt(t.id)
@@ -1879,7 +2431,11 @@ def ship_wave_ship(project_id, wave_num):
         # GitHub path: verify PR open, merge via gh, fetch new main tip
         try:
             r_check = subprocess.run(
-                ["gh", "pr", "view", str(run.release_pr_number), "--json", "state,mergedAt", "-R", slug],
+                [
+                    "gh", "pr", "view", str(run.release_pr_number),
+                    "--json", "state,mergedAt,headRefName,headRefOid",
+                    "-R", slug,
+                ],
                 capture_output=True, text=True, timeout=15, env=_env_for_gh_user(),
             )
             if r_check.returncode == 0:
@@ -1893,6 +2449,24 @@ def ship_wave_ship(project_id, wave_num):
                     run.status = "ready_to_ship"
                     db.session.commit()
                     return jsonify({"error": "Release PR was closed without merging. Recompose the wave."}), 409
+                head_ref = pr_state.get("headRefName") or ""
+                if run.release_branch and head_ref and head_ref != run.release_branch:
+                    run.status = "ready_to_ship"
+                    db.session.commit()
+                    return jsonify({
+                        "error": "Release PR branch does not match this ship run. Recompose the wave.",
+                        "expected_branch": run.release_branch,
+                        "actual_branch": head_ref,
+                    }), 409
+                head_oid = pr_state.get("headRefOid") or ""
+                if run.composed_commit_hash and head_oid and head_oid != run.composed_commit_hash:
+                    run.status = "ready_to_ship"
+                    db.session.commit()
+                    return jsonify({
+                        "error": "Release PR head does not match the composed commit. Recompose the wave.",
+                        "expected_head": run.composed_commit_hash,
+                        "actual_head": head_oid,
+                    }), 409
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass  # Can't verify — proceed
 
@@ -1972,9 +2546,30 @@ def ship_wave_ship(project_id, wave_num):
         except Exception as exc:
             current_app.logger.warning("Root refresh after ship failed: %s", exc)
 
+    if use_github:
+        _post_event(
+            _wave_channel(project.name, wave_num),
+            _event_content(
+                "release_pr_merged",
+                f"Release PR #{run.release_pr_number} merged"
+                + (f" at {new_tip[:12]}" if new_tip else ""),
+                {
+                    "wave_num": wave_num,
+                    "ship_run_id": str(run.id),
+                    "release_pr_number": run.release_pr_number,
+                    "release_pr_url": run.release_pr_url,
+                    "shipped_commit_hash": new_tip,
+                },
+            ),
+        )
+
     _post_event(
         _wave_channel(project.name, wave_num),
-        f"wave_shipped: wave {wave_num}" + (f" commit {new_tip[:12]}" if new_tip else ""),
+        _event_content(
+            "wave_shipped",
+            f"Wave {wave_num} shipped" + (f" at {new_tip[:12]}" if new_tip else ""),
+            {"wave_num": wave_num, "shipped_commit_hash": new_tip, "ship_run_id": str(run.id)},
+        ),
     )
 
     return jsonify(_ship_run_to_json(run))
@@ -1984,7 +2579,7 @@ def ship_wave_ship(project_id, wave_num):
 def ship_wave_timeline(project_id, wave_num):
     """Aggregate AgentHub channel posts for a wave into a chronological timeline.
     Fetches the wave channel + all ticket channels for tickets in this wave."""
-    project = Project.query.get_or_404(project_id)
+    project = _get_project_or_404(project_id)
     tickets = Ticket.query.filter_by(project_id=project_id).all()
     waves = _compute_waves(tickets)
     wave_tickets = [t for t in tickets if waves.get(str(t.id), 0) == wave_num]
@@ -1994,13 +2589,19 @@ def ship_wave_timeline(project_id, wave_num):
     # Wave channel
     wave_ch = _wave_channel(project.name, wave_num)
     for p in _fetch_channel_posts(wave_ch, limit=100):
-        posts.append({**p, "_channel": wave_ch, "_channel_type": "wave"})
+        posts.append({**_parse_event_post(p), "_channel": wave_ch, "_channel_type": "wave"})
 
     # Per-ticket channels
     for t in wave_tickets:
         ch = _ticket_channel(str(t.id))
         for p in _fetch_channel_posts(ch, limit=50):
-            posts.append({**p, "_channel": ch, "_channel_type": "ticket", "_ticket_title": t.title})
+            posts.append({
+                **_parse_event_post(p),
+                "_channel": ch,
+                "_channel_type": "ticket",
+                "_ticket_title": t.title,
+                "_ticket_id": str(t.id),
+            })
 
     # Sort chronologically (created_at string is ISO — lexicographic sort works)
     posts.sort(key=lambda p: p.get("created_at") or "")
@@ -2011,20 +2612,27 @@ def ship_wave_timeline(project_id, wave_num):
 @api_bp.route("/projects/<uuid:project_id>/ship/waves/<int:wave_num>/feedback", methods=["POST"])
 def ship_wave_feedback(project_id, wave_num):
     """Post feedback to the wave's AgentHub channel. Body: { message, target_ticket_id (optional) }."""
-    Project.query.get_or_404(project_id)
+    _get_project_or_404(project_id)
     data = request.json or {}
     message = (data.get("message") or "").strip()
     if not message:
         return jsonify({"error": "message is required"}), 400
 
-    project = Project.query.get(project_id)
+    project = db.session.get(Project, project_id)
     target_ticket = (data.get("target_ticket_id") or "").strip()
     if target_ticket:
         channel = _ticket_channel(target_ticket)
     else:
         project_name = project.name if project else str(project_id)
         channel = _wave_channel(project_name, wave_num)
-    _post_event(channel, f"[feedback] {message}")
+    _post_event(
+        channel,
+        _event_content(
+            "human_feedback",
+            message,
+            {"wave_num": wave_num, "target_ticket_id": target_ticket or None},
+        ),
+    )
 
     return jsonify({"message": "Feedback recorded"})
 
@@ -2048,6 +2656,72 @@ def _collect_wave_commit_hashes(wave_tickets: list, project) -> list:
             hashes.append(attempt.agenthub_commit_hash)
     return hashes
 
+
+def _validate_wave_composition(project, wave_num: int, tickets: list, waves: dict, wave_tickets: list) -> list[str]:
+    """Return blocking validation errors for composing/shipping a wave.
+
+    ShipRun composition only receives the selected wave's leaves. Dependencies
+    in earlier waves must therefore already be shipped into the project frontier;
+    otherwise a later-wave release can silently include or omit parent work.
+    """
+    ticket_by_id = {str(t.id): t for t in tickets}
+    frontier = getattr(project, "shipped_frontier", None) or None
+    errors: list[str] = []
+
+    accepted_by_ticket = {
+        str(t.id): _get_accepted_attempt(t.id)
+        for t in wave_tickets
+    }
+    accepted_hashes = {
+        a.agenthub_commit_hash
+        for a in accepted_by_ticket.values()
+        if a and a.agenthub_commit_hash
+    }
+
+    for ticket in wave_tickets:
+        attempt = accepted_by_ticket.get(str(ticket.id))
+        if not attempt:
+            errors.append(f"Ticket '{ticket.title[:40]}' has no accepted attempt.")
+            continue
+        if not attempt.agenthub_commit_hash:
+            errors.append(f"Ticket '{ticket.title[:40]}' has no AgentHub commit hash.")
+
+        if frontier and attempt.base_hash:
+            allowed_bases = {frontier} | accepted_hashes
+            if attempt.base_hash not in allowed_bases:
+                errors.append(
+                    f"Ticket '{ticket.title[:40]}' attempt base {attempt.base_hash[:12]} "
+                    "is not the current frontier or a selected same-wave leaf."
+                )
+
+        for dep_id in ticket.depends_on_ticket_ids or []:
+            dep = ticket_by_id.get(str(dep_id))
+            if not dep:
+                errors.append(f"Ticket '{ticket.title[:40]}' depends on unknown ticket {dep_id}.")
+                continue
+            dep_wave = waves.get(str(dep.id), 0)
+            if dep_wave >= wave_num:
+                errors.append(
+                    f"Ticket '{ticket.title[:40]}' depends on '{dep.title[:40]}' "
+                    "which is not in an earlier wave."
+                )
+                continue
+            dep_attempt = _get_accepted_attempt(dep.id)
+            if not dep_attempt:
+                errors.append(
+                    f"Ticket '{ticket.title[:40]}' depends on '{dep.title[:40]}' "
+                    "which has no accepted attempt."
+                )
+                continue
+            if dep_attempt.status != "shipped":
+                errors.append(
+                    f"Ticket '{ticket.title[:40]}' depends on '{dep.title[:40]}' "
+                    f"which is {dep_attempt.status}, not shipped."
+                )
+
+    return errors
+
+
 @api_bp.route("/worker/ship-run/next", methods=["POST"])
 def worker_ship_run_next():
     """Coordinator claims the next queued merge run.
@@ -2068,11 +2742,15 @@ def worker_ship_run_next():
     run.status = "running"
     db.session.commit()
 
-    project = Project.query.get(run.project_id)
+    project = db.session.get(Project, run.project_id)
     if project:
         _post_event(
             _wave_channel(project.name, run.wave_num),
-            f"release_composition_started: wave {run.wave_num} run {str(run.id)[:8]}",
+            _event_content(
+                "release_composition_started",
+                f"Release composition started for wave {run.wave_num}",
+                {"wave_num": run.wave_num, "ship_run_id": str(run.id)},
+            ),
         )
     tickets = Ticket.query.filter_by(project_id=run.project_id).all()
     waves = _compute_waves(tickets)
@@ -2105,7 +2783,7 @@ def worker_ship_run_get(run_id):
     if err is not None:
         return err, status
     run = ShipRun.query.filter_by(id=run_id).first_or_404()
-    project = Project.query.get(run.project_id)
+    project = db.session.get(Project, run.project_id)
     tickets = Ticket.query.filter_by(project_id=run.project_id).all()
     waves = _compute_waves(tickets)
     wave_tickets = [t for t in tickets if waves.get(str(t.id), 0) == run.wave_num]
@@ -2152,39 +2830,25 @@ def worker_ship_run_composed(run_id):
         "Ship run %s composed for wave %d: PR #%s branch %s",
         run_id, run.wave_num, run.release_pr_number, run.release_branch,
     )
-    project = Project.query.get(run.project_id)
+    project = db.session.get(Project, run.project_id)
     if project:
         pr_ref = f"PR #{run.release_pr_number}" if run.release_pr_number else run.release_branch or "no PR"
         _post_event(
             _wave_channel(project.name, run.wave_num),
-            f"release_pr_opened: {pr_ref} tests={run.test_status or 'skipped'} "
-            f"files={len(run.changed_files or [])}",
+            _event_content(
+                "release_pr_opened",
+                f"{pr_ref} opened; tests={run.test_status or 'skipped'}; files={len(run.changed_files or [])}",
+                {
+                    "wave_num": run.wave_num,
+                    "ship_run_id": str(run.id),
+                    "release_pr_number": run.release_pr_number,
+                    "release_pr_url": run.release_pr_url,
+                    "release_branch": run.release_branch,
+                    "test_status": run.test_status,
+                    "changed_file_count": len(run.changed_files or []),
+                },
+            ),
         )
-    return jsonify(_ship_run_to_json(run))
-
-
-@api_bp.route("/worker/ship-run/<uuid:run_id>/done", methods=["POST"])
-def worker_ship_run_done(run_id):
-    """Legacy: merge agent reports success (old swarm-branch merger). {commit_hash, pr_url}."""
-    err, status = _require_worker_auth()
-    if err is not None:
-        return err, status
-    run = ShipRun.query.filter_by(id=run_id).first_or_404()
-    data = request.json or {}
-    run.status = "done"
-    run.commit_hash = (data.get("commit_hash") or "").strip() or None
-    run.pr_url = (data.get("pr_url") or "").strip() or None
-    db.session.commit()
-
-    # Advance the shipped_frontier so queued work in the next wave builds on the merged state
-    if run.commit_hash:
-        project = Project.query.get(run.project_id)
-        if project:
-            try:
-                _apply_root_refresh(project, run.commit_hash, source="wave_merge")
-            except Exception as exc:
-                current_app.logger.warning("Root refresh after merge failed: %s", exc)
-
     return jsonify(_ship_run_to_json(run))
 
 
@@ -2201,12 +2865,16 @@ def worker_ship_run_fail(run_id):
     run.error = (data.get("error") or "")[:4000]
     db.session.commit()
 
-    project = Project.query.get(run.project_id)
+    project = db.session.get(Project, run.project_id)
     if project:
         error_short = (run.error or "")[:200]
         _post_event(
             _wave_channel(project.name, run.wave_num),
-            f"release_composition_failed: {error_short}",
+            _event_content(
+                "release_composition_failed",
+                error_short or "Release composition failed",
+                {"wave_num": run.wave_num, "ship_run_id": str(run.id), "error": run.error},
+            ),
         )
 
     # Auto-create a fix ticket if the agent supplied one

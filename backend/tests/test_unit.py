@@ -12,7 +12,7 @@ Covers:
 """
 import os
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -95,12 +95,11 @@ def test_compute_waves_cycle_fallback():
 # ---------------------------------------------------------------------------
 
 def test_transition_proposed_to_accepted():
-    from api.services.attempt_service import transition_attempt, ALL_STATUSES
+    from api.services.attempt_service import transition_attempt
     attempt = MagicMock()
     attempt.status = "proposed"
     attempt.id = "test-id"
-    with patch("api.services.attempt_service.current_app"):
-        result = transition_attempt(attempt, "accepted")
+    result = transition_attempt(attempt, "accepted")
     assert result.status == "accepted"
 
 
@@ -109,18 +108,17 @@ def test_transition_accepted_to_shipped_path():
     from api.services.attempt_service import transition_attempt
     attempt = MagicMock()
     attempt.id = "test-id"
-    with patch("api.services.attempt_service.current_app"):
-        attempt.status = "accepted"
-        transition_attempt(attempt, "composed")
-        assert attempt.status == "composed"
+    attempt.status = "accepted"
+    transition_attempt(attempt, "composed")
+    assert attempt.status == "composed"
 
-        attempt.status = "composed"
-        transition_attempt(attempt, "release_pr_open")
-        assert attempt.status == "release_pr_open"
+    attempt.status = "composed"
+    transition_attempt(attempt, "release_pr_open")
+    assert attempt.status == "release_pr_open"
 
-        attempt.status = "release_pr_open"
-        transition_attempt(attempt, "shipped")
-        assert attempt.status == "shipped"
+    attempt.status = "release_pr_open"
+    transition_attempt(attempt, "shipped")
+    assert attempt.status == "shipped"
 
 
 def test_transition_invalid_raises():
@@ -251,3 +249,38 @@ def test_ship_run_to_json_has_required_fields():
     for field in ("id", "project_id", "wave_num", "status", "release_pr_url",
                   "release_pr_number", "shipped_commit_hash", "test_status"):
         assert field in result, f"Missing field: {field}"
+
+
+# ---------------------------------------------------------------------------
+# 7.2  Structured AgentHub timeline events
+# ---------------------------------------------------------------------------
+
+def test_structured_event_content_roundtrip():
+    from api.services.channel_service import event_content, parse_event_post
+
+    content = event_content(
+        "attempt_published",
+        "Attempt #1 published at abc123",
+        {"attempt_num": 1, "commit_hash": "abc123"},
+    )
+    parsed = parse_event_post({
+        "id": 1,
+        "content": content,
+        "created_at": "2026-05-23T00:00:00Z",
+    })
+
+    assert parsed["structured"] is True
+    assert parsed["event_type"] == "attempt_published"
+    assert parsed["message"] == "Attempt #1 published at abc123"
+    assert parsed["metadata"]["attempt_num"] == 1
+    assert parsed["raw_content"] == content
+
+
+def test_legacy_text_event_is_normalized():
+    from api.services.channel_service import parse_event_post
+
+    parsed = parse_event_post({"id": 2, "content": "release_pr_opened: PR #12"})
+
+    assert parsed["structured"] is False
+    assert parsed["event_type"] == "release_pr_opened"
+    assert parsed["message"] == "release_pr_opened: PR #12"

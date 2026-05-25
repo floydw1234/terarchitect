@@ -1,8 +1,21 @@
 """Ship run and wave-computation helpers (swarm mode)."""
 from flask import current_app
 
-from models.db import db, Ticket, ShipRun, TicketAttempt
+from models.db import db, Project, Ticket, ShipRun, TicketAttempt
 from .attempt_service import SATISFIED_STATUSES as _SATISFIED_STATUSES
+
+
+ACTIVE_SHIP_RUN_STATUSES = ("queued", "running", "ready_to_ship", "shipping")
+TERMINAL_SHIP_RUN_STATUSES = ("shipped",)
+
+
+def lock_project_for_update(project_id):
+    """Lock the project row while mutating ship-run/frontier state.
+
+    PostgreSQL enforces the row lock. SQLite ignores FOR UPDATE, which is fine
+    for the focused test app while keeping the production transaction shape.
+    """
+    return Project.query.filter_by(id=project_id).with_for_update().first()
 
 
 def _has_accepted_attempt(ticket_id) -> bool:
@@ -42,6 +55,10 @@ def compute_waves(tickets: list) -> dict:
 def maybe_trigger_wave_merge(project_id, completed_ticket_id) -> None:
     """Called after a swarm ticket reaches `done`. If every ticket in that
     wave has an accepted attempt AND no ship run exists yet, enqueue one."""
+    project = lock_project_for_update(project_id)
+    if not project:
+        return
+
     tickets = Ticket.query.filter_by(project_id=project_id).all()
     if not tickets:
         return
@@ -54,7 +71,7 @@ def maybe_trigger_wave_merge(project_id, completed_ticket_id) -> None:
 
     existing = ShipRun.query.filter_by(
         project_id=project_id, wave_num=my_wave,
-    ).filter(ShipRun.status.in_(["queued", "running", "ready_to_ship", "shipping", "shipped", "done"])).first()
+    ).filter(ShipRun.status.in_(ACTIVE_SHIP_RUN_STATUSES + TERMINAL_SHIP_RUN_STATUSES)).first()
     if existing:
         return
 
@@ -88,5 +105,3 @@ def ship_run_to_json(run: ShipRun) -> dict:
         "created_at": run.created_at.isoformat() if run.created_at else None,
         "updated_at": run.updated_at.isoformat() if run.updated_at else None,
     }
-
-

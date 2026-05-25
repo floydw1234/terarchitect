@@ -14,6 +14,8 @@ Configure via AGENTHUB_URL + AGENTHUB_API_KEY environment variables.
 import os
 import re
 import threading
+import json
+from typing import Any
 
 import requests
 
@@ -63,6 +65,60 @@ def _agenthub_key() -> str:
     return (os.environ.get("AGENTHUB_API_KEY") or "").strip()
 
 
+def event_content(event_type: str, message: str, metadata: dict[str, Any] | None = None) -> str:
+    """Encode a structured Terarchitect event as channel post content."""
+    payload = {
+        "terarchitect_event": 1,
+        "type": event_type,
+        "message": message,
+        "metadata": metadata or {},
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def parse_event_post(post: dict[str, Any]) -> dict[str, Any]:
+    """Normalize an AgentHub post into a timeline event.
+
+    Structured posts are JSON produced by event_content(). Older text posts are
+    preserved and given a best-effort event_type so existing ledgers stay readable.
+    """
+    content = post.get("content") or ""
+    normalized = dict(post)
+    normalized.setdefault("metadata", {})
+    normalized["raw_content"] = content
+    normalized["structured"] = False
+
+    try:
+        payload = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        payload = None
+
+    if isinstance(payload, dict) and payload.get("terarchitect_event") == 1:
+        event_type = str(payload.get("type") or "event")
+        message = str(payload.get("message") or event_type)
+        metadata = payload.get("metadata")
+        normalized["event_type"] = event_type
+        normalized["message"] = message
+        normalized["content"] = message
+        normalized["metadata"] = metadata if isinstance(metadata, dict) else {}
+        normalized["structured"] = True
+        return normalized
+
+    event_type = "event"
+    if content.startswith("[feedback]"):
+        event_type = "human_feedback"
+    elif ":" in content:
+        head = content.split(":", 1)[0].strip().lower().replace(" ", "_")
+        if re.match(r"^[a-z][a-z0-9_]{1,63}$", head):
+            event_type = head
+    elif content.strip().startswith("done"):
+        event_type = "attempt_published"
+
+    normalized["event_type"] = event_type
+    normalized["message"] = content
+    return normalized
+
+
 def post_event(channel: str, content: str, background: bool = True) -> None:
     """Post content to an AgentHub channel. Fire-and-forget; never raises.
 
@@ -89,6 +145,17 @@ def post_event(channel: str, content: str, background: bool = True) -> None:
         t.start()
     else:
         _do_post()
+
+
+def post_structured_event(
+    channel: str,
+    event_type: str,
+    message: str,
+    metadata: dict[str, Any] | None = None,
+    background: bool = True,
+) -> None:
+    """Post a machine-readable Terarchitect event to an AgentHub channel."""
+    post_event(channel, event_content(event_type, message, metadata), background=background)
 
 
 def fetch_channel_posts(channel: str, limit: int = 50) -> list[dict]:

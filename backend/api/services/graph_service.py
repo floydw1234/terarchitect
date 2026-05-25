@@ -8,7 +8,7 @@ import tempfile
 from uuid import uuid5, NAMESPACE_DNS
 
 import requests
-from flask import current_app, jsonify
+from flask import abort, current_app, jsonify
 
 from models.db import db, Graph, Project, RAGEmbedding
 from utils.app_settings import get_frontend_llm_settings, get_github_token
@@ -60,7 +60,9 @@ def generate_architecture_graph(project_id):
     """Clone the project's GitHub repo and use the LLM to generate an architecture graph.
     Only works when the graph is empty (no nodes). Returns generated nodes and edges,
     and writes them directly to the graph."""
-    project = Project.query.get_or_404(project_id)
+    project = db.session.get(Project, project_id)
+    if not project:
+        abort(404)
     graph_obj = Graph.query.filter_by(project_id=project_id).first_or_404()
 
     existing_nodes = graph_obj.nodes if graph_obj.nodes else []

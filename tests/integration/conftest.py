@@ -146,7 +146,7 @@ def project(api):
         "name": "smoke-test-project",
         "description": "Created by integration test",
         "execution_mode": "docker",
-        "git_mode": "structured",
+        "git_mode": "swarm",
         "is_existing_repo": True,
     })
     yield data
