@@ -1,4 +1,4 @@
-"""ship subcommand: inspect waves, compose release branches, and ship to main."""
+"""ship subcommand: inspect waves, compose ShipRuns, and ship to main."""
 
 from cli._api import API, APIError
 from cli._output import die, print_json, print_table, short_id

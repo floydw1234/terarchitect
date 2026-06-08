@@ -1,5 +1,5 @@
 """
-End-to-end tests (plan 12.5 + 12.6).
+End-to-end tests for the MVP ShipRun path plus retained workspace compatibility.
 
 Uses Flask test client. External calls (AgentHub, GitHub) are mocked.
 
@@ -112,10 +112,19 @@ def test_e2e_ship_happy_path(client, project):
 
     _complete_ticket(client, pid, t_b["id"], "b" * 40)
 
-    # Step 6: Compose wave 0 (A) — both tickets done
+    # Step 6: Compose wave 0 (A)
     compose_resp = client.post(f"/api/projects/{pid}/ship/waves/0/compose", json={})
     assert compose_resp.status_code in (200, 201)
-    run_id = compose_resp.get_json()["id"]
+    compose_data = compose_resp.get_json()
+    run_id = compose_data["id"]
+    assert compose_data["status"] == "queued"
+
+    claim_resp = client.post("/api/worker/ship-run/next", json={})
+    assert claim_resp.status_code == 200
+    claim_data = claim_resp.get_json()
+    assert claim_data["run"]["id"] == run_id
+    assert claim_data["run"]["status"] == "composing"
+    assert claim_data["commit_hashes"] == ["a" * 40]
 
     # Step 7: Shipper reports composed
     composed_resp = client.post(f"/api/worker/ship-run/{run_id}/composed", json={
@@ -126,7 +135,13 @@ def test_e2e_ship_happy_path(client, project):
         "changed_files": ["src/app.py"],
     })
     assert composed_resp.status_code == 200
-    assert composed_resp.get_json()["status"] == "ready_to_ship"
+    composed_data = composed_resp.get_json()
+    assert composed_data["status"] == "ready_to_ship"
+    assert composed_data["composed_commit_hash"] == "c" * 40
+    assert composed_data["base_main_hash"] == "d" * 40
+    assert composed_data["changed_files"] == ["src/app.py"]
+    assert composed_data["test_status"] == "passed"
+    assert composed_data["test_output"] == "All tests pass."
 
     # Step 8+9: Ship via the no-main path — GitHub is optional.
     # No github_url on this project → ship advances frontier directly

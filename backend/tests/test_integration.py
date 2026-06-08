@@ -256,6 +256,43 @@ def test_compose_returns_existing_active_run_instead_of_duplicating(client, proj
         assert ShipRun.query.filter_by(project_id=pid, wave_num=0).count() == 1
 
 
+def test_worker_claim_moves_ship_run_to_composing(client, project):
+    pid = project["id"]
+    from models.db import db, Ticket, TicketAttempt
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Claimable wave ticket",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        db.session.add(TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="c" * 40,
+            base_hash="f" * 40,
+            wave_num=0,
+            attempt_num=1,
+            status="accepted",
+            summary="done",
+        ))
+        db.session.commit()
+
+    compose = client.post(f"/api/projects/{pid}/ship/waves/0/compose", json={})
+    assert compose.status_code == 201
+    run_id = compose.get_json()["id"]
+
+    claim = client.post("/api/worker/ship-run/next", json={})
+    assert claim.status_code == 200
+    claim_data = claim.get_json()
+    assert claim_data["run"]["id"] == run_id
+    assert claim_data["run"]["status"] == "composing"
+    assert claim_data["commit_hashes"] == ["c" * 40]
+
+
 def test_compose_allows_wave_after_dependency_shipped(client, project):
     """Once a dependency is shipped into the frontier, the next wave may compose."""
     pid = project["id"]
@@ -374,7 +411,10 @@ def test_ship_rejects_stale_composition_validation(client, project):
     assert resp.status_code == 409
     data = resp.get_json()
     assert "Wave composition validation failed" in data.get("error", "")
-    assert any("not the current frontier" in detail for detail in data.get("details", []))
+    assert any(
+        "not the current frontier" in detail or "Ship run base" in detail
+        for detail in data.get("details", [])
+    )
 
 
 # ---------------------------------------------------------------------------

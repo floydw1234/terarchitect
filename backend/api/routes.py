@@ -1127,7 +1127,7 @@ def project_debug(project_id):
             stale_attempts.append(attempt_record)
 
     open_runs = ShipRun.query.filter_by(project_id=project_id).filter(
-        ShipRun.status.in_(["queued", "running", "ready_to_ship", "shipping"])
+        ShipRun.status.in_(["queued", "composing", "running", "ready_to_ship", "shipping"])
     ).all()
 
     jobs = AgentJob.query.filter_by(project_id=project_id).filter(
@@ -2381,6 +2381,11 @@ def ship_wave_ship(project_id, wave_num):
     validation_errors = _validate_wave_composition(
         project, wave_num, tickets_all_check, waves_check, wave_tickets_check
     )
+    current_frontier = getattr(project, "shipped_frontier", None) or None
+    if run.base_main_hash and current_frontier and run.base_main_hash != current_frontier:
+        validation_errors.append(
+            f"Ship run base {run.base_main_hash[:12]} is not the current frontier {current_frontier[:12]}."
+        )
     if validation_errors:
         return jsonify({
             "error": "Wave composition validation failed.",
@@ -2388,7 +2393,7 @@ def ship_wave_ship(project_id, wave_num):
             "hint": "Ship prerequisite waves first, then recompose this wave from the current frontier.",
         }), 409
 
-    frontier = getattr(project, "shipped_frontier", None)
+    frontier = current_frontier
     if frontier:
         accepted_hashes = set()
         for t in wave_tickets_check:
@@ -2740,7 +2745,7 @@ def worker_ship_run_next():
     if not run:
         return "", 204
 
-    run.status = "running"
+    run.status = "composing"
     db.session.commit()
 
     project = db.session.get(Project, run.project_id)
@@ -2906,7 +2911,7 @@ def worker_ship_run_fail(run_id):
 
 @api_bp.route("/worker/ship-run/reset-stale", methods=["POST"])
 def worker_ship_run_reset_stale():
-    """Reset ship runs stuck in 'running' state after a coordinator/shipper restart.
+    """Reset ship runs stuck in 'composing' or legacy 'running' state after restart.
     Body: optional {"max_age_seconds": N} — reset runs older than N seconds (default 1800)."""
     err, status = _require_worker_auth()
     if err is not None:
@@ -2919,7 +2924,7 @@ def worker_ship_run_reset_stale():
     from datetime import datetime, timezone, timedelta
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=max_age)
     stale = ShipRun.query.filter(
-        ShipRun.status == "running",
+        ShipRun.status.in_(["composing", "running"]),
         ShipRun.updated_at < cutoff,
     ).all()
     count = len(stale)
@@ -2927,5 +2932,5 @@ def worker_ship_run_reset_stale():
         run.status = "queued"  # re-queue so coordinator picks it up again
         run.error = f"Reset by coordinator after {max_age}s stale timeout."
     db.session.commit()
-    current_app.logger.info("Reset %d stale running ship run(s) (older than %ds)", count, max_age)
+    current_app.logger.info("Reset %d stale active ship run(s) (older than %ds)", count, max_age)
     return jsonify({"reset": count, "max_age_seconds": max_age})
