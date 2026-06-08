@@ -192,6 +192,70 @@ def test_compose_rejects_wave_with_unshipped_dependency(client, project):
     assert any("not shipped" in detail for detail in data.get("details", []))
 
 
+def test_compose_returns_existing_active_run_instead_of_duplicating(client, project):
+    """Retrying compose on an active run should return that run, not create another."""
+    pid = project["id"]
+    from models.db import db, Project
+
+    # Start from an accepted wave, then make the frontier stale after the run is active.
+    with client.application.app_context():
+        proj = db.session.get(Project, pid)
+        proj.shipped_frontier = "f" * 40
+        db.session.commit()
+
+    # Reuse the accepted ticket fixture pattern by creating a single accepted ticket.
+    from models.db import Ticket, TicketAttempt
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Compose once",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="c" * 40,
+            base_hash="f" * 40,
+            wave_num=0,
+            attempt_num=1,
+            status="accepted",
+            summary="done",
+        )
+        db.session.add(attempt)
+        db.session.commit()
+
+    first = client.post(f"/api/projects/{pid}/ship/waves/0/compose", json={})
+    assert first.status_code == 201
+    run_id = first.get_json()["id"]
+
+    composed = client.post(f"/api/worker/ship-run/{run_id}/composed", json={
+        "composed_commit_hash": "d" * 40,
+        "base_main_hash": "f" * 40,
+        "test_status": "passed",
+        "test_output": "ok",
+        "changed_files": ["src/app.py"],
+    })
+    assert composed.status_code == 200
+    assert composed.get_json()["status"] == "ready_to_ship"
+
+    with client.application.app_context():
+        proj = db.session.get(Project, pid)
+        proj.shipped_frontier = "g" * 40
+        db.session.commit()
+
+    second = client.post(f"/api/projects/{pid}/ship/waves/0/compose", json={})
+    assert second.status_code == 200
+    assert second.get_json()["id"] == run_id
+
+    with client.application.app_context():
+        assert Project.query.filter_by(id=pid).first().shipped_frontier == "g" * 40
+        from models.db import ShipRun
+        assert ShipRun.query.filter_by(project_id=pid, wave_num=0).count() == 1
+
+
 def test_compose_allows_wave_after_dependency_shipped(client, project):
     """Once a dependency is shipped into the frontier, the next wave may compose."""
     pid = project["id"]
@@ -245,6 +309,72 @@ def test_compose_allows_wave_after_dependency_shipped(client, project):
 
     assert resp.status_code == 201
     assert resp.get_json()["status"] == "queued"
+
+
+def test_ship_rejects_when_run_not_ready_to_ship(client, project):
+    """Shipping only succeeds from ready_to_ship."""
+    pid = project["id"]
+    from models.db import db, ShipRun
+
+    with client.application.app_context():
+        run = ShipRun(project_id=pid, wave_num=0, status="queued")
+        db.session.add(run)
+        db.session.commit()
+
+    resp = client.post(f"/api/projects/{pid}/ship/waves/0/ship", json={})
+    assert resp.status_code == 409
+    assert "ready_to_ship" in resp.get_json().get("error", "")
+
+
+def test_ship_rejects_stale_composition_validation(client, project):
+    """Ship must revalidate the composed wave against the current frontier."""
+    pid = project["id"]
+    from models.db import db, Project, ShipRun, Ticket, TicketAttempt
+
+    assert client.post(f"/api/projects/{pid}/frontier", json={
+        "hash": "f" * 40,
+        "source": "test",
+    }).status_code == 200
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Stale ship",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        db.session.add(TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="c" * 40,
+            base_hash="f" * 40,
+            wave_num=0,
+            attempt_num=1,
+            status="accepted",
+            summary="done",
+        ))
+        run = ShipRun(
+            project_id=pid,
+            wave_num=0,
+            status="ready_to_ship",
+            composed_commit_hash="d" * 40,
+            base_main_hash="f" * 40,
+        )
+        db.session.add(run)
+        db.session.commit()
+
+    assert client.post(f"/api/projects/{pid}/frontier", json={
+        "hash": "g" * 40,
+        "source": "test",
+    }).status_code == 200
+
+    resp = client.post(f"/api/projects/{pid}/ship/waves/0/ship", json={})
+    assert resp.status_code == 409
+    data = resp.get_json()
+    assert "Wave composition validation failed" in data.get("error", "")
+    assert any("not the current frontier" in detail for detail in data.get("details", []))
 
 
 # ---------------------------------------------------------------------------

@@ -2299,6 +2299,18 @@ def ship_wave_compose(project_id, wave_num):
     if (getattr(project, "git_mode", None) or "swarm") != "swarm":
         return jsonify({"error": "Project is not in swarm mode"}), 400
 
+    # Idempotent compose: if the wave already has an active ship run, return it
+    # instead of re-validating or creating a duplicate release branch/PR.
+    existing = (
+        ShipRun.query
+        .filter_by(project_id=project_id, wave_num=wave_num)
+        .filter(ShipRun.status.in_(_ACTIVE_SHIP_RUN_STATUSES))
+        .order_by(ShipRun.created_at.desc())
+        .first()
+    )
+    if existing:
+        return jsonify(_ship_run_to_json(existing)), 200
+
     tickets = Ticket.query.filter_by(project_id=project_id).all()
     waves = _compute_waves(tickets)
     wave_tickets = [t for t in tickets if waves.get(str(t.id), 0) == wave_num]
@@ -2320,17 +2332,6 @@ def ship_wave_compose(project_id, wave_num):
             "details": validation_errors,
             "hint": "Ship prerequisite waves first, then recompose this wave from the current frontier.",
         }), 409
-
-    # Idempotent: return the existing run if compose/ship is already active for this wave.
-    existing = (
-        ShipRun.query
-        .filter_by(project_id=project_id, wave_num=wave_num)
-        .filter(ShipRun.status.in_(_ACTIVE_SHIP_RUN_STATUSES))
-        .order_by(ShipRun.created_at.desc())
-        .first()
-    )
-    if existing:
-        return jsonify(_ship_run_to_json(existing)), 200
 
     run = ShipRun(project_id=str(project_id), wave_num=wave_num, status="queued")
     db.session.add(run)
