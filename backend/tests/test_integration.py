@@ -387,10 +387,134 @@ def test_dependent_ticket_not_dispatched_until_dep_accepted(client, project):
         assert child.column_id == "queued", "Child should remain queued when dep has no accepted attempt"
 
 
-def test_multi_dependency_ticket_waits_for_temporary_base(client, project):
-    """Compatibility path: multiple unshipped dependencies still route through temporary base composition."""
-    from models.db import db, Ticket, TicketAttempt, CompositeWorkspace
+def test_independent_ticket_dispatches_from_frontier_base(client, project):
+    """Independent tickets use shipped_frontier as the explicit job base."""
+    from models.db import db, Project, Ticket
+
     pid = project["id"]
+    frontier = "f" * 40
+    client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
+    client.post(f"/api/projects/{pid}/frontier", json={"hash": frontier, "source": "test"})
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="queued",
+            title="Independent",
+            intent_status="ready",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+    from api.services.ticket_service import dispatch_unblocked_queued
+    dispatch_unblocked_queued(pid)
+
+    resp = client.post("/api/worker/jobs/start", json={"project_id": pid})
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["base_hash"] == frontier
+    assert payload["base_selection"]["base_source"] == "shipped_frontier"
+    assert payload["base_selection"]["blocked"] is False
+
+
+def test_single_dependency_ticket_dispatches_from_parent_attempt_base(client, project):
+    """A single accepted unshipped dependency becomes the explicit base."""
+    from models.db import db, Ticket, TicketAttempt
+
+    pid = project["id"]
+    frontier = "f" * 40
+    parent_hash = "a" * 40
+    client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
+
+    with client.application.app_context():
+        parent = Ticket(project_id=pid, column_id="done", title="Parent", intent_status="active")
+        db.session.add(parent)
+        db.session.flush()
+        child = Ticket(
+            project_id=pid,
+            column_id="queued",
+            title="Child",
+            intent_status="ready",
+            depends_on_ticket_ids=[str(parent.id)],
+        )
+        db.session.add(child)
+        db.session.flush()
+        db.session.add(TicketAttempt(
+            project_id=pid,
+            ticket_id=parent.id,
+            agenthub_commit_hash=parent_hash,
+            base_hash=frontier,
+            wave_num=0,
+            attempt_num=1,
+            status="accepted",
+            summary="parent",
+        ))
+        db.session.commit()
+
+    from api.services.ticket_service import dispatch_unblocked_queued
+    dispatch_unblocked_queued(pid)
+
+    resp = client.post("/api/worker/jobs/start", json={"project_id": pid})
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["base_hash"] == parent_hash
+    assert payload["base_selection"]["base_source"] == "accepted_dependency"
+    assert payload["base_selection"]["blocked"] is False
+
+
+def test_shipped_dependency_ticket_dispatches_from_current_frontier(client, project):
+    """If dependencies are already shipped, the current frontier is reused."""
+    from models.db import db, Project, Ticket, TicketAttempt
+
+    pid = project["id"]
+    frontier = "f" * 40
+    shipped_hash = "s" * 40
+    client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
+
+    with client.application.app_context():
+        proj = db.session.get(Project, pid)
+        proj.shipped_frontier = frontier
+        parent = Ticket(project_id=pid, column_id="done", title="Parent", intent_status="active")
+        db.session.add(parent)
+        db.session.flush()
+        child = Ticket(
+            project_id=pid,
+            column_id="queued",
+            title="Child",
+            intent_status="ready",
+            depends_on_ticket_ids=[str(parent.id)],
+        )
+        db.session.add(child)
+        db.session.flush()
+        db.session.add(TicketAttempt(
+            project_id=pid,
+            ticket_id=parent.id,
+            agenthub_commit_hash=shipped_hash,
+            base_hash=frontier,
+            wave_num=0,
+            attempt_num=1,
+            status="shipped",
+            summary="parent shipped",
+        ))
+        db.session.commit()
+
+    from api.services.ticket_service import dispatch_unblocked_queued
+    dispatch_unblocked_queued(pid)
+
+    resp = client.post("/api/worker/jobs/start", json={"project_id": pid})
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["base_hash"] == frontier
+    assert payload["base_selection"]["base_source"] == "shipped_frontier"
+    assert payload["base_selection"]["blocked"] is False
+
+
+def test_multi_dependency_ticket_stays_queued_in_mvp(client, project):
+    """Multiple accepted unshipped dependencies remain blocked in the MVP path."""
+    from models.db import db, Ticket, TicketAttempt, CompositeWorkspace, AgentJob
+
+    pid = project["id"]
+    client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
 
     with client.application.app_context():
         parent_a = Ticket(project_id=pid, column_id="done", title="Parent A", intent_status="active")
@@ -432,156 +556,16 @@ def test_multi_dependency_ticket_waits_for_temporary_base(client, project):
         child_id = str(child.id)
 
     from api.services.ticket_service import dispatch_unblocked_queued
+    dispatch_unblocked_queued(pid)
+
     with client.application.app_context():
-        dispatch_unblocked_queued(pid)
         child = db.session.get(Ticket, child_id)
         assert child.column_id == "queued"
-        workspace = CompositeWorkspace.query.filter_by(
+        assert AgentJob.query.filter_by(ticket_id=child_id).count() == 0
+        assert CompositeWorkspace.query.filter_by(
             project_id=pid,
             created_by="dependency_base_composer",
-            status="queued",
-        ).one()
-        assert workspace.selected_leaf_hashes == ["a" * 40, "b" * 40]
-        assert workspace.selected_attempt_ids
-        assert workspace.base_root_hash is None
-
-
-def test_multi_dependency_ticket_dispatches_after_temporary_base_composes(client, project):
-    """Compatibility path: once the temporary base composes, the child dispatches."""
-    from models.db import db, Ticket, TicketAttempt, CompositeWorkspace, AgentJob
-    from api.services.job_service import job_to_response
-
-    pid = project["id"]
-    client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
-
-    with client.application.app_context():
-        parent_a = Ticket(project_id=pid, column_id="done", title="Mock schema migration", intent_status="active")
-        parent_b = Ticket(project_id=pid, column_id="done", title="Mock API contract", intent_status="active")
-        db.session.add_all([parent_a, parent_b])
-        db.session.flush()
-        child = Ticket(
-            project_id=pid,
-            column_id="queued",
-            title="Mock integration consumer",
-            intent_status="ready",
-            depends_on_ticket_ids=[str(parent_a.id), str(parent_b.id)],
-        )
-        db.session.add(child)
-        db.session.flush()
-        db.session.add_all([
-            TicketAttempt(
-                project_id=pid,
-                ticket_id=parent_a.id,
-                agenthub_commit_hash="1" * 40,
-                base_hash="f" * 40,
-                wave_num=0,
-                attempt_num=1,
-                status="accepted",
-                summary="mock schema leaf",
-            ),
-            TicketAttempt(
-                project_id=pid,
-                ticket_id=parent_b.id,
-                agenthub_commit_hash="2" * 40,
-                base_hash="f" * 40,
-                wave_num=0,
-                attempt_num=1,
-                status="accepted",
-                summary="mock API leaf",
-            ),
-        ])
-        db.session.commit()
-        child_id = str(child.id)
-
-    from api.services.ticket_service import dispatch_unblocked_queued
-    with client.application.app_context():
-        dispatch_unblocked_queued(pid)
-        child = db.session.get(Ticket, child_id)
-        assert child.column_id == "queued"
-        workspace = CompositeWorkspace.query.filter_by(
-            project_id=pid,
-            created_by="dependency_base_composer",
-        ).one()
-        workspace_id = str(workspace.id)
-        assert workspace.selected_leaf_hashes == ["1" * 40, "2" * 40]
-
-    resp = client.post(
-        f"/api/worker/workspaces/{workspace_id}/composed",
-        json={
-            "composed_commit_hash": "c" * 40,
-            "test_status": "passed",
-            "changed_files": ["backend/mock_schema.py", "backend/mock_api.py"],
-        },
-        headers=_worker_headers(),
-    )
-    assert resp.status_code == 200
-
-    with client.application.app_context():
-        child = db.session.get(Ticket, child_id)
-        assert child.column_id == "in_progress"
-        job = AgentJob.query.filter_by(ticket_id=child_id, status="pending").one()
-        payload = job_to_response(job)
-
-    assert payload["base_hash"] == "c" * 40
-    assert payload["base_selection"] == {
-        "base_hash": "c" * 40,
-        "base_source": "temporary_dependency_base",
-        "dependency_parent_hashes": ["1" * 40, "2" * 40],
-        "temporary_base_workspace_id": workspace_id,
-        "temporary_base_status": "preview_ready",
-        "temporary_base_required": True,
-    }
-
-
-def test_multi_dependency_ticket_dispatches_after_parents_ship(client, project):
-    """Once all parent leaves are shipped into the frontier, no temporary base is needed."""
-    from models.db import db, Ticket, TicketAttempt
-    pid = project["id"]
-
-    with client.application.app_context():
-        parent_a = Ticket(project_id=pid, column_id="done", title="Parent A", intent_status="active")
-        parent_b = Ticket(project_id=pid, column_id="done", title="Parent B", intent_status="active")
-        db.session.add_all([parent_a, parent_b])
-        db.session.flush()
-        child = Ticket(
-            project_id=pid,
-            column_id="queued",
-            title="Child needs shipped parents",
-            intent_status="ready",
-            depends_on_ticket_ids=[str(parent_a.id), str(parent_b.id)],
-        )
-        db.session.add(child)
-        db.session.flush()
-        db.session.add_all([
-            TicketAttempt(
-                project_id=pid,
-                ticket_id=parent_a.id,
-                agenthub_commit_hash="a" * 40,
-                base_hash="f" * 40,
-                wave_num=0,
-                attempt_num=1,
-                status="shipped",
-                summary="parent a",
-            ),
-            TicketAttempt(
-                project_id=pid,
-                ticket_id=parent_b.id,
-                agenthub_commit_hash="b" * 40,
-                base_hash="f" * 40,
-                wave_num=0,
-                attempt_num=1,
-                status="shipped",
-                summary="parent b",
-            ),
-        ])
-        db.session.commit()
-        child_id = str(child.id)
-
-    from api.services.ticket_service import dispatch_unblocked_queued
-    with client.application.app_context():
-        dispatch_unblocked_queued(pid)
-        child = db.session.get(Ticket, child_id)
-        assert child.column_id == "in_progress"
+        ).count() == 0
 
 
 # ---------------------------------------------------------------------------

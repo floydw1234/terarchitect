@@ -87,8 +87,92 @@ def compute_base_hash(ticket: Ticket, project: Project) -> str | None:
     return context.get("base_hash")
 
 
+def mvp_dependency_base_context(ticket: Ticket, project: Project) -> dict:
+    """Return the explicit MVP base-selection context for a ticket.
+
+    MVP order:
+      1. No unshipped deps -> shipped_frontier
+      2. One accepted unshipped dep -> that dep's commit hash
+      3. All deps shipped -> shipped_frontier
+      4. Multiple accepted unshipped deps -> blocked
+
+    This path must not depend on temporary workspace composition.
+    """
+    dep_ids = ticket.depends_on_ticket_ids or []
+    frontier = (project.shipped_frontier or None) if project else None
+
+    if not dep_ids:
+        return {
+            "base_hash": frontier,
+            "base_source": "shipped_frontier",
+            "dependency_parent_hashes": [],
+            "blocked": False,
+            "blocked_reason": None,
+            "temporary_base_required": False,
+        }
+
+    accepted_unshipped_attempts: list[TicketAttempt] = []
+    shipped_attempts: list[TicketAttempt] = []
+    for dep_id in dep_ids:
+        attempt = (
+            TicketAttempt.query
+            .filter_by(ticket_id=dep_id)
+            .filter(TicketAttempt.status.in_(_SATISFIED_STATUSES))
+            .order_by(TicketAttempt.attempt_num.desc())
+            .first()
+        )
+        if not attempt:
+            continue
+        if attempt.status == "shipped":
+            shipped_attempts.append(attempt)
+        else:
+            accepted_unshipped_attempts.append(attempt)
+
+    if not accepted_unshipped_attempts:
+        return {
+            "base_hash": frontier,
+            "base_source": "shipped_frontier",
+            "dependency_parent_hashes": [
+                attempt.agenthub_commit_hash
+                for attempt in shipped_attempts
+                if attempt.agenthub_commit_hash
+            ],
+            "blocked": False,
+            "blocked_reason": None,
+            "temporary_base_required": False,
+        }
+
+    if len(accepted_unshipped_attempts) == 1:
+        parent_hash = accepted_unshipped_attempts[0].agenthub_commit_hash or frontier
+        return {
+            "base_hash": parent_hash,
+            "base_source": "accepted_dependency",
+            "dependency_parent_hashes": [parent_hash] if parent_hash else [],
+            "blocked": False,
+            "blocked_reason": None,
+            "temporary_base_required": False,
+        }
+
+    parent_hashes = _attempt_hashes(accepted_unshipped_attempts)
+    return {
+        "base_hash": None,
+        "base_source": "blocked_multiple_unshipped_dependencies",
+        "dependency_parent_hashes": parent_hashes,
+        "blocked": True,
+        "blocked_reason": (
+            "Multiple accepted unshipped dependencies are blocked in the MVP path. "
+            "Ship prerequisite work first or reduce the ticket to a single unshipped dependency."
+        ),
+        "temporary_base_required": False,
+    }
+
+
 def dependency_base_context(ticket: Ticket, project: Project) -> dict:
-    """Return base-selection context for a ticket and create temp composition work if needed."""
+    """Compatibility base-selection context.
+
+    This retains the older workspace-based behavior for legacy callers, but the
+    MVP dispatch path uses mvp_dependency_base_context().
+    """
     dep_ids = ticket.depends_on_ticket_ids or []
     frontier = (project.shipped_frontier or None) if project else None
 
@@ -227,7 +311,7 @@ def job_to_response(job):
     base_context = {}
     base_hash = None
     if ticket and project and git_mode == "swarm":
-        base_context = dependency_base_context(ticket, project)
+        base_context = mvp_dependency_base_context(ticket, project)
         base_hash = base_context.get("base_hash")
         current_app.logger.info(
             "base_selection project=%s ticket=%s base=%s source=%s frontier=%s deps=%s",

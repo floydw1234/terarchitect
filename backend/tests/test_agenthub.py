@@ -9,8 +9,8 @@ Covers:
   - validate_attempt accepts when AgentHub unreachable (non-blocking)
   - root refresh changes base for newly queued work
   - stale attempts are detectable (base_hash != shipped_frontier)
-  - compute_base_hash selects dep hash when dep is accepted (not shipped)
-  - compute_base_hash falls back to frontier when dep is shipped
+  - explicit MVP base selection uses frontier / accepted dependency / shipped frontier
+  - coordinator env forwarding keeps BASE_HASH and AGENTHUB_ROOT_HASH intact
 """
 import os
 import sys
@@ -215,6 +215,188 @@ def test_compute_base_hash_uses_frontier_when_no_deps(app):
 
         result = compute_base_hash(ticket, project)
         assert result == "my_frontier"
+
+
+def test_mvp_base_selection_uses_frontier_for_independent_ticket(client, project):
+    from api.services.job_service import mvp_dependency_base_context
+    from models.db import db, Ticket, Project
+
+    frontier = "f" * 40
+    with client.application.app_context():
+        proj = db.session.get(Project, project["id"])
+        proj.shipped_frontier = frontier
+        ticket = Ticket(
+            project_id=proj.id,
+            column_id="queued",
+            title="Independent ticket",
+            intent_status="ready",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        ctx = mvp_dependency_base_context(ticket, proj)
+
+    assert ctx["base_hash"] == frontier
+    assert ctx["base_source"] == "shipped_frontier"
+    assert ctx["blocked"] is False
+
+
+def test_mvp_base_selection_uses_accepted_dependency_hash(client, project):
+    from api.services.job_service import mvp_dependency_base_context
+    from models.db import db, Project, Ticket, TicketAttempt
+
+    frontier = "f" * 40
+    dep_hash = "d" * 40
+    with client.application.app_context():
+        proj = db.session.get(Project, project["id"])
+        proj.shipped_frontier = frontier
+        parent = Ticket(
+            project_id=proj.id,
+            column_id="done",
+            title="Parent",
+            intent_status="active",
+        )
+        db.session.add(parent)
+        db.session.flush()
+        child = Ticket(
+            project_id=proj.id,
+            column_id="queued",
+            title="Child",
+            intent_status="ready",
+            depends_on_ticket_ids=[str(parent.id)],
+        )
+        db.session.add(child)
+        db.session.flush()
+        db.session.add(TicketAttempt(
+            project_id=proj.id,
+            ticket_id=parent.id,
+            agenthub_commit_hash=dep_hash,
+            base_hash=frontier,
+            wave_num=0,
+            attempt_num=1,
+            status="accepted",
+            summary="parent done",
+        ))
+        db.session.commit()
+        ctx = mvp_dependency_base_context(child, proj)
+
+    assert ctx["base_hash"] == dep_hash
+    assert ctx["base_source"] == "accepted_dependency"
+    assert ctx["blocked"] is False
+
+
+def test_mvp_base_selection_uses_frontier_when_dependencies_already_shipped(client, project):
+    from api.services.job_service import mvp_dependency_base_context
+    from models.db import db, Project, Ticket, TicketAttempt
+
+    frontier = "f" * 40
+    shipped_hash = "s" * 40
+    with client.application.app_context():
+        proj = db.session.get(Project, project["id"])
+        proj.shipped_frontier = frontier
+        parent = Ticket(
+            project_id=proj.id,
+            column_id="done",
+            title="Shipped parent",
+            intent_status="active",
+        )
+        db.session.add(parent)
+        db.session.flush()
+        child = Ticket(
+            project_id=proj.id,
+            column_id="queued",
+            title="Child",
+            intent_status="ready",
+            depends_on_ticket_ids=[str(parent.id)],
+        )
+        db.session.add(child)
+        db.session.flush()
+        db.session.add(TicketAttempt(
+            project_id=proj.id,
+            ticket_id=parent.id,
+            agenthub_commit_hash=shipped_hash,
+            base_hash=frontier,
+            wave_num=0,
+            attempt_num=1,
+            status="shipped",
+            summary="parent shipped",
+        ))
+        db.session.commit()
+        ctx = mvp_dependency_base_context(child, proj)
+
+    assert ctx["base_hash"] == frontier
+    assert ctx["base_source"] == "shipped_frontier"
+    assert ctx["blocked"] is False
+
+
+def test_mvp_base_selection_blocks_multiple_unshipped_dependencies(client, project):
+    from api.services.job_service import mvp_dependency_base_context
+    from models.db import db, Project, Ticket, TicketAttempt
+
+    frontier = "f" * 40
+    with client.application.app_context():
+        proj = db.session.get(Project, project["id"])
+        proj.shipped_frontier = frontier
+        parent_a = Ticket(project_id=proj.id, column_id="done", title="Parent A", intent_status="active")
+        parent_b = Ticket(project_id=proj.id, column_id="done", title="Parent B", intent_status="active")
+        db.session.add_all([parent_a, parent_b])
+        db.session.flush()
+        child = Ticket(
+            project_id=proj.id,
+            column_id="queued",
+            title="Child",
+            intent_status="ready",
+            depends_on_ticket_ids=[str(parent_a.id), str(parent_b.id)],
+        )
+        db.session.add(child)
+        db.session.flush()
+        db.session.add_all([
+            TicketAttempt(
+                project_id=proj.id,
+                ticket_id=parent_a.id,
+                agenthub_commit_hash="a" * 40,
+                base_hash=frontier,
+                wave_num=0,
+                attempt_num=1,
+                status="accepted",
+                summary="parent a",
+            ),
+            TicketAttempt(
+                project_id=proj.id,
+                ticket_id=parent_b.id,
+                agenthub_commit_hash="b" * 40,
+                base_hash=frontier,
+                wave_num=0,
+                attempt_num=1,
+                status="accepted",
+                summary="parent b",
+            ),
+        ])
+        db.session.commit()
+        ctx = mvp_dependency_base_context(child, proj)
+
+    assert ctx["base_hash"] is None
+    assert ctx["blocked"] is True
+    assert "Multiple accepted unshipped dependencies" in ctx["blocked_reason"]
+
+
+def test_coordinator_job_to_env_forwards_base_hashes():
+    from coordinator.coordinator import job_to_env
+
+    env = job_to_env(
+        {
+            "project_id": "p1",
+            "ticket_id": "t1",
+            "repo_url": "https://github.com/org/repo",
+            "job_id": "j1",
+            "kind": "ticket",
+            "base_hash": "b" * 40,
+            "shipped_frontier": "f" * 40,
+        },
+        for_docker=False,
+    )
+
+    assert env["BASE_HASH"] == "b" * 40
+    assert env["AGENTHUB_ROOT_HASH"] == "f" * 40
 
 
 # ---------------------------------------------------------------------------

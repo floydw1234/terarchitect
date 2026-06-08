@@ -10,7 +10,7 @@ from .channel_service import (
     post_event as _post_event,
     event_content as _event_content,
 )
-from .job_service import dependency_base_context as _dependency_base_context
+from .job_service import mvp_dependency_base_context as _mvp_dependency_base_context
 
 
 def _has_accepted_attempt(ticket_id) -> bool:
@@ -235,7 +235,18 @@ def enqueue_ticket_job(ticket_id):
 
     is_swarm = (getattr(project, "git_mode", None) or "swarm") == "swarm"
     if is_swarm:
-        base_context = _dependency_base_context(ticket, project)
+        base_context = _mvp_dependency_base_context(ticket, project)
+        if base_context.get("blocked") and not base_context.get("base_hash"):
+            current_app.logger.info(
+                "Skipping enqueue: ticket %s blocked by MVP base selection: %s",
+                ticket_id,
+                base_context.get("blocked_reason"),
+            )
+            if ticket.column_id == "in_progress":
+                ticket.column_id = "queued"
+                ticket.intent_status = "ready"
+                db.session.commit()
+            return
         if base_context.get("temporary_base_required") and not base_context.get("base_hash"):
             current_app.logger.info(
                 "Skipping enqueue: ticket %s awaiting temporary dependency base workspace=%s status=%s",
@@ -295,7 +306,15 @@ def dispatch_unblocked_queued(project_id):
         if dep_ids and not all(_has_accepted_attempt(d) for d in dep_ids):
             continue
         if is_swarm:
-            base_context = _dependency_base_context(t, project)
+            base_context = _mvp_dependency_base_context(t, project)
+            if base_context.get("blocked") and not base_context.get("base_hash"):
+                current_app.logger.info(
+                    "dispatch waiting ticket=%s reason=%s deps=%s",
+                    t.id,
+                    base_context.get("blocked_reason"),
+                    dep_ids,
+                )
+                continue
             if base_context.get("temporary_base_required") and not base_context.get("base_hash"):
                 current_app.logger.info(
                     "dispatch waiting ticket=%s reason=temporary_dependency_base status=%s workspace=%s deps=%s",
