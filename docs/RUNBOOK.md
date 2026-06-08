@@ -157,6 +157,27 @@ See **docs/PHASE1_WORKER_API.md** → Phase 5 for OpenCode and required env. Age
 1. **App:** Open http://localhost:3000, create a project, add a ticket, move it to In Progress. A row should appear in `agent_jobs` with `status=pending`.
 2. **Coordinator:** Run the coordinator with that project’s `PROJECT_ID`. It should claim the job, start a container, and after the run call complete or fail.
 3. **Logs and attempts:** Ticket logs and the resulting AgentHub attempt appear in the UI via the API; the agent posts logs and completion through the worker API.
-4. **Ship:** Open Ship Room for the project, compose a ready wave, and ship the release/export artifact when validation passes.
+4. **Accept attempt:** A human accepts the attempt that should move forward. Ticket-level PR review is not part of swarm mode.
+5. **Compose wave:** Open Ship Room or use `ta ship compose <project_id> <wave_num>` to compose the wave from accepted attempts.
+6. **Inspect ShipRun:** Check the `ShipRun` state, test output, and composed commit in Ship Room or with `ta ship show <project_id> <wave_num>`.
+7. **Ship/merge final boundary:** When the `ShipRun` is `ready_to_ship`, use the Ship Room ship action or `ta ship merge-pr <project_id> <wave_num>` to advance `shipped_frontier`.
 
 No in-process agent runs in the app; all execution is in containers started by the coordinator.
+
+## Operator flow
+
+Keep operators on one path for swarm projects:
+
+1. agent completes work
+2. human accepts the attempt
+3. compose the wave
+4. inspect the `ShipRun`
+5. ship/merge at the final boundary
+
+CLI and UI should follow the same wave flow:
+
+- `ta ship waves <project_id>`
+- `ta ship show <project_id> <wave_num>`
+- `ta ship compose <project_id> <wave_num>`
+- `ta ship feedback <project_id> <wave_num> "message"`
+- `ta ship merge-pr <project_id> <wave_num>`

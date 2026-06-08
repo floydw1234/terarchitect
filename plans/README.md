@@ -54,6 +54,18 @@ For implementation work, stay on this spine:
 
 Do not expand scope into Composite Workspace, no-main runtime, heavy verification systems, graph side quests, or multi-repo architecture unless the authoritative MVP docs are updated first.
 
+## Operator Path
+
+Use one operator path for swarm projects:
+
+1. agent completes work and publishes a `TicketAttempt`
+2. human accepts the attempt
+3. compose the wave
+4. inspect the resulting `ShipRun`
+5. ship/merge at the final wave boundary
+
+Ticket-level PR review is not part of swarm mode. The review and ship boundary lives at the wave/`ShipRun` level.
+
 ## Related Operational Docs
 
 - `../docs/PHASE1_WORKER_API.md` — worker/coordinator contract

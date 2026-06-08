@@ -3,6 +3,7 @@
 Terarchitect is a visual-first SDLC orchestrator: model your system as a graph, define intents, and let a **Director → Worker** agent pair publish implementation attempts to an AgentHub DAG.
 
 - **You stay in control**: agent attempts become shippable only through Ship Room release/export flow.
+- **MVP ship path**: agent completes work, a human accepts the attempt, Ship Room composes a wave, you inspect the `ShipRun`, then ship/merge at the final boundary.
 - **One container per job**: reproducible, isolated runs.
 - **Coordinator-friendly**: run the coordinator on the same machine as the app, or on a completely separate machine.
 
@@ -176,6 +177,8 @@ Full ops notes (systemd, env, verification): see `docs/RUNBOOK.md`.
 5. Terarchitect records the attempt as a `TicketAttempt`; accepted attempts appear in Ship Room.
 6. Ship Room composes accepted leaves into a release branch and optional release/export PR, then advances the shipped frontier when shipped.
 
+Ticket-level PR review is not part of the swarm-mode MVP path. The human review point is attempt acceptance, and the ship boundary is the wave-level `ShipRun`.
+
 No mixing with your project’s Dockerfile. The agent image is built once and reused.
 
 ---
@@ -202,7 +205,7 @@ No mixing with your project’s Dockerfile. The agent image is built once and re
 ## Highlights
 
 - **Ship Room**: compose accepted AgentHub attempts into a coherent release/export artifact and advance the shipped frontier.
-- **Composite Workspace**: behind `ENABLE_COMPOSITE_WORKSPACE`, select leaves into a lab-grade previewable candidate state before shipping.
+- **Wave-boundary review**: accept attempts first, then inspect one `ShipRun` before the final ship/merge step.
 - **Cancelable runs**: worker-facing cancel flag + polling endpoint so you can stop a run cleanly.
 - **Per-project execution mode**: run jobs in Docker (clone in container) or Local (run at a configured host path).
 - **Env-only config**: each service (backend, coordinator) uses a simple `.env` that fits its needs; no shared settings store. See `example.env`.
