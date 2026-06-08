@@ -640,6 +640,20 @@ export async function getTicketAttempts(
   return checkResponse<TicketAttempt[]>(response);
 }
 
+export async function getTicketAttempt(
+  projectId: string,
+  ticketId: string,
+  attemptId: string,
+  includeTestOutput = false,
+): Promise<TicketAttempt> {
+  const attempts = await getTicketAttempts(projectId, ticketId, includeTestOutput);
+  const attempt = attempts.find(a => a.id === attemptId);
+  if (!attempt) {
+    throw new Error('Attempt not found');
+  }
+  return attempt;
+}
+
 export async function acceptAttempt(
   projectId: string,
   ticketId: string,

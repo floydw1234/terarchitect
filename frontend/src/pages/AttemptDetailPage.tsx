@@ -13,19 +13,16 @@ import {
 import RefreshIcon from '@mui/icons-material/Refresh';
 import {
   getProject,
-  getTicketAttempts,
+  getTicketAttempt,
   type Project,
   type TicketAttempt,
 } from '../utils/api';
 
 const ATTEMPT_COLOR: Record<string, 'default' | 'info' | 'warning' | 'success' | 'error'> = {
   proposed: 'default',
-  validating: 'info',
   accepted: 'success',
   rejected: 'error',
   superseded: 'default',
-  composed: 'info',
-  release_pr_open: 'warning',
   shipped: 'success',
   failed: 'error',
 };
@@ -46,16 +43,15 @@ const AttemptDetailPage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [projectData, attempts] = await Promise.all([
+      const [projectData, attemptData] = await Promise.all([
         getProject(projectId),
-        getTicketAttempts(projectId, ticketId, true),
+        getTicketAttempt(projectId, ticketId, attemptId, true),
       ]);
-      const found = attempts.find(a => a.id === attemptId) || null;
       setProject(projectData);
-      setAttempt(found);
-      if (!found) setError('Attempt not found');
+      setAttempt(attemptData);
     } catch (e: any) {
       setError(e.message);
+      setAttempt(null);
     } finally {
       setLoading(false);
     }
@@ -97,8 +93,6 @@ const AttemptDetailPage: React.FC = () => {
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mb: 1 }}>
             <Typography variant="subtitle1" fontWeight={600}>Attempt #{attempt.attempt_num}</Typography>
             <Chip label={attempt.status} size="small" color={ATTEMPT_COLOR[attempt.status] ?? 'default'} />
-            <Chip label={`wave ${attempt.wave_num}`} size="small" variant="outlined" />
-            {attempt.stale && <Chip label="stale" size="small" color="warning" variant="outlined" />}
           </Stack>
 
           <Stack spacing={1.25} sx={{ mb: 2 }}>
