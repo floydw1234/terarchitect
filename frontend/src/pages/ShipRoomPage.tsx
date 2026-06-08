@@ -11,32 +11,23 @@ import {
   CircularProgress,
   Alert,
   TextField,
-  Collapse,
-  IconButton,
-  Tooltip,
 } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
-import EvidencePanel from '../components/EvidencePanel';
 import {
   getProject,
   getShipWaves,
   getShipWaveDetail,
-  getWaveTimeline,
   getTicketAttempts,
   composeWave,
   shipWave,
   sendWaveFeedback,
   acceptAttempt,
   rejectAttempt,
-  createTicket,
   type Project,
   type WaveSummary,
   type WaveDetail,
   type ShipRun,
-  type AgentHubEvent,
   type ProjectFrontier,
   type TicketAttempt,
 } from '../utils/api';
@@ -79,6 +70,18 @@ const ATTEMPT_COLOR: Record<string, 'default' | 'info' | 'warning' | 'success' |
   failed: 'error',
 };
 
+const ATTEMPT_LABEL: Record<string, string> = {
+  proposed: 'Proposed',
+  validating: 'Validating',
+  accepted: 'Accepted',
+  rejected: 'Rejected',
+  superseded: 'Superseded',
+  failed: 'Failed',
+  shipped: 'Shipped',
+  composed: 'Composed',
+  release_pr_open: 'Release PR open',
+};
+
 const REVIEWABLE_ATTEMPT_STATUSES = new Set(['proposed', 'validating']);
 
 function getAttemptReviewLockReason(
@@ -98,8 +101,7 @@ function getAttemptReviewLockReason(
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function ShipRunPanel({ projectId, run }: { projectId: string; run: ShipRun }) {
-  const [secondaryOpen, setSecondaryOpen] = useState(false);
+function ShipRunPanel({ run }: { run: ShipRun }) {
   const hasDiagnosticOutput = !!(run.error || run.test_output || run.test_status);
 
   return (
@@ -134,6 +136,19 @@ function ShipRunPanel({ projectId, run }: { projectId: string; run: ShipRun }) {
           branch: <code>{run.release_branch}</code>
         </Typography>
       )}
+
+      <Stack spacing={0.25} sx={{ mt: 0.5 }}>
+        {run.composed_commit_hash && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            composed release commit: <code>{run.composed_commit_hash.slice(0, 12)}</code>
+          </Typography>
+        )}
+        {run.shipped_commit_hash && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            shipped commit: <code>{run.shipped_commit_hash.slice(0, 12)}</code>
+          </Typography>
+        )}
+      </Stack>
 
       {run.error && (
         <Alert severity="error" sx={{ mt: 1, fontSize: '0.75rem' }}>
@@ -177,51 +192,29 @@ function ShipRunPanel({ projectId, run }: { projectId: string; run: ShipRun }) {
         </Box>
       )}
 
-      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mt: 1.5 }}>
-        <Typography variant="caption" color="text.secondary">
-          Optional details
-        </Typography>
-        <Button
-          size="small"
-          onClick={() => setSecondaryOpen(v => !v)}
-          endIcon={secondaryOpen ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
-        >
-          {secondaryOpen ? 'Hide' : 'Show'} optional details
-        </Button>
-      </Stack>
-
-      <Collapse in={secondaryOpen}>
-        <Stack spacing={1} sx={{ mt: 1 }}>
-          {run.changed_files && run.changed_files.length > 0 && (
-            <Box>
-              <Typography variant="caption" color="text.secondary">
-                {run.changed_files.length} file{run.changed_files.length !== 1 ? 's' : ''} changed
-              </Typography>
-              <Box
-                component="pre"
-                sx={{
-                  mt: 0.5,
-                  fontSize: '0.7rem',
-                  bgcolor: 'background.paper',
-                  p: 1,
-                  borderRadius: 1,
-                  maxHeight: 200,
-                  overflow: 'auto',
-                }}
-              >
-                {run.changed_files.join('\n')}
-              </Box>
-            </Box>
-          )}
-
-          <EvidencePanel
-            projectId={projectId}
-            targetType="ship_run"
-            targetId={run.id}
-            defaultCheckType="integration"
-          />
-        </Stack>
-      </Collapse>
+      {run.changed_files && run.changed_files.length > 0 && (
+        <Box sx={{ mt: 1 }}>
+          <Typography variant="caption" color="text.secondary">
+            Changed files ({run.changed_files.length})
+          </Typography>
+          <Box
+            component="pre"
+            sx={{
+              mt: 0.5,
+              fontSize: '0.7rem',
+              bgcolor: 'background.paper',
+              p: 1,
+              borderRadius: 1,
+              maxHeight: 200,
+              overflow: 'auto',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}
+          >
+            {run.changed_files.join('\n')}
+          </Box>
+        </Box>
+      )}
     </Paper>
   );
 }
@@ -292,7 +285,7 @@ function AttemptReviewCard({
               <Paper key={attempt.id} variant="outlined" sx={{ p: 1.25, bgcolor: 'background.paper' }}>
                 <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
                   <Chip
-                    label={attempt.status}
+                    label={ATTEMPT_LABEL[attempt.status] ?? attempt.status}
                     size="small"
                     color={ATTEMPT_COLOR[attempt.status] ?? 'default'}
                   />
@@ -361,79 +354,6 @@ function AttemptReviewCard({
 }
 
 // ---------------------------------------------------------------------------
-// Channel timeline
-// ---------------------------------------------------------------------------
-
-function ChannelTimeline({ projectId, waveNum }: { projectId: string; waveNum: number }) {
-  const [posts, setPosts] = useState<AgentHubEvent[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    setLoading(true);
-    getWaveTimeline(projectId, waveNum)
-      .then(setPosts)
-      .catch(() => setPosts([]))
-      .finally(() => setLoading(false));
-  }, [projectId, waveNum]);
-
-  if (loading) return <CircularProgress size={16} sx={{ display: 'block', mx: 'auto', my: 1 }} />;
-  if (posts.length === 0) {
-    return <Typography variant="caption" color="text.secondary">No events yet.</Typography>;
-  }
-
-  return (
-    <Stack spacing={0.75}>
-      {posts.map(p => (
-        <Box
-          key={p.id}
-          sx={{
-            p: 1,
-            borderRadius: 1,
-            bgcolor: p._channel_type === 'wave' ? 'rgba(34,211,238,0.06)' : 'background.default',
-            borderLeft: 3,
-            borderLeftColor: p._channel_type === 'wave' ? 'primary.dark' : 'divider',
-          }}
-        >
-          <Stack direction="row" spacing={1} alignItems="flex-start">
-            <Box sx={{ minWidth: 0, flex: 1 }}>
-              <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
-                <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
-                  {p.agent_id}
-                </Typography>
-                <Chip
-                  label={p._ticket_title ? `#${p._ticket_title.slice(0, 24)}` : p._channel}
-                  size="small"
-                  variant="outlined"
-                  sx={{ height: 14, fontSize: '0.6rem' }}
-                />
-                {p.event_type && (
-                  <Chip
-                    label={p.event_type.replace(/_/g, ' ')}
-                    size="small"
-                    color={p.structured ? 'primary' : 'default'}
-                    variant={p.structured ? 'filled' : 'outlined'}
-                    sx={{ height: 14, fontSize: '0.6rem' }}
-                  />
-                )}
-                <Typography variant="caption" color="text.secondary">
-                  {p.created_at ? new Date(p.created_at).toLocaleTimeString() : ''}
-                </Typography>
-              </Stack>
-              <Typography
-                variant="caption"
-                sx={{ display: 'block', mt: 0.25, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
-              >
-                {p.message || p.content}
-              </Typography>
-            </Box>
-          </Stack>
-        </Box>
-      ))}
-    </Stack>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Wave detail panel
 // ---------------------------------------------------------------------------
 
@@ -454,8 +374,6 @@ function WaveDetailPanel({
   const [feedback, setFeedback] = useState('');
   const [feedbackSending, setFeedbackSending] = useState(false);
   const [feedbackSent, setFeedbackSent] = useState(false);
-  const [creatingFixTicket, setCreatingFixTicket] = useState(false);
-  const [fixTicketCreated, setFixTicketCreated] = useState(false);
   const [ticketAttempts, setTicketAttempts] = useState<Record<string, TicketAttempt[]>>({});
 
   const load = useCallback(async () => {
@@ -504,27 +422,6 @@ function WaveDetailPanel({
     }
   };
 
-  const handleCreateFixTicket = async () => {
-    if (!detail?.ship_run?.error) return;
-    setCreatingFixTicket(true);
-    try {
-      await createTicket(projectId, {
-        column_id: 'backlog',
-        title: `[wave-${waveNum}] Fix composition failure`,
-        description: detail.ship_run.error.slice(0, 2000),
-        priority: 'high',
-        acceptance_criteria: 'Composition of wave ' + waveNum + ' succeeds without conflicts.',
-        associated_node_ids: ['*'],
-      });
-      setFixTicketCreated(true);
-      setTimeout(() => setFixTicketCreated(false), 3000);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setCreatingFixTicket(false);
-    }
-  };
-
   const handleFeedback = async () => {
     if (!feedback.trim()) return;
     setFeedbackSending(true);
@@ -567,9 +464,9 @@ function WaveDetailPanel({
       <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
         <Typography variant="h6">Wave {waveNum}</Typography>
         <Stack direction="row" spacing={1}>
-          <Tooltip title="Refresh">
-            <IconButton size="small" onClick={load}><RefreshIcon fontSize="small" /></IconButton>
-          </Tooltip>
+          <Button size="small" onClick={load} startIcon={<RefreshIcon fontSize="small" />}>
+            Refresh
+          </Button>
           <Button size="small" onClick={onClose}>Close</Button>
         </Stack>
       </Stack>
@@ -617,7 +514,7 @@ function WaveDetailPanel({
       </Stack>
 
       {/* Ship run detail */}
-      {shipRun && <ShipRunPanel projectId={projectId} run={shipRun} />}
+      {shipRun && <ShipRunPanel run={shipRun} />}
 
       <Divider sx={{ my: 2 }} />
 
@@ -641,7 +538,7 @@ function WaveDetailPanel({
             <Paper key={a.id} sx={{ p: 1.5, bgcolor: 'background.default' }}>
               <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
                 <Chip
-                  label={a.status}
+                  label={ATTEMPT_LABEL[a.status] ?? a.status}
                   size="small"
                   color={ATTEMPT_COLOR[a.status] ?? 'default'}
                 />
@@ -680,17 +577,6 @@ function WaveDetailPanel({
                   {a.summary.slice(0, 200)}{a.summary.length > 200 ? '…' : ''}
                 </Typography>
               )}
-              <Box sx={{ mt: 0.75 }}>
-                <Typography variant="caption" color="text.secondary">
-                  Optional evidence
-                </Typography>
-                <EvidencePanel
-                  projectId={projectId}
-                  targetType="attempt"
-                  targetId={a.id}
-                  defaultCheckType="validation"
-                />
-              </Box>
             </Paper>
           ))}
         </Stack>
@@ -710,7 +596,7 @@ function WaveDetailPanel({
               <Chip label={t.column_id} size="small" variant="outlined" sx={{ fontSize: '0.65rem' }} />
               {t.latest_attempt && (
                 <Chip
-                  label={`${t.latest_attempt.status}${t.latest_attempt.short_commit_hash ? ' · ' + t.latest_attempt.short_commit_hash : ''}`}
+                  label={`${ATTEMPT_LABEL[t.latest_attempt.status] ?? t.latest_attempt.status}${t.latest_attempt.short_commit_hash ? ' · ' + t.latest_attempt.short_commit_hash : ''}`}
                   size="small"
                   color={ATTEMPT_COLOR[t.latest_attempt.status] ?? 'default'}
                   sx={{ fontSize: '0.65rem' }}
@@ -751,26 +637,6 @@ function WaveDetailPanel({
           {feedbackSending ? <CircularProgress size={14} /> : feedbackSent ? 'Sent!' : 'Send'}
         </Button>
       </Stack>
-
-      <Divider sx={{ my: 2 }} />
-
-      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
-        <Typography variant="subtitle2">Optional surfaces</Typography>
-        <Button
-          size="small"
-          variant="outlined"
-          color="warning"
-          onClick={handleCreateFixTicket}
-          disabled={creatingFixTicket || fixTicketCreated || !shipRun?.error}
-        >
-          {fixTicketCreated ? 'Fix ticket created' : creatingFixTicket ? 'Creating…' : 'Create fix ticket'}
-        </Button>
-      </Stack>
-      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-        Timeline, evidence, and the fix-ticket helper are secondary to the release path.
-      </Typography>
-      <Typography variant="subtitle2" gutterBottom>Event timeline</Typography>
-      <ChannelTimeline projectId={projectId} waveNum={waveNum} />
     </Box>
   );
 }
@@ -816,6 +682,11 @@ function WaveCard({
         {wave.accepted_count} accepted
         {!wave.all_done && ' · not all done'}
       </Typography>
+      {run?.composed_commit_hash && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+          Composed · {run.composed_commit_hash.slice(0, 10)}
+        </Typography>
+      )}
       {run?.shipped_commit_hash && (
         <Typography variant="caption" color="success.main" sx={{ display: 'block' }}>
           Shipped · {run.shipped_commit_hash.slice(0, 10)}
@@ -869,6 +740,10 @@ const ShipRoomPage: React.FC = () => {
   const failedWaves = waves.filter(w => w.ship_run?.status && ['compose_failed', 'failed'].includes(w.ship_run.status));
   const shippedWaves = waves.filter(w => w.ship_run?.status && ['shipped', 'done'].includes(w.ship_run.status));
   const pendingWaves = waves.filter(w => !w.ship_run);
+  const latestShipRun =
+    [...waves]
+      .filter(w => w.ship_run)
+      .sort((a, b) => b.wave_num - a.wave_num)[0]?.ship_run ?? null;
 
   const renderSection = (title: string, items: WaveSummary[]) => {
     if (items.length === 0) return null;
@@ -917,20 +792,53 @@ const ShipRoomPage: React.FC = () => {
               <Chip label={`${shippedWaves.length} shipped`} color="success" size="small" variant="outlined" />
             </Stack>
           </Box>
-          <Stack direction="row" spacing={2} alignItems="center">
-            {frontier?.shipped_frontier ? (
-              <Box sx={{ textAlign: 'right' }}>
-                <Typography variant="caption" color="text.secondary">Current shipped frontier</Typography>
+          <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
+            <Box sx={{ textAlign: 'right' }}>
+              <Typography variant="caption" color="text.secondary">Current shipped frontier</Typography>
+              {frontier?.shipped_frontier ? (
                 <Typography variant="caption" sx={{ display: 'block', fontFamily: 'monospace', color: 'success.main' }}>
                   {frontier.shipped_frontier.slice(0, 12)}
                 </Typography>
+              ) : (
+                <Typography variant="caption" color="warning.main">frontier not set</Typography>
+              )}
+            </Box>
+            {latestShipRun && (
+              <Box sx={{ textAlign: 'right' }}>
+                <Typography variant="caption" color="text.secondary">Latest ship run</Typography>
+                <Stack direction="row" spacing={1} alignItems="center" justifyContent="flex-end" flexWrap="wrap">
+                  <Chip
+                    label={STATUS_LABEL[latestShipRun.status] ?? latestShipRun.status}
+                    color={STATUS_COLOR[latestShipRun.status] ?? 'default'}
+                    size="small"
+                  />
+                  {latestShipRun.release_pr_url && (
+                    <Button
+                      size="small"
+                      endIcon={<OpenInNewIcon fontSize="small" />}
+                      href={latestShipRun.release_pr_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      Release PR #{latestShipRun.release_pr_number}
+                    </Button>
+                  )}
+                  {latestShipRun.composed_commit_hash && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', width: '100%' }}>
+                      composed release commit: <code>{latestShipRun.composed_commit_hash.slice(0, 12)}</code>
+                    </Typography>
+                  )}
+                  {latestShipRun.shipped_commit_hash && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', width: '100%' }}>
+                      shipped commit: <code>{latestShipRun.shipped_commit_hash.slice(0, 12)}</code>
+                    </Typography>
+                  )}
+                </Stack>
               </Box>
-            ) : (
-              <Typography variant="caption" color="warning.main">frontier not set</Typography>
             )}
-            <Tooltip title="Refresh">
-              <IconButton onClick={loadWaves}><RefreshIcon /></IconButton>
-            </Tooltip>
+            <Button size="small" onClick={loadWaves} startIcon={<RefreshIcon fontSize="small" />}>
+              Refresh
+            </Button>
           </Stack>
         </Stack>
       </Paper>

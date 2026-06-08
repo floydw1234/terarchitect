@@ -257,8 +257,9 @@ test('ready_to_ship run shows the release PR at ShipRun level', async () => {
   renderShipRoom();
 
   await waitFor(() => {
+    expect(screen.getByText('Latest ship run')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Release PR #42/i })).toBeInTheDocument();
     expect(screen.getByText('Wave 0')).toBeInTheDocument();
-    expect(screen.queryByText(/PR #42/i)).not.toBeInTheDocument();
   });
   fireEvent.click(screen.getByText('Wave 0'));
 
@@ -266,6 +267,10 @@ test('ready_to_ship run shows the release PR at ShipRun level', async () => {
     const prLink = screen.getByRole('link', { name: /Release PR #42/i });
     expect(prLink).toHaveAttribute('href', mockReadyToShipRun.release_pr_url);
     expect(screen.getAllByText('Ready to Ship').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Event timeline')).not.toBeInTheDocument();
+    expect(screen.queryByText('Optional surfaces')).not.toBeInTheDocument();
+    expect(screen.queryByText('Optional evidence')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Create fix ticket/i })).not.toBeInTheDocument();
   });
 });
 
@@ -339,7 +344,7 @@ test('shipped state is visually distinct from accepted state', async () => {
   await waitFor(() => {
     expect(screen.getByText(/Shipped · shipped45/)).toBeInTheDocument();
     const ticketCard = screen.getByTestId('ticket-card-ticket-1');
-    expect(within(ticketCard).getByText('accepted · aaaaaaaaaaaa')).toBeInTheDocument();
+    expect(within(ticketCard).getByText('Accepted · aaaaaaaaaaaa')).toBeInTheDocument();
     expect(screen.getByText('Accepted attempts (1)')).toBeInTheDocument();
   });
 });
