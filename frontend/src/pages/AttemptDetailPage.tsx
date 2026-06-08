@@ -6,18 +6,11 @@ import {
   Button,
   Chip,
   CircularProgress,
-  Collapse,
-  IconButton,
   Paper,
   Stack,
-  Tooltip,
   Typography,
 } from '@mui/material';
-import ContentCopyIcon from '@mui/icons-material/ContentCopy';
-import ExpandLessIcon from '@mui/icons-material/ExpandLess';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import EvidencePanel from '../components/EvidencePanel';
 import {
   getProject,
   getTicketAttempts,
@@ -47,7 +40,6 @@ const AttemptDetailPage: React.FC = () => {
   const [attempt, setAttempt] = useState<TicketAttempt | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [testExpanded, setTestExpanded] = useState(false);
 
   const load = useCallback(async () => {
     if (!projectId || !ticketId || !attemptId) return;
@@ -87,13 +79,13 @@ const AttemptDetailPage: React.FC = () => {
             <Typography variant="h4">Attempt Detail</Typography>
             {project && <Typography color="text.secondary" sx={{ mt: 0.5 }}>{project.name}</Typography>}
           </Box>
-          <Stack direction="row" spacing={1}>
+          <Stack direction="row" spacing={1} flexWrap="wrap">
             <Button component={Link} to={`/projects/${projectId}/ship`} size="small" variant="outlined">
               Ship Room
             </Button>
-            <Tooltip title="Refresh">
-              <IconButton onClick={load}><RefreshIcon /></IconButton>
-            </Tooltip>
+            <Button onClick={load} size="small" variant="text" startIcon={<RefreshIcon />}>
+              Refresh
+            </Button>
           </Stack>
         </Stack>
       </Paper>
@@ -109,68 +101,66 @@ const AttemptDetailPage: React.FC = () => {
             {attempt.stale && <Chip label="stale" size="small" color="warning" variant="outlined" />}
           </Stack>
 
-          <Stack spacing={0.75} sx={{ mb: 2 }}>
-            {attempt.short_commit_hash && (
-              <Typography variant="caption" color="text.secondary">
-                commit: <code>{attempt.short_commit_hash}</code>
+          <Stack spacing={1.25} sx={{ mb: 2 }}>
+            <Box>
+              <Typography variant="overline" color="text.secondary" sx={{ display: 'block', lineHeight: 1.2 }}>
+                Commit hash
               </Typography>
-            )}
-            {attempt.base_hash && (
-              <Typography variant="caption" color="text.secondary">
-                base: <code>{attempt.base_hash.slice(0, 12)}</code>
+              <Typography variant="body2" component="code" sx={{ fontFamily: 'monospace' }}>
+                {attempt.agenthub_commit_hash}
               </Typography>
-            )}
-            {attempt.agent_id && (
-              <Typography variant="caption" color="text.secondary">
-                agent: <code>{attempt.agent_id}</code>
+            </Box>
+            <Box>
+              <Typography variant="overline" color="text.secondary" sx={{ display: 'block', lineHeight: 1.2 }}>
+                Base hash
               </Typography>
-            )}
+              <Typography variant="body2" component="code" sx={{ fontFamily: 'monospace' }}>
+                {attempt.base_hash || '(not set)'}
+              </Typography>
+            </Box>
           </Stack>
 
-          {attempt.validation_error && (
-            <Alert severity="error" sx={{ mb: 2 }}>{attempt.validation_error}</Alert>
-          )}
-
           {attempt.summary && (
-            <Typography variant="body2" sx={{ mb: 2, whiteSpace: 'pre-wrap' }}>
-              {attempt.summary}
-            </Typography>
-          )}
-
-          {attempt.test_status && (
             <Box sx={{ mb: 2 }}>
-              <Stack direction="row" alignItems="center" spacing={0.5}>
-                <Chip
-                  label={`Tests: ${attempt.test_status}`}
-                  size="small"
-                  color={attempt.test_status === 'passed' ? 'success' : attempt.test_status === 'failed' ? 'error' : 'default'}
-                  variant="outlined"
-                />
-                <IconButton size="small" onClick={() => setTestExpanded(v => !v)}>
-                  {testExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
-                </IconButton>
-              </Stack>
-              <Collapse in={testExpanded}>
-                <Stack direction="row" alignItems="flex-start" spacing={0.5} sx={{ mt: 0.5 }}>
-                  <Box component="pre" sx={{ flex: 1, fontSize: '0.65rem', bgcolor: 'background.default', p: 1, borderRadius: 1, maxHeight: 320, overflow: 'auto' }}>
-                    {attempt.test_output || '(no output)'}
-                  </Box>
-                  <Tooltip title="Copy">
-                    <IconButton size="small" onClick={() => navigator.clipboard.writeText(attempt.test_output || '')}>
-                      <ContentCopyIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                </Stack>
-              </Collapse>
+              <Typography variant="overline" color="text.secondary" sx={{ display: 'block', lineHeight: 1.2 }}>
+                Summary
+              </Typography>
+              <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                {attempt.summary}
+              </Typography>
             </Box>
           )}
 
-          <EvidencePanel
-            projectId={projectId}
-            targetType="attempt"
-            targetId={attempt.id}
-            defaultCheckType="validation"
-          />
+          <Box>
+            <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+              <Typography variant="overline" color="text.secondary" sx={{ display: 'block', lineHeight: 1.2 }}>
+                Test status
+              </Typography>
+              <Chip
+                label={attempt.test_status || 'not reported'}
+                size="small"
+                color={attempt.test_status === 'passed' ? 'success' : attempt.test_status === 'failed' ? 'error' : 'default'}
+                variant="outlined"
+              />
+            </Stack>
+            <Box
+              component="pre"
+              sx={{
+                m: 0,
+                p: 1.5,
+                borderRadius: 1,
+                bgcolor: 'background.default',
+                border: '1px solid rgba(148,163,184,0.18)',
+                fontSize: '0.75rem',
+                whiteSpace: 'pre-wrap',
+                overflow: 'auto',
+                minHeight: 80,
+              }}
+            >
+              {attempt.test_output || '(no test output)'}
+            </Box>
+          </Box>
+
         </Paper>
       )}
     </Box>
