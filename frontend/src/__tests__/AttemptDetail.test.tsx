@@ -7,8 +7,6 @@ import { ThemeProvider, createTheme } from '@mui/material';
 jest.mock('../utils/api', () => ({
   getProject: jest.fn(),
   getTicketAttempt: jest.fn(),
-  getTicketAttempts: jest.fn(),
-  AGENTHUB_URL: '',
 }));
 
 import * as api from '../utils/api';
@@ -73,7 +71,6 @@ test('Attempt detail loads a single attempt and renders the inspector surface', 
 
   expect(api.getProject).toHaveBeenCalledWith('proj-1');
   expect(api.getTicketAttempt).toHaveBeenCalledWith('proj-1', 'ticket-1', 'attempt-1', true);
-  expect(api.getTicketAttempts).not.toHaveBeenCalled();
 });
 
 test('Attempt detail surfaces a loading error when the attempt cannot be found', async () => {
@@ -84,6 +81,4 @@ test('Attempt detail surfaces a loading error when the attempt cannot be found',
   await waitFor(() => {
     expect(screen.getByRole('alert')).toHaveTextContent('Attempt not found');
   });
-
-  expect(api.getTicketAttempts).not.toHaveBeenCalled();
 });

@@ -27,6 +27,15 @@ const ATTEMPT_COLOR: Record<string, 'default' | 'info' | 'warning' | 'success' |
   failed: 'error',
 };
 
+const ATTEMPT_LABEL: Record<string, string> = {
+  proposed: 'Proposed',
+  accepted: 'Accepted',
+  rejected: 'Rejected',
+  superseded: 'Superseded',
+  shipped: 'Shipped',
+  failed: 'Failed',
+};
+
 const AttemptDetailPage: React.FC = () => {
   const { projectId, ticketId, attemptId } = useParams<{
     projectId: string;
@@ -92,7 +101,11 @@ const AttemptDetailPage: React.FC = () => {
         <Paper sx={{ p: 2.5, border: '1px solid rgba(148,163,184,0.45)', boxShadow: 'none' }}>
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mb: 1 }}>
             <Typography variant="subtitle1" fontWeight={600}>Attempt #{attempt.attempt_num}</Typography>
-            <Chip label={attempt.status} size="small" color={ATTEMPT_COLOR[attempt.status] ?? 'default'} />
+            <Chip
+              label={ATTEMPT_LABEL[attempt.status] ?? attempt.status}
+              size="small"
+              color={ATTEMPT_COLOR[attempt.status] ?? 'default'}
+            />
           </Stack>
 
           <Stack spacing={1.25} sx={{ mb: 2 }}>

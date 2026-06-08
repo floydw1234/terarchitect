@@ -1,44 +1,40 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
+  Alert,
   Box,
-  Typography,
-  Paper,
   Button,
   Chip,
-  Stack,
-  Divider,
   CircularProgress,
-  Alert,
+  Paper,
+  Stack,
   TextField,
+  Typography,
 } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import {
-  getProject,
-  getShipWaves,
-  getShipWaveDetail,
-  getTicketAttempts,
-  composeWave,
-  shipWave,
-  sendWaveFeedback,
   acceptAttempt,
+  composeWave,
+  getProject,
+  getShipWaveDetail,
+  getShipWaves,
+  getTicketAttempts,
   rejectAttempt,
+  sendWaveFeedback,
+  shipWave,
   type Project,
-  type WaveSummary,
-  type WaveDetail,
-  type ShipRun,
   type ProjectFrontier,
+  type ShipRun,
   type TicketAttempt,
+  type WaveDetail,
+  type WaveSummary,
 } from '../utils/api';
-
-// ---------------------------------------------------------------------------
-// Status helpers
-// ---------------------------------------------------------------------------
 
 const STATUS_COLOR: Record<string, 'default' | 'info' | 'warning' | 'success' | 'error'> = {
   queued: 'info',
   running: 'info',
+  composing: 'info',
   compose_failed: 'error',
   failed: 'error',
   ready_to_ship: 'warning',
@@ -49,11 +45,12 @@ const STATUS_COLOR: Record<string, 'default' | 'info' | 'warning' | 'success' | 
 
 const STATUS_LABEL: Record<string, string> = {
   queued: 'Queued',
-  running: 'Composing…',
+  running: 'Composing',
+  composing: 'Composing',
   compose_failed: 'Compose Failed',
   failed: 'Failed',
   ready_to_ship: 'Ready to Ship',
-  shipping: 'Shipping…',
+  shipping: 'Shipping',
   shipped: 'Shipped',
   done: 'Done',
 };
@@ -64,10 +61,8 @@ const ATTEMPT_COLOR: Record<string, 'default' | 'info' | 'warning' | 'success' |
   accepted: 'success',
   rejected: 'error',
   superseded: 'default',
-  composed: 'info',
-  release_pr_open: 'warning',
-  shipped: 'success',
   failed: 'error',
+  shipped: 'success',
 };
 
 const ATTEMPT_LABEL: Record<string, string> = {
@@ -78,16 +73,15 @@ const ATTEMPT_LABEL: Record<string, string> = {
   superseded: 'Superseded',
   failed: 'Failed',
   shipped: 'Shipped',
-  composed: 'Composed',
-  release_pr_open: 'Release PR open',
 };
 
 const REVIEWABLE_ATTEMPT_STATUSES = new Set(['proposed', 'validating']);
 
-function getAttemptReviewLockReason(
-  attempt: TicketAttempt,
-  shipRunStatus: string | null | undefined,
-): string | null {
+function formatShortHash(value: string | null | undefined, width = 12) {
+  return value ? value.slice(0, width) : '(not set)';
+}
+
+function getAttemptReviewLockReason(attempt: TicketAttempt, shipRunStatus: string | null | undefined) {
   if (shipRunStatus && !['compose_failed', 'failed'].includes(shipRunStatus)) {
     return `This wave is ${STATUS_LABEL[shipRunStatus] ?? shipRunStatus} and attempt review is locked.`;
   }
@@ -97,121 +91,94 @@ function getAttemptReviewLockReason(
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// Sub-components
-// ---------------------------------------------------------------------------
-
-function ShipRunPanel({ run }: { run: ShipRun }) {
-  const hasDiagnosticOutput = !!(run.error || run.test_output || run.test_status);
+function ShipRunPanel({ run, title }: { run: ShipRun; title: string }) {
+  const showDiagnostics = !!(run.error || run.test_output || run.test_status);
 
   return (
-    <Paper sx={{ p: 2, mt: 1, bgcolor: 'background.default' }}>
-      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-        <Typography variant="body2" fontWeight={600}>Ship run</Typography>
-        <Chip
-          label={STATUS_LABEL[run.status] ?? run.status}
-          color={STATUS_COLOR[run.status] ?? 'default'}
-          size="small"
-        />
-        {run.release_pr_url && (
-          <Button
-            size="small"
-            endIcon={<OpenInNewIcon fontSize="small" />}
-            href={run.release_pr_url}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Release PR #{run.release_pr_number}
-          </Button>
-        )}
-        {run.shipped_commit_hash && (
-          <Typography variant="caption" color="text.secondary">
-            shipped: {run.shipped_commit_hash.slice(0, 12)}
-          </Typography>
-        )}
+    <Paper sx={{ p: 2, border: '1px solid rgba(148,163,184,0.2)', boxShadow: 'none' }}>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between">
+        <Box>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+            <Typography variant="subtitle2" fontWeight={600}>
+              {title}
+            </Typography>
+            <Chip
+              label={STATUS_LABEL[run.status] ?? run.status}
+              color={STATUS_COLOR[run.status] ?? 'default'}
+              size="small"
+            />
+          </Stack>
+          <Stack spacing={0.5} sx={{ mt: 1 }}>
+            <Typography variant="caption" color="text.secondary">
+              Base: <code>{formatShortHash(run.base_main_hash)}</code>
+            </Typography>
+            {run.composed_commit_hash && (
+              <Typography variant="caption" color="text.secondary">
+                Composed: <code>{formatShortHash(run.composed_commit_hash)}</code>
+              </Typography>
+            )}
+            {run.shipped_commit_hash && (
+              <Typography variant="caption" color="text.secondary">
+                Shipped: <code>{formatShortHash(run.shipped_commit_hash)}</code>
+              </Typography>
+            )}
+          </Stack>
+        </Box>
+        <Stack spacing={1} alignItems={{ xs: 'flex-start', sm: 'flex-end' }}>
+          {run.release_pr_url && (
+            <Button
+              size="small"
+              endIcon={<OpenInNewIcon fontSize="small" />}
+              href={run.release_pr_url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Release PR #{run.release_pr_number}
+            </Button>
+          )}
+          {run.release_branch && (
+            <Typography variant="caption" color="text.secondary">
+              Branch: <code>{run.release_branch}</code>
+            </Typography>
+          )}
+        </Stack>
       </Stack>
 
-      {run.release_branch && (
-        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-          branch: <code>{run.release_branch}</code>
+      {run.summary && (
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+          {run.summary}
         </Typography>
       )}
 
-      <Stack spacing={0.25} sx={{ mt: 0.5 }}>
-        {run.composed_commit_hash && (
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-            composed release commit: <code>{run.composed_commit_hash.slice(0, 12)}</code>
-          </Typography>
-        )}
-        {run.shipped_commit_hash && (
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-            shipped commit: <code>{run.shipped_commit_hash.slice(0, 12)}</code>
-          </Typography>
-        )}
-      </Stack>
-
-      {run.error && (
-        <Alert severity="error" sx={{ mt: 1, fontSize: '0.75rem' }}>
-          {run.error}
-        </Alert>
-      )}
-
-      {hasDiagnosticOutput && (
-        <Box sx={{ mt: 1 }}>
-          <Stack direction="row" alignItems="center" spacing={0.75} flexWrap="wrap">
+      {showDiagnostics && (
+        <Box sx={{ mt: 1.5 }}>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mb: 1 }}>
             {run.test_status && (
               <Chip
                 label={`Tests: ${run.test_status}`}
                 size="small"
-                color={run.test_status === 'passed' ? 'success' : run.test_status === 'failed' ? 'error' : 'default'}
                 variant="outlined"
+                color={run.test_status === 'passed' ? 'success' : run.test_status === 'failed' ? 'error' : 'default'}
               />
             )}
-            {run.error && (
-              <Chip label="Failure details" size="small" color="error" variant="outlined" />
-            )}
+            {run.error && <Chip label="Failure output" size="small" variant="outlined" color="error" />}
           </Stack>
-          {(run.error || run.test_output || run.test_status) && (
-            <Box
-              component="pre"
-              sx={{
-                mt: 0.75,
-                fontSize: '0.72rem',
-                bgcolor: 'background.paper',
-                p: 1,
-                borderRadius: 1,
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                maxHeight: 280,
-                overflow: 'auto',
-              }}
-            >
-              {run.error || run.test_output || (run.test_status === 'skipped' ? '(no test command configured)' : '(no output)')}
-            </Box>
-          )}
-        </Box>
-      )}
-
-      {run.changed_files && run.changed_files.length > 0 && (
-        <Box sx={{ mt: 1 }}>
-          <Typography variant="caption" color="text.secondary">
-            Changed files ({run.changed_files.length})
-          </Typography>
           <Box
             component="pre"
             sx={{
-              mt: 0.5,
-              fontSize: '0.7rem',
-              bgcolor: 'background.paper',
-              p: 1,
+              m: 0,
+              p: 1.5,
               borderRadius: 1,
-              maxHeight: 200,
-              overflow: 'auto',
+              bgcolor: 'background.default',
+              border: '1px solid rgba(148,163,184,0.18)',
+              fontSize: '0.75rem',
               whiteSpace: 'pre-wrap',
               wordBreak: 'break-word',
+              overflow: 'auto',
+              maxHeight: 280,
             }}
           >
-            {run.changed_files.join('\n')}
+            {run.error || run.test_output || (run.test_status === 'skipped' ? '(no test command configured)' : '(no output)')}
           </Box>
         </Box>
       )}
@@ -259,15 +226,15 @@ function AttemptReviewCard({
 
   return (
     <Paper sx={{ p: 1.5, bgcolor: 'background.default' }}>
-      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mb: 0.75 }}>
+      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mb: 1 }}>
         <Typography variant="body2" fontWeight={600}>
-          Attempt review
+          Review attempts
         </Typography>
-        <Chip label={`${attempts.length} attempt${attempts.length !== 1 ? 's' : ''}`} size="small" variant="outlined" />
+        <Chip label={`${attempts.length} visible`} size="small" variant="outlined" />
       </Stack>
 
       {message && (
-        <Alert severity={message.includes('locked') ? 'warning' : 'info'} sx={{ mb: 1, py: 0 }}>
+        <Alert severity={message.includes('locked') ? 'warning' : 'info'} sx={{ mb: 1 }}>
           {message}
         </Alert>
       )}
@@ -298,27 +265,34 @@ function AttemptReviewCard({
                     attempt #{attempt.attempt_num}
                   </Typography>
                   {attempt.base_hash && (
-                    <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
-                      base {attempt.base_hash.slice(0, 12)}
+                    <Typography variant="caption" color="text.secondary">
+                      base <code>{formatShortHash(attempt.base_hash)}</code>
                     </Typography>
                   )}
                   {attempt.test_status && (
                     <Chip
                       label={`tests: ${attempt.test_status}`}
                       size="small"
-                      color={attempt.test_status === 'passed' ? 'success' : attempt.test_status === 'failed' ? 'error' : 'default'}
                       variant="outlined"
+                      color={attempt.test_status === 'passed' ? 'success' : attempt.test_status === 'failed' ? 'error' : 'default'}
                     />
                   )}
+                  <Button
+                    component={Link}
+                    to={`/projects/${projectId}/tickets/${attempt.ticket_id}/attempts/${attempt.id}`}
+                    size="small"
+                  >
+                    Inspect
+                  </Button>
                 </Stack>
 
                 {attempt.summary && (
-                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75 }}>
                     {attempt.summary.slice(0, 180)}{attempt.summary.length > 180 ? '…' : ''}
                   </Typography>
                 )}
 
-                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mt: 0.75 }}>
+                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mt: 1 }}>
                   <Button
                     size="small"
                     variant="contained"
@@ -353,10 +327,6 @@ function AttemptReviewCard({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Wave detail panel
-// ---------------------------------------------------------------------------
-
 function WaveDetailPanel({
   projectId,
   waveNum,
@@ -380,10 +350,10 @@ function WaveDetailPanel({
     setLoading(true);
     setError(null);
     try {
-      const d = await getShipWaveDetail(projectId, waveNum);
-      setDetail(d);
+      const waveDetail = await getShipWaveDetail(projectId, waveNum);
+      setDetail(waveDetail);
       const attemptsByTicket = await Promise.all(
-        d.tickets.map(async ticket => {
+        waveDetail.tickets.map(async ticket => {
           const attempts = await getTicketAttempts(projectId, ticket.id, true).catch(() => []);
           return [ticket.id, attempts] as const;
         }),
@@ -396,7 +366,14 @@ function WaveDetailPanel({
     }
   }, [projectId, waveNum]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const shipRun = detail?.ship_run ?? null;
+  const canShip = shipRun?.status === 'ready_to_ship' && !!shipRun.release_pr_number;
+  const composeLabel =
+    shipRun && ['compose_failed', 'failed'].includes(shipRun.status) ? 'Retry compose' : 'Compose wave';
 
   const handleCompose = async () => {
     setComposing(true);
@@ -446,43 +423,41 @@ function WaveDetailPanel({
   }
 
   if (error) {
-    return <Alert severity="error" sx={{ m: 2 }}>{error}</Alert>;
+    return <Alert severity="error">{error}</Alert>;
   }
 
-  if (!detail) return null;
-
-  const shipRun = detail.ship_run;
-  const canShip = shipRun?.status === 'ready_to_ship' && !!shipRun.release_pr_number;
-  const composeLabel =
-    shipRun && ['compose_failed', 'failed'].includes(shipRun.status)
-      ? 'Retry compose'
-      : 'Compose wave';
+  if (!detail) {
+    return null;
+  }
 
   return (
     <Box>
-      {/* Header */}
-      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
-        <Typography variant="h6">Wave {waveNum}</Typography>
-        <Stack direction="row" spacing={1}>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" sx={{ mb: 2 }}>
+        <Box>
+          <Typography variant="h6">Wave {waveNum}</Typography>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mt: 1 }}>
+            <Chip label={`${detail.accepted_attempts.length} accepted`} size="small" color="success" variant="outlined" />
+            <Chip label={`${detail.tickets.length} tickets`} size="small" variant="outlined" />
+            <Chip label={`Frontier ${formatShortHash(detail.shipped_frontier)}`} size="small" variant="outlined" />
+          </Stack>
+        </Box>
+        <Stack direction="row" spacing={1} flexWrap="wrap">
           <Button size="small" onClick={load} startIcon={<RefreshIcon fontSize="small" />}>
             Refresh
           </Button>
-          <Button size="small" onClick={onClose}>Close</Button>
+          <Button size="small" onClick={onClose}>
+            Close
+          </Button>
         </Stack>
       </Stack>
 
-      {error && <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert>}
-
-      {/* Staleness warning */}
       {detail.stale_count > 0 && (
         <Alert severity="warning" sx={{ mb: 2 }}>
-          {detail.stale_count} attempt{detail.stale_count !== 1 ? 's are' : ' is'} stale —
-          built before the current shipped frontier. Composition will run a conflict check.
+          {detail.stale_count} attempt{detail.stale_count !== 1 ? 's were' : ' was'} built before the current frontier.
         </Alert>
       )}
 
-      {/* Actions */}
-      <Stack direction="row" spacing={1} sx={{ mb: 2 }} flexWrap="wrap">
+      <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 2 }}>
         {detail.can_compose && (
           <Button
             variant="contained"
@@ -506,144 +481,148 @@ function WaveDetailPanel({
             {shipping ? 'Shipping…' : 'Ship wave'}
           </Button>
         )}
-        {shipRun?.status && ['compose_failed', 'failed'].includes(shipRun.status) && shipRun.error && (
-          <Typography variant="caption" color="warning.main" sx={{ alignSelf: 'center' }}>
-            Composition failed; see Ship run details below.
-          </Typography>
-        )}
       </Stack>
 
-      {/* Ship run detail */}
-      {shipRun && <ShipRunPanel run={shipRun} />}
+      {shipRun && (
+        <Box sx={{ mb: 2 }}>
+          <ShipRunPanel run={shipRun} title="Ship run" />
+        </Box>
+      )}
 
-      <Divider sx={{ my: 2 }} />
-
-      {/* Accepted attempts */}
-      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }} flexWrap="wrap">
-        <Typography variant="subtitle2">
+      <Box sx={{ mb: 2 }}>
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
           Accepted attempts ({detail.accepted_attempts.length})
         </Typography>
-        {shipRun?.status === 'shipped' && (
-          <Chip label="Shipped wave" size="small" color="success" variant="outlined" />
-        )}
-        {shipRun?.status === 'ready_to_ship' && (
-          <Chip label="Ready to ship" size="small" color="warning" variant="outlined" />
-        )}
-      </Stack>
-      {detail.accepted_attempts.length === 0 ? (
-        <Typography variant="body2" color="text.secondary">No accepted attempts yet.</Typography>
-      ) : (
-        <Stack spacing={1} sx={{ mb: 2 }}>
-          {detail.accepted_attempts.map(a => (
-            <Paper key={a.id} sx={{ p: 1.5, bgcolor: 'background.default' }}>
-              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-                <Chip
-                  label={ATTEMPT_LABEL[a.status] ?? a.status}
-                  size="small"
-                  color={ATTEMPT_COLOR[a.status] ?? 'default'}
-                />
-                {a.short_commit_hash && (
-                  <Typography variant="caption" sx={{ fontFamily: 'monospace' }}>
-                    {a.short_commit_hash}
+        {detail.accepted_attempts.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">
+            No accepted attempts yet.
+          </Typography>
+        ) : (
+          <Stack spacing={1}>
+            {detail.accepted_attempts.map(attempt => (
+              <Paper key={attempt.id} sx={{ p: 1.5, bgcolor: 'background.default' }}>
+                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                  <Chip
+                    label={ATTEMPT_LABEL[attempt.status] ?? attempt.status}
+                    size="small"
+                    color={ATTEMPT_COLOR[attempt.status] ?? 'default'}
+                  />
+                  {attempt.short_commit_hash && (
+                    <Typography variant="caption" sx={{ fontFamily: 'monospace' }}>
+                      {attempt.short_commit_hash}
+                    </Typography>
+                  )}
+                  <Typography variant="caption" color="text.secondary">
+                    attempt #{attempt.attempt_num}
+                  </Typography>
+                  <Button
+                    component={Link}
+                    to={`/projects/${projectId}/tickets/${attempt.ticket_id}/attempts/${attempt.id}`}
+                    size="small"
+                  >
+                    Inspect
+                  </Button>
+                </Stack>
+                {shipRun?.status === 'shipped' && (
+                  <Typography variant="caption" color="success.main" sx={{ display: 'block', mt: 0.75 }}>
+                    Selected attempt from the shipped wave.
                   </Typography>
                 )}
-                {a.stale && (
-                  <Chip label="stale" size="small" color="warning" variant="outlined" />
+                {attempt.summary && (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75 }}>
+                    {attempt.summary}
+                  </Typography>
                 )}
-                <Typography variant="caption" color="text.secondary">
-                  attempt #{a.attempt_num}
+              </Paper>
+            ))}
+          </Stack>
+        )}
+      </Box>
+
+      <Box sx={{ mb: 2 }}>
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          Review attempts by ticket
+        </Typography>
+        <Stack spacing={1.25}>
+          {detail.tickets.map(ticket => (
+            <Paper key={ticket.id} data-testid={`ticket-card-${ticket.id}`} sx={{ p: 1.5, bgcolor: 'background.default' }}>
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mb: 1 }}>
+                <Typography variant="body2" fontWeight={600}>
+                  {ticket.title}
                 </Typography>
-                <Button
-                  component={Link}
-                  to={`/projects/${projectId}/tickets/${a.ticket_id}/attempts/${a.id}`}
-                  size="small"
-                  sx={{ fontSize: '0.65rem' }}
-                >
-                  Detail
-                </Button>
+                {ticket.latest_attempt && (
+                  <Chip
+                    label={`${ATTEMPT_LABEL[ticket.latest_attempt.status] ?? ticket.latest_attempt.status}${ticket.latest_attempt.short_commit_hash ? ` · ${ticket.latest_attempt.short_commit_hash}` : ''}`}
+                    size="small"
+                    color={ATTEMPT_COLOR[ticket.latest_attempt.status] ?? 'default'}
+                  />
+                )}
               </Stack>
-              {shipRun?.status === 'shipped' && (
-                <Typography variant="caption" color="success.main" sx={{ display: 'block', mt: 0.5 }}>
-                  Selected attempt from the released wave.
-                </Typography>
-              )}
-              {a.validation_error && (
-                <Typography variant="caption" color="error.main" sx={{ display: 'block', mt: 0.5 }}>
-                  ⚠ {a.validation_error}
-                </Typography>
-              )}
-              {a.summary && (
-                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-                  {a.summary.slice(0, 200)}{a.summary.length > 200 ? '…' : ''}
-                </Typography>
-              )}
+              <AttemptReviewCard
+                projectId={projectId}
+                attempts={ticketAttempts[ticket.id] ?? []}
+                shipRunStatus={shipRun?.status}
+                onActionComplete={load}
+              />
             </Paper>
           ))}
         </Stack>
-      )}
+      </Box>
 
-      {/* Tickets */}
-      <Typography variant="subtitle2" gutterBottom sx={{ mt: 1 }}>
-        Tickets in this wave ({detail.tickets.length})
-      </Typography>
-      <Stack spacing={1.25} sx={{ mb: 2 }}>
-        {detail.tickets.map(t => (
-          <Paper key={t.id} data-testid={`ticket-card-${t.id}`} sx={{ p: 1.5, bgcolor: 'background.default' }}>
-            <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" sx={{ mb: 1 }}>
-              <Typography variant="body2" fontWeight={600} noWrap sx={{ maxWidth: 320 }}>
-                {t.title}
-              </Typography>
-              <Chip label={t.column_id} size="small" variant="outlined" sx={{ fontSize: '0.65rem' }} />
-              {t.latest_attempt && (
-                <Chip
-                  label={`${ATTEMPT_LABEL[t.latest_attempt.status] ?? t.latest_attempt.status}${t.latest_attempt.short_commit_hash ? ' · ' + t.latest_attempt.short_commit_hash : ''}`}
-                  size="small"
-                  color={ATTEMPT_COLOR[t.latest_attempt.status] ?? 'default'}
-                  sx={{ fontSize: '0.65rem' }}
-                />
-              )}
-            </Stack>
-            <AttemptReviewCard
-              projectId={projectId}
-              attempts={ticketAttempts[t.id] ?? []}
-              shipRunStatus={shipRun?.status}
-              onActionComplete={load}
-            />
-          </Paper>
-        ))}
-      </Stack>
-
-      <Divider sx={{ my: 2 }} />
-
-      {/* Feedback */}
-      <Typography variant="subtitle2" gutterBottom>Send feedback to AgentHub</Typography>
-      <Stack direction="row" spacing={1} alignItems="flex-start">
-        <TextField
-          size="small"
-          multiline
-          minRows={2}
-          fullWidth
-          placeholder="Describe what needs to change…"
-          value={feedback}
-          onChange={e => setFeedback(e.target.value)}
-        />
-        <Button
-          variant="outlined"
-          size="small"
-          onClick={handleFeedback}
-          disabled={feedbackSending || !feedback.trim()}
-          sx={{ minWidth: 80, alignSelf: 'flex-end' }}
-        >
-          {feedbackSending ? <CircularProgress size={14} /> : feedbackSent ? 'Sent!' : 'Send'}
-        </Button>
-      </Stack>
+      <Box>
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          Send feedback
+        </Typography>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems="flex-start">
+          <TextField
+            size="small"
+            multiline
+            minRows={2}
+            fullWidth
+            placeholder="Describe what needs to change…"
+            value={feedback}
+            onChange={event => setFeedback(event.target.value)}
+          />
+          <Button
+            variant="outlined"
+            size="small"
+            onClick={handleFeedback}
+            disabled={feedbackSending || !feedback.trim()}
+            sx={{ minWidth: 96, alignSelf: 'stretch' }}
+          >
+            {feedbackSending ? <CircularProgress size={14} /> : feedbackSent ? 'Sent!' : 'Send'}
+          </Button>
+        </Stack>
+      </Box>
     </Box>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Wave summary card
-// ---------------------------------------------------------------------------
+function SummaryCard({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+}) {
+  return (
+    <Paper sx={{ p: 2, minWidth: 0, border: '1px solid rgba(148,163,184,0.2)', boxShadow: 'none' }}>
+      <Typography variant="caption" color="text.secondary">
+        {label}
+      </Typography>
+      <Typography variant="subtitle1" fontWeight={600} sx={{ mt: 0.5 }}>
+        {value}
+      </Typography>
+      {detail && (
+        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+          {detail}
+        </Typography>
+      )}
+    </Paper>
+  );
+}
 
 function WaveCard({
   wave,
@@ -652,11 +631,9 @@ function WaveCard({
 }: {
   wave: WaveSummary;
   selected: boolean;
-  onSelect: (n: number) => void;
+  onSelect: (waveNum: number) => void;
 }) {
   const run = wave.ship_run;
-  const statusColor = run ? (STATUS_COLOR[run.status] ?? 'default') : 'default';
-  const statusLabel = run ? (STATUS_LABEL[run.status] ?? run.status) : null;
 
   return (
     <Paper
@@ -664,41 +641,48 @@ function WaveCard({
       sx={{
         p: 2,
         cursor: 'pointer',
-        border: selected ? '2px solid' : '1px solid rgba(148,163,184,0.45)',
+        border: selected ? '2px solid' : '1px solid rgba(148,163,184,0.2)',
         borderColor: selected ? 'primary.main' : undefined,
-        '&:hover': { borderColor: 'primary.light' },
+        boxShadow: 'none',
       }}
     >
-      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-        <Typography variant="subtitle2" fontWeight={600}>
-          Wave {wave.wave_num}
-        </Typography>
-        {statusLabel && (
-          <Chip label={statusLabel} color={statusColor} size="small" />
+      <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="flex-start">
+        <Box>
+          <Typography variant="subtitle2" fontWeight={600}>
+            Wave {wave.wave_num}
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            {wave.accepted_count} accepted of {wave.ticket_count} ticket{wave.ticket_count !== 1 ? 's' : ''}
+          </Typography>
+        </Box>
+        {run ? (
+          <Chip
+            label={STATUS_LABEL[run.status] ?? run.status}
+            size="small"
+            color={STATUS_COLOR[run.status] ?? 'default'}
+          />
+        ) : (
+          <Chip label={wave.all_done ? 'Ready for review' : 'Waiting on attempts'} size="small" variant="outlined" />
         )}
       </Stack>
-      <Typography variant="caption" color="text.secondary">
-        {wave.ticket_count} ticket{wave.ticket_count !== 1 ? 's' : ''} ·{' '}
-        {wave.accepted_count} accepted
-        {!wave.all_done && ' · not all done'}
-      </Typography>
-      {run?.composed_commit_hash && (
-        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-          Composed · {run.composed_commit_hash.slice(0, 10)}
+      {run?.release_pr_url && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+          Release PR #{run.release_pr_number}
+        </Typography>
+      )}
+      {run?.error && (
+        <Typography variant="caption" color="error.main" sx={{ display: 'block', mt: 1 }}>
+          {run.error}
         </Typography>
       )}
       {run?.shipped_commit_hash && (
-        <Typography variant="caption" color="success.main" sx={{ display: 'block' }}>
-          Shipped · {run.shipped_commit_hash.slice(0, 10)}
+        <Typography variant="caption" color="success.main" sx={{ display: 'block', mt: 1 }}>
+          Shipped · {formatShortHash(run.shipped_commit_hash, 10)}
         </Typography>
       )}
     </Paper>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Main page
-// ---------------------------------------------------------------------------
 
 const ShipRoomPage: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
@@ -709,21 +693,18 @@ const ShipRoomPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [selectedWave, setSelectedWave] = useState<number | null>(null);
 
-  const loadWaves = useCallback(async () => {
+  const load = useCallback(async () => {
     if (!projectId) return;
     setLoading(true);
     setError(null);
     try {
-      const [proj, ws] = await Promise.all([
-        getProject(projectId),
-        getShipWaves(projectId),
-      ]);
-      setProject(proj);
-      setWaves(ws);
+      const [projectData, waveData] = await Promise.all([getProject(projectId), getShipWaves(projectId)]);
+      setProject(projectData);
+      setWaves(waveData.sort((a, b) => b.wave_num - a.wave_num));
       setFrontier({
-        shipped_frontier: proj.shipped_frontier ?? null,
-        shipped_frontier_updated_at: proj.shipped_frontier_updated_at ?? null,
-        frontier_warning: proj.frontier_warning ?? null,
+        shipped_frontier: projectData.shipped_frontier ?? null,
+        shipped_frontier_updated_at: projectData.shipped_frontier_updated_at ?? null,
+        frontier_warning: projectData.frontier_warning ?? null,
       });
     } catch (e: any) {
       setError(e.message);
@@ -732,39 +713,32 @@ const ShipRoomPage: React.FC = () => {
     }
   }, [projectId]);
 
-  useEffect(() => { loadWaves(); }, [loadWaves]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
-  // Group waves by status for display ordering
-  const readyWaves = waves.filter(w => w.ship_run?.status === 'ready_to_ship');
-  const activeWaves = waves.filter(w => w.ship_run?.status && ['queued', 'running'].includes(w.ship_run.status));
-  const failedWaves = waves.filter(w => w.ship_run?.status && ['compose_failed', 'failed'].includes(w.ship_run.status));
-  const shippedWaves = waves.filter(w => w.ship_run?.status && ['shipped', 'done'].includes(w.ship_run.status));
-  const pendingWaves = waves.filter(w => !w.ship_run);
-  const latestShipRun =
-    [...waves]
-      .filter(w => w.ship_run)
-      .sort((a, b) => b.wave_num - a.wave_num)[0]?.ship_run ?? null;
+  const acceptedCount = useMemo(
+    () => waves.reduce((sum, wave) => sum + wave.accepted_count, 0),
+    [waves],
+  );
 
-  const renderSection = (title: string, items: WaveSummary[]) => {
-    if (items.length === 0) return null;
-    return (
-      <Box sx={{ mb: 3 }}>
-        <Typography variant="overline" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
-          {title}
-        </Typography>
-        <Stack spacing={1}>
-          {items.map(w => (
-            <WaveCard
-              key={w.wave_num}
-              wave={w}
-              selected={selectedWave === w.wave_num}
-              onSelect={n => setSelectedWave(prev => prev === n ? null : n)}
-            />
-          ))}
-        </Stack>
-      </Box>
-    );
-  };
+  const activeShipRun = useMemo(
+    () =>
+      waves
+        .map(wave => wave.ship_run)
+        .filter((run): run is ShipRun => !!run && !['shipped', 'done'].includes(run.status))
+        .sort((a, b) => b.wave_num - a.wave_num)[0] ?? null,
+    [waves],
+  );
+
+  const latestShipRun = useMemo(
+    () =>
+      waves
+        .map(wave => wave.ship_run)
+        .filter((run): run is ShipRun => !!run)
+        .sort((a, b) => b.wave_num - a.wave_num)[0] ?? null,
+    [waves],
+  );
 
   if (loading) {
     return (
@@ -776,99 +750,85 @@ const ShipRoomPage: React.FC = () => {
 
   return (
     <Box sx={{ maxWidth: 1200, mx: 'auto', width: '100%' }}>
-      {/* Header */}
       <Paper sx={{ p: { xs: 2, md: 3 }, mb: 3, border: '1px solid rgba(148,163,184,0.45)', boxShadow: 'none' }}>
-        <Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ xs: 'flex-start', md: 'center' }} justifyContent="space-between" spacing={2}>
+        <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} justifyContent="space-between">
           <Box>
             <Typography variant="h4">Ship Room</Typography>
             {project && (
-              <Typography color="text.secondary" sx={{ mt: 0.5 }}>{project.name}</Typography>
+              <Typography color="text.secondary" sx={{ mt: 0.5 }}>
+                {project.name}
+              </Typography>
             )}
-            <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mt: 1 }}>
-              <Chip label={`${readyWaves.length} ready to ship`} color="warning" size="small" variant="outlined" />
-              <Chip label={`${activeWaves.length} composing`} color="info" size="small" variant="outlined" />
-              <Chip label={`${failedWaves.length} failed`} color="error" size="small" variant="outlined" />
-              <Chip label={`${pendingWaves.length} pending`} size="small" variant="outlined" />
-              <Chip label={`${shippedWaves.length} shipped`} color="success" size="small" variant="outlined" />
-            </Stack>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              Review attempts, accept or reject, compose the wave, inspect failures, ship the release boundary, or send feedback.
+            </Typography>
           </Box>
-          <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
-            <Box sx={{ textAlign: 'right' }}>
-              <Typography variant="caption" color="text.secondary">Current shipped frontier</Typography>
-              {frontier?.shipped_frontier ? (
-                <Typography variant="caption" sx={{ display: 'block', fontFamily: 'monospace', color: 'success.main' }}>
-                  {frontier.shipped_frontier.slice(0, 12)}
-                </Typography>
-              ) : (
-                <Typography variant="caption" color="warning.main">frontier not set</Typography>
-              )}
-            </Box>
-            {latestShipRun && (
-              <Box sx={{ textAlign: 'right' }}>
-                <Typography variant="caption" color="text.secondary">Latest ship run</Typography>
-                <Stack direction="row" spacing={1} alignItems="center" justifyContent="flex-end" flexWrap="wrap">
-                  <Chip
-                    label={STATUS_LABEL[latestShipRun.status] ?? latestShipRun.status}
-                    color={STATUS_COLOR[latestShipRun.status] ?? 'default'}
-                    size="small"
-                  />
-                  {latestShipRun.release_pr_url && (
-                    <Button
-                      size="small"
-                      endIcon={<OpenInNewIcon fontSize="small" />}
-                      href={latestShipRun.release_pr_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      Release PR #{latestShipRun.release_pr_number}
-                    </Button>
-                  )}
-                  {latestShipRun.composed_commit_hash && (
-                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', width: '100%' }}>
-                      composed release commit: <code>{latestShipRun.composed_commit_hash.slice(0, 12)}</code>
-                    </Typography>
-                  )}
-                  {latestShipRun.shipped_commit_hash && (
-                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', width: '100%' }}>
-                      shipped commit: <code>{latestShipRun.shipped_commit_hash.slice(0, 12)}</code>
-                    </Typography>
-                  )}
-                </Stack>
-              </Box>
-            )}
-            <Button size="small" onClick={loadWaves} startIcon={<RefreshIcon fontSize="small" />}>
-              Refresh
-            </Button>
-          </Stack>
+          <Button size="small" onClick={load} startIcon={<RefreshIcon fontSize="small" />} sx={{ alignSelf: 'flex-start' }}>
+            Refresh
+          </Button>
         </Stack>
       </Paper>
 
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
-      {waves.length === 0 && !error && (
+      <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: '1fr', md: 'repeat(3, minmax(0, 1fr))' }, mb: 3 }}>
+        <SummaryCard
+          label="Current shipped frontier"
+          value={formatShortHash(frontier?.shipped_frontier)}
+          detail={frontier?.frontier_warning ?? undefined}
+        />
+        <SummaryCard
+          label="Waves"
+          value={`${waves.length}`}
+          detail={`${acceptedCount} accepted attempt${acceptedCount !== 1 ? 's' : ''} across all waves`}
+        />
+        <SummaryCard
+          label={activeShipRun ? 'Active ship run' : 'Latest ship run'}
+          value={activeShipRun ? `Wave ${activeShipRun.wave_num}` : latestShipRun ? `Wave ${latestShipRun.wave_num}` : 'None'}
+          detail={
+            activeShipRun
+              ? STATUS_LABEL[activeShipRun.status] ?? activeShipRun.status
+              : latestShipRun
+                ? STATUS_LABEL[latestShipRun.status] ?? latestShipRun.status
+                : 'No ship run has been created yet'
+          }
+        />
+      </Box>
+
+      {(activeShipRun || latestShipRun) && (
+        <Box sx={{ mb: 3 }}>
+          <ShipRunPanel
+            run={activeShipRun ?? latestShipRun!}
+            title={activeShipRun ? 'Active ship run' : 'Latest ship run'}
+          />
+        </Box>
+      )}
+
+      {waves.length === 0 && !error ? (
         <Paper sx={{ p: 4, textAlign: 'center', border: '1px solid rgba(148,163,184,0.45)', boxShadow: 'none' }}>
           <Typography color="text.secondary">
             No waves yet. Complete some tickets to see waves here.
           </Typography>
         </Paper>
-      )}
-
-      {/* Main layout: wave list + detail panel */}
-      <Box sx={{ display: 'flex', gap: 3, alignItems: 'flex-start' }}>
-        {/* Left: wave list */}
-        {waves.length > 0 && (
-          <Box sx={{ flex: selectedWave !== null ? '0 0 340px' : 1, minWidth: 0 }}>
-            {renderSection('Ready to ship', readyWaves)}
-            {renderSection('Composing', activeWaves)}
-            {renderSection('Failed', failedWaves)}
-            {renderSection('Pending', pendingWaves)}
-            {renderSection('Shipped', shippedWaves)}
+      ) : (
+        <Box sx={{ display: 'grid', gap: 3, gridTemplateColumns: { xs: '1fr', lg: selectedWave !== null ? '360px minmax(0, 1fr)' : '1fr' } }}>
+          <Box>
+            <Typography variant="subtitle2" sx={{ mb: 1 }}>
+              Waves
+            </Typography>
+            <Stack spacing={1}>
+              {waves.map(wave => (
+                <WaveCard
+                  key={wave.wave_num}
+                  wave={wave}
+                  selected={selectedWave === wave.wave_num}
+                  onSelect={waveNum => setSelectedWave(current => (current === waveNum ? null : waveNum))}
+                />
+              ))}
+            </Stack>
           </Box>
-        )}
 
-        {/* Right: wave detail */}
-        {selectedWave !== null && projectId && (
-          <Box sx={{ flex: 1, minWidth: 0 }}>
+          {selectedWave !== null && projectId && (
             <Paper sx={{ p: 3, border: '1px solid rgba(148,163,184,0.45)', boxShadow: 'none' }}>
               <WaveDetailPanel
                 projectId={projectId}
@@ -876,9 +836,9 @@ const ShipRoomPage: React.FC = () => {
                 onClose={() => setSelectedWave(null)}
               />
             </Paper>
-          </Box>
-        )}
-      </Box>
+          )}
+        </Box>
+      )}
     </Box>
   );
 };
