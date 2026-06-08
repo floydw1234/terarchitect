@@ -61,7 +61,7 @@ The runner clones or opens the repo, checks out the provided AgentHub `BASE_HASH
 
 ## Phase 3: Agent Docker image
 
-Build and run the agent in a container (Director + runner + OpenCode; no Flask/DB in image):
+Build and run the agent in a container (Director + runner + worker backend; no Flask/DB in image):
 
 ```bash
 # Build from repo root
@@ -115,17 +115,13 @@ python -m coordinator
 
 ---
 
-## Phase 5: OpenCode
+## Phase 5: Worker backends
 
-The agent uses **OpenCode** only. The container entrypoint starts `opencode serve` and sets `OPENCODE_SERVER_URL`. The Director talks to OpenCode via HTTP: `POST /session`, `POST /session/<id>/message`, and `/summarize` every 30 turns.
+Terarchitect preserves the same multi-turn execution flow for normal tickets: **research -> planning -> plan review -> execution**. The Director stays in the orchestration lane and should route code-writing steps through the configured worker backend instead of freehanding implementation code itself.
 
-**Required env (set in coordinator env and forwarded to container):** `WORKER_LLM_URL`, `WORKER_MODEL`, `WORKER_API_KEY`. **Timeout:** `WORKER_TIMEOUT_SEC` (default 3600).
+### Preferred default: Codex
 
----
-
-## Phase 6: Codex CLI
-
-The agent uses **Codex CLI** (`@openai/codex`) when `WORKER_MODE=codex`. Terarchitect starts sessions with Codex JSONL output and resumes follow-up turns using the captured Codex thread ID.
+The preferred implementation lane is **Codex CLI** (`@openai/codex`) with `WORKER_MODE=codex`. Terarchitect starts sessions with Codex JSONL output, captures `thread_id` from the first turn, and resumes follow-up turns on the same thread. This keeps implementation-heavy coding work inside Codex while the Director handles orchestration and review.
 
 **Required env:**
 - `WORKER_MODE=codex`
@@ -146,5 +142,17 @@ codex exec resume <thread_id> --json "<prompt>"
 ```
 
 Terarchitect captures `thread_id` from `thread.started` JSONL events and stores it in `_worker_sessions`. Output is parsed from `item.completed` events where `item.type == "agent_message"`; fallback is raw stdout. Codex persists sessions under `~/.codex/sessions/` unless `--ephemeral` is used.
+
+### Alternate backend: OpenCode
+
+The agent can also use **OpenCode**. The container entrypoint starts `opencode serve` and sets `OPENCODE_SERVER_URL`. The Director talks to OpenCode via HTTP: `POST /session`, `POST /session/<id>/message`, and `/summarize` every 30 turns.
+
+**Required env (set in coordinator env and forwarded to container):** `WORKER_LLM_URL`, `WORKER_MODEL`, `WORKER_API_KEY`. **Timeout:** `WORKER_TIMEOUT_SEC` (default 3600).
+
+---
+
+### Alternate backend: Claude Code
+
+The agent can also use **Claude Code** (`WORKER_MODE=claude-code`) when Anthropic CLI-based execution is preferred for a run. The same director-led research -> planning -> plan review -> execution flow still applies; only the code-writing backend changes.
 
 **Dockerfile.agent:** Codex CLI is installed via `npm install -g @openai/codex`.

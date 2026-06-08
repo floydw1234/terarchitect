@@ -52,6 +52,16 @@ def _mock_success_popen(result: str = "Done.", session_id: str = "sess-123"):
     return _make_popen_mock(stdout_text=payload + "\n")
 
 
+class TestPromptStack(unittest.TestCase):
+    def test_agent_system_prompt_routes_coding_work_through_codex(self):
+        from middle_agent.agent import get_agent_system_prompt
+
+        prompt = get_agent_system_prompt()
+        self.assertIn("Prefer Codex for implementation-heavy coding work.", prompt)
+        self.assertIn("Do not directly freehand implementation code", prompt)
+        self.assertIn("research -> planning -> plan review -> execution", prompt)
+
+
 
 class TestCodexWorkerDispatch(unittest.TestCase):
     def _make_codex_agent(self, api_key: str = "sk-test"):

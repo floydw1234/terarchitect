@@ -20,12 +20,12 @@ def _make_agent():
     from middle_agent.agent import MiddleAgent
 
     env = {
-        "WORKER_MODE": "claude-code",
+        "WORKER_MODE": "codex",
         "DIRECTOR_LLM_URL": "http://localhost:8000",
         "DIRECTOR_MODEL": "gpt-4o",
         "DIRECTOR_API_KEY": "sk-test",
-        "WORKER_API_KEY": "sk-ant-test",
-        "WORKER_MODEL": "claude-3-5-sonnet-20241022",
+        "WORKER_API_KEY": "sk-openai-test",
+        "WORKER_MODEL": "gpt-4o",
         "MIDDLE_AGENT_DEBUG": "0",
     }
     backend = MagicMock()
@@ -83,13 +83,14 @@ class TestPlanReviewLoop(unittest.TestCase):
 
         with patch.object(agent, "_send_to_worker", side_effect=fake_send_to_worker), \
              patch.object(agent, "_agent_assess", side_effect=fake_agent_assess), \
-             patch.object(agent, "_ensure_ticket_branch", return_value="ticket-abc"), \
              patch.object(agent, "_finalize"), \
              patch("os.path.isdir", return_value=True):
             agent.process_ticket(uuid.uuid4(), project_path=project_path, project_id=uuid.uuid4())
 
         plan_review_assess_count = assess_calls.count("plan_review")
         self.assertEqual(plan_review_assess_count, 1, "Should call agent_assess for plan_review exactly once when plan is approved immediately")
+        self.assertIn("Phase 1 of 4: research.", worker_calls[0])
+        self.assertIn("Phase 2 of 4: planning.", worker_calls[1])
 
     def test_plan_review_iterates_on_rejection(self):
         """When plan_approved=False, the loop sends feedback to the worker and tries again."""
@@ -122,7 +123,6 @@ class TestPlanReviewLoop(unittest.TestCase):
 
         with patch.object(agent, "_send_to_worker", side_effect=fake_send_to_worker), \
              patch.object(agent, "_agent_assess", side_effect=fake_agent_assess), \
-             patch.object(agent, "_ensure_ticket_branch", return_value="ticket-abc"), \
              patch.object(agent, "_finalize"), \
              patch("os.path.isdir", return_value=True):
             agent.process_ticket(uuid.uuid4(), project_path=project_path, project_id=uuid.uuid4())
@@ -131,6 +131,8 @@ class TestPlanReviewLoop(unittest.TestCase):
         # Worker should have received feedback prompts for the 2 rejections
         feedback_prompts = [p for p in worker_calls if "Fix issue" in p]
         self.assertEqual(len(feedback_prompts), 2, "Worker should receive 2 rejection feedback prompts")
+        self.assertIn("Phase 1 of 4: research.", worker_calls[0])
+        self.assertIn("Phase 2 of 4: planning.", worker_calls[1])
 
 
 if __name__ == "__main__":

@@ -20,7 +20,6 @@ def _make_agent(env_overrides: dict | None = None):
     from middle_agent.agent import MiddleAgent
 
     env = {
-        "WORKER_MODE": "opencode",  # explicit; tests override via env_overrides
         "DIRECTOR_LLM_URL": "http://localhost:8000",
         "DIRECTOR_MODEL": "test-model",
         "WORKER_LLM_URL": "http://localhost:8080/v1",
@@ -52,17 +51,17 @@ def _mock_success_popen(result: str = "Done.", session_id: str = "sess-123"):
 
 
 class TestWorkerModeInit(unittest.TestCase):
-    def test_default_mode_is_opencode(self):
+    def test_default_mode_is_codex(self):
         agent = _make_agent()
-        self.assertEqual(agent.worker_mode, "opencode")
+        self.assertEqual(agent.worker_mode, "codex")
 
     def test_claude_code_mode_set_from_env(self):
         agent = _make_agent({"WORKER_MODE": "claude-code"})
         self.assertEqual(agent.worker_mode, "claude-code")
 
-    def test_invalid_mode_falls_back_to_claude_code(self):
+    def test_invalid_mode_falls_back_to_codex(self):
         agent = _make_agent({"WORKER_MODE": "unknown-mode"})
-        self.assertEqual(agent.worker_mode, "claude-code")
+        self.assertEqual(agent.worker_mode, "codex")
 
 
 class TestClaudeCodeWorkerDispatch(unittest.TestCase):

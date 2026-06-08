@@ -25,7 +25,7 @@ If you’ve ever wanted architecture-aware agent swarms with a clear human shipp
 
 - **Architecture graph**: encode components + interfaces, not just TODO lists
 - **Intent-driven execution**: moving an intent/ticket to *In Progress* enqueues an agent job
-- **Director/Worker separation**: strategy (Director) vs local execution + tools (Worker — OpenCode or Claude Code)
+- **Director/Worker separation**: strategy (Director) vs code-writing execution (Worker, with Codex preferred for implementation-heavy work)
 - **AgentHub-native workflow**: agents publish attempts/leaves; Ship Room composes accepted leaves into release/export artifacts
 - **Runs anywhere Docker runs**: single-box dev or two-box production
 
@@ -62,13 +62,13 @@ Details: `backend/README.md` (Memory section).
 
 ## Worker modes + API integration
 
-Terarchitect supports three worker backends, selectable via **WORKER_MODE** in the coordinator/agent environment (`opencode`, `claude-code`, or `codex`):
+Terarchitect supports three worker backends, selectable via **WORKER_MODE** in the coordinator/agent environment (`codex`, `opencode`, or `claude-code`):
 
 | Mode | How it works |
 |------|-------------|
-| **OpenCode** (default) | The agent entrypoint starts `opencode serve` (HTTP API). The Director sends prompts over HTTP (session create → message turns → summarize every 30 turns). Requires `WORKER_LLM_URL` pointing at an OpenAI-compatible LLM. |
+| **Codex** (default) | The Director keeps the orchestration lane and routes implementation-heavy code writing through `codex exec --json --sandbox workspace-write ...`, capturing a `thread_id` on the first turn and resuming the same Codex thread on follow-up turns. This is the preferred coding path for the research → planning → plan review → execution loop. Requires `WORKER_API_KEY` set to an OpenAI API key. |
+| **OpenCode** | The agent entrypoint starts `opencode serve` (HTTP API). The Director sends prompts over HTTP (session create → message turns → summarize every 30 turns). Requires `WORKER_LLM_URL` pointing at an OpenAI-compatible LLM. |
 | **Claude Code** | The Director invokes `claude -p "..."` (headless CLI) for each prompt. No LLM URL needed — just set `WORKER_API_KEY` to your Anthropic API key. |
-| **Codex** | The Director invokes `codex exec --json --sandbox workspace-write "..."` for first turns, captures the Codex `thread_id`, and resumes follow-up turns with `codex exec resume <thread_id> --json "..."`. Requires `WORKER_API_KEY` set to an OpenAI API key. |
 
 At the app boundary, the coordinator/agent use a small “worker API” surface (Bearer-authenticated when `TERARCHITECT_WORKER_API_KEY` is set):
 
@@ -187,7 +187,7 @@ No mixing with your project’s Dockerfile. The agent image is built once and re
 | `backend/` | Flask API (served by docker compose). Stores graph/tickets/logs; enqueues jobs only. |
 | `frontend/` | React UI (served by docker compose). |
 | `coordinator/` | Host-side Python process. Claims jobs and starts agent containers. |
-| `agent/` | Director + runner + worker wiring (OpenCode and Claude Code). Packaged into the agent image. |
+| `agent/` | Director + runner + worker wiring (Codex, OpenCode, and Claude Code). Packaged into the agent image. |
 
 ---
 

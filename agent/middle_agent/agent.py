@@ -194,7 +194,7 @@ class AgentAPIError(Exception):
 
 
 class WorkerUnavailableError(Exception):
-    """Raised when the worker (OpenCode) cannot be reached. Fail fast — no point continuing without the worker."""
+    """Raised when the configured worker cannot be reached. Fail fast — no point continuing without the worker."""
 
     def __init__(self, message: str, cause: Optional[Exception] = None):
         super().__init__(message)
@@ -202,7 +202,7 @@ class WorkerUnavailableError(Exception):
 
 
 class MiddleAgent:
-    """Agent that orchestrates OpenCode (HTTP API) for implementation tasks."""
+    """Agent that orchestrates a worker backend for implementation tasks."""
 
     def __init__(self, backend: Any):
         """backend: AgentBackend (e.g. HttpAgentBackend). Required; no in-process default."""
@@ -251,9 +251,9 @@ class MiddleAgent:
         self.director_model = (get_setting_or_env("DIRECTOR_MODEL") or "").strip()
         self.director_api_key = (get_setting_or_env("DIRECTOR_API_KEY") or "").strip() or None
 
-        # Worker mode: "claude-code" (default), "codex", or "opencode" (OpenCode CLI with HTTP LLM server).
-        raw_worker_mode = (get_setting_or_env("WORKER_MODE") or "claude-code").strip().lower()
-        self.worker_mode: str = raw_worker_mode if raw_worker_mode in ("opencode", "claude-code", "codex", "stub") else "claude-code"
+        # Worker mode: "codex" (default), "claude-code", or "opencode" (OpenCode HTTP server).
+        raw_worker_mode = (get_setting_or_env("WORKER_MODE") or "codex").strip().lower()
+        self.worker_mode: str = raw_worker_mode if raw_worker_mode in ("opencode", "claude-code", "codex", "stub") else "codex"
 
         # OpenCode worker: model, LLM URL. No default URL — WORKER_LLM_URL must be configured.
         self.worker_provider_id = "terarchitect-proxy"
