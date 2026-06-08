@@ -1,5 +1,5 @@
 """
-End-to-end tests for the MVP ShipRun path plus retained workspace compatibility.
+End-to-end tests for the MVP ShipRun path.
 
 Uses Flask test client. External calls (AgentHub, GitHub) are mocked.
 
@@ -15,15 +15,6 @@ Uses Flask test client. External calls (AgentHub, GitHub) are mocked.
   9.  shipped_frontier advances
   10. Dependent queued work now satisfiable
 
-12.6  End-to-end Composite Workspace path:
-  1.  Create project + two independent intents
-  2.  Simulate agent completing both tickets
-  3.  Attempts become accepted
-  4.  Create workspace with both attempts
-  5.  Workspace composer reports composed (mocked)
-  6.  User blesses composite → blessed_workspace_id set
-  7.  Promote to ShipRun → ShipRun created
-  8.  New ticket's base selected from blessed workspace
 """
 import os
 import sys
@@ -167,122 +158,3 @@ def test_e2e_ship_happy_path(client, project):
         statuses_by_commit = {a.agenthub_commit_hash: a.status for a in attempts}
         assert statuses_by_commit["a" * 40] == "shipped"
         assert statuses_by_commit["b" * 40] == "accepted"
-
-
-# ---------------------------------------------------------------------------
-# 12.6  Composite Workspace path
-# ---------------------------------------------------------------------------
-
-def test_e2e_workspace_bless_and_promote(client, project):
-    pid = project["id"]
-
-    # Step 1: Two independent intents
-    t1 = _create_ticket(client, pid, "Intent 1 — independent")
-    t2 = _create_ticket(client, pid, "Intent 2 — independent")
-
-    # Step 2+3: Complete both
-    _move_to_in_progress(client, pid, t1["id"])
-    _move_to_in_progress(client, pid, t2["id"])
-    resp1 = _complete_ticket(client, pid, t1["id"], "1" * 40)
-    resp2 = _complete_ticket(client, pid, t2["id"], "2" * 40)
-    assert resp1.status_code == 200
-    assert resp2.status_code == 200
-
-    # Get attempt IDs
-    with client.application.app_context():
-        from models.db import TicketAttempt
-        att1 = TicketAttempt.query.filter_by(ticket_id=t1["id"]).first()
-        att2 = TicketAttempt.query.filter_by(ticket_id=t2["id"]).first()
-        att1_id = str(att1.id)
-        att2_id = str(att2.id)
-
-    # Step 4: Create workspace
-    ws_resp = client.post(f"/api/projects/{pid}/workspaces", json={
-        "attempt_ids": [att1_id, att2_id],
-    })
-    assert ws_resp.status_code == 201
-    ws_id = ws_resp.get_json()["id"]
-
-    # Trigger composition
-    compose_resp = client.post(f"/api/projects/{pid}/workspaces/{ws_id}/compose", json={})
-    assert compose_resp.status_code == 200
-    assert compose_resp.get_json()["status"] == "composing"
-
-    # Step 5: Workspace composer reports composed
-    composed_resp = client.post(f"/api/worker/workspaces/{ws_id}/composed", json={
-        "composed_commit_hash": "3" * 40,
-        "test_status": "passed",
-        "test_output": "All clear.",
-        "changed_files": ["src/feature_a.py", "src/feature_b.py"],
-    })
-    assert composed_resp.status_code == 200
-    assert composed_resp.get_json()["status"] == "preview_ready"
-
-    # Step 6: Bless composite
-    bless_resp = client.post(f"/api/projects/{pid}/workspaces/{ws_id}/bless", json={})
-    assert bless_resp.status_code == 200
-    assert bless_resp.get_json()["status"] == "blessed"
-
-    # blessed_workspace_id set on project
-    with client.application.app_context():
-        from models.db import db, Project
-        p = db.session.get(Project, pid)
-        assert p.blessed_workspace_id == ws_id
-
-    # Step 7: Promote to ShipRun
-    promote_resp = client.post(f"/api/projects/{pid}/workspaces/{ws_id}/promote", json={})
-    assert promote_resp.status_code == 200
-    result = promote_resp.get_json()
-    assert "ship_run" in result
-    assert result["ship_run"]["status"] == "queued"
-
-    # Step 8: New ticket should start from blessed composite's commit hash
-    from api.services.job_service import compute_base_hash
-    with client.application.app_context():
-        from models.db import Ticket, CompositeWorkspace
-        new_ticket = Ticket(
-            project_id=pid,
-            column_id="queued",
-            title="Post-bless ticket",
-            intent_status="ready",
-        )
-        from models.db import db
-        db.session.add(new_ticket)
-        db.session.commit()
-
-        from models.db import Project
-        p = db.session.get(Project, pid)
-        base = compute_base_hash(new_ticket, p)
-        # Base should be the blessed composite's composed hash
-        assert base == "3" * 40, \
-            f"Post-bless ticket should start from blessed composite hash, got {base}"
-
-
-# ---------------------------------------------------------------------------
-# 12.6b  Workspace does not require a persistent main branch
-# ---------------------------------------------------------------------------
-
-def test_workspace_compose_without_frontier(client, project):
-    """Workspace can be created and composed even when shipped_frontier is not set."""
-    pid = project["id"]
-    t = _create_ticket(client, pid, "Ticket without frontier", column_id="in_progress")
-    complete_resp = _complete_ticket(client, pid, t["id"], "a" * 40)
-    assert complete_resp.status_code == 200, complete_resp.get_json()
-
-    with client.application.app_context():
-        from models.db import TicketAttempt
-        att = next(
-            (a for a in TicketAttempt.query.filter_by(project_id=pid).all() if str(a.ticket_id) == t["id"]),
-            None,
-        )
-        assert att is not None
-        att_id = str(att.id)
-
-    ws_resp = client.post(f"/api/projects/{pid}/workspaces", json={
-        "attempt_ids": [att_id],
-    })
-    assert ws_resp.status_code == 201
-    ws = ws_resp.get_json()
-    # base_root_hash may be None if no frontier — workspace still created
-    assert ws["id"] is not None
-    assert ws["status"] == "draft"
