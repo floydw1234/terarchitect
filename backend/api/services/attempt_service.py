@@ -11,6 +11,10 @@ from models.db import db, TicketAttempt
 # ---------------------------------------------------------------------------
 # Valid status transitions
 # ---------------------------------------------------------------------------
+#
+# The MVP docs speak in terms of proposed/accepted/rejected/failed/shipped,
+# but the live code still supports a few compatibility states for older
+# release-flow callbacks and tests.
 
 _TRANSITIONS: dict[str, set[str]] = {
     "proposed":        {"validating", "accepted", "rejected", "failed"},
@@ -64,6 +68,8 @@ def validate_attempt(attempt: TicketAttempt, agenthub_url: str = "") -> TicketAt
       4. summary exists (warning only)
 
     If AgentHub is not configured, skips remote check and accepts immediately.
+    This is the AgentHub-native MVP validation path; compatibility states are
+    still allowed elsewhere in the model for older workflows.
     Caller must db.session.commit() after.
     """
     current_app.logger.info(
@@ -146,7 +152,8 @@ def attempt_to_json(
 
     Pass shipped_frontier to include a staleness flag: True when the attempt's
     base_hash predates the current frontier (i.e. main has advanced since this
-    attempt was created).
+    attempt was created). This is used by the MVP path even though legacy
+    states remain valid in storage.
     """
     commit = attempt.agenthub_commit_hash or ""
     stale: Optional[bool] = None
@@ -188,7 +195,11 @@ def get_latest_attempt(ticket_id) -> Optional[TicketAttempt]:
 
 
 def get_accepted_attempt(ticket_id) -> Optional[TicketAttempt]:
-    """Return the accepted (or shipped) attempt for a ticket, if any."""
+    """Return the accepted (or shipped) attempt for a ticket, if any.
+
+    Compatibility states like composed/release_pr_open are still treated as
+    satisfied because older release-flow code can emit them.
+    """
     return (
         TicketAttempt.query
         .filter_by(ticket_id=ticket_id)

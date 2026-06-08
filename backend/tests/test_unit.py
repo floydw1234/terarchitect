@@ -6,7 +6,7 @@ Tests that require no HTTP or DB — pure service/model logic.
 Covers:
   - wave computation
   - base selection (compute_base_hash)
-  - TicketAttempt state transitions
+  - TicketAttempt state transitions, including legacy compatibility paths
   - compute_ticket_display_state
   - ship_run_to_json field presence
 """
@@ -103,8 +103,26 @@ def test_transition_proposed_to_accepted():
     assert result.status == "accepted"
 
 
+def test_transition_proposed_to_rejected():
+    from api.services.attempt_service import transition_attempt
+    attempt = MagicMock()
+    attempt.status = "proposed"
+    attempt.id = "test-id"
+    result = transition_attempt(attempt, "rejected")
+    assert result.status == "rejected"
+
+
+def test_transition_accepted_to_superseded():
+    from api.services.attempt_service import transition_attempt
+    attempt = MagicMock()
+    attempt.status = "accepted"
+    attempt.id = "test-id"
+    result = transition_attempt(attempt, "superseded")
+    assert result.status == "superseded"
+
+
 def test_transition_accepted_to_shipped_path():
-    """Full path: accepted → composed → release_pr_open → shipped."""
+    """Legacy-compatible release path: accepted → composed → release_pr_open → shipped."""
     from api.services.attempt_service import transition_attempt
     attempt = MagicMock()
     attempt.id = "test-id"

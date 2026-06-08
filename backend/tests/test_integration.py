@@ -12,6 +12,7 @@ Covers:
   - ship endpoint updates root after PR merge
   - dependency ordering enforced in dispatch
   - intent fields persist and return in ticket response
+  - legacy-compatible ship callbacks still report compose_failed/running states
 """
 import os
 import sys
@@ -64,7 +65,7 @@ def test_ticket_complete_creates_attempt(client, project):
 
 
 def test_ticket_complete_creates_no_pr_row(client, project):
-    """Plan 12.2: no PR row created for swarm ticket completion — PR model no longer exists."""
+    """Swarm completion writes attempts only; no ticket-level PR record is created."""
     from models.db import db, Ticket
     with client.application.app_context():
         ticket = Ticket(
@@ -251,6 +252,7 @@ def test_compose_allows_wave_after_dependency_shipped(client, project):
 # ---------------------------------------------------------------------------
 
 def test_worker_fail_records_compose_failed(client, project):
+    """Compatibility check for the older ship worker callback."""
     from models.db import db, ShipRun, Project
     with client.application.app_context():
         run = ShipRun(project_id=project["id"], wave_num=0, status="running")
@@ -386,7 +388,7 @@ def test_dependent_ticket_not_dispatched_until_dep_accepted(client, project):
 
 
 def test_multi_dependency_ticket_waits_for_temporary_base(client, project):
-    """Multiple unshipped dependency leaves queue temporary base composition before dispatch."""
+    """Compatibility path: multiple unshipped dependencies still route through temporary base composition."""
     from models.db import db, Ticket, TicketAttempt, CompositeWorkspace
     pid = project["id"]
 
@@ -445,7 +447,7 @@ def test_multi_dependency_ticket_waits_for_temporary_base(client, project):
 
 
 def test_multi_dependency_ticket_dispatches_after_temporary_base_composes(client, project):
-    """A composed temporary base becomes the child's base hash and unblocks dispatch."""
+    """Compatibility path: once the temporary base composes, the child dispatches."""
     from models.db import db, Ticket, TicketAttempt, CompositeWorkspace, AgentJob
     from api.services.job_service import job_to_response
 

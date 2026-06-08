@@ -171,6 +171,9 @@ class AgentJob(db.Model):
 
 class TicketAttempt(db.Model):
     """Records each AgentHub attempt for a ticket in swarm mode.
+    The MVP path uses proposed/accepted/rejected/failed/shipped, but the live
+    code still tolerates legacy-compatible validating/composed/release_pr_open
+    states so older callbacks and tests keep working.
     Each accepted attempt records the AgentHub commit hash and base hash for composability."""
 
     __tablename__ = "ticket_attempts"
@@ -183,8 +186,9 @@ class TicketAttempt(db.Model):
     wave_num = db.Column(db.Integer, default=0)
     attempt_num = db.Column(db.Integer, nullable=False, default=1)
     agent_id = db.Column(db.String(255))
-    # proposed → validating → accepted → composed → release_pr_open → shipped
-    # proposed → rejected | failed | superseded
+    # MVP-facing states: proposed | accepted | rejected | superseded | failed | shipped
+    # Legacy-compatible states retained in the live code: validating | composed
+    # | release_pr_open
     status = db.Column(db.String(50), nullable=False, default="proposed")
     summary = db.Column(db.Text)
     test_status = db.Column(db.String(50))   # passed | failed | skipped | None
@@ -202,7 +206,8 @@ class ShipRun(db.Model):
     id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
     project_id = db.Column(UUID_TYPE, db.ForeignKey("projects.id"), nullable=False)
     wave_num = db.Column(db.Integer, nullable=False)
-    # queued | running | compose_failed | ready_to_ship | shipping | shipped | failed
+    # MVP-facing states: queued | composing | failed | ready_to_ship | shipping | shipped
+    # Legacy-compatible callbacks still emit running | compose_failed.
     status = db.Column(db.String(50), nullable=False, default="queued")
     error = db.Column(db.Text)
     # Release branch composition

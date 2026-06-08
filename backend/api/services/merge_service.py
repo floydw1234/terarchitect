@@ -5,6 +5,9 @@ from models.db import db, Project, Ticket, ShipRun, TicketAttempt
 from .attempt_service import SATISFIED_STATUSES as _SATISFIED_STATUSES
 
 
+# MVP docs speak in terms of queued/composing/ready_to_ship/shipping/shipped.
+# The live code still accepts `running` and `compose_failed` callbacks for
+# compatibility with the older ship worker flow.
 ACTIVE_SHIP_RUN_STATUSES = ("queued", "running", "ready_to_ship", "shipping")
 TERMINAL_SHIP_RUN_STATUSES = ("shipped",)
 

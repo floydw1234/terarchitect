@@ -218,6 +218,154 @@ def test_compute_base_hash_uses_frontier_when_no_deps(app):
 
 
 # ---------------------------------------------------------------------------
+# 12.3g  Attempt controls: list, accept-supersede, reject
+# ---------------------------------------------------------------------------
+
+def test_ticket_attempts_list_returns_multiple_attempts_newest_first(client, project):
+    pid = project["id"]
+    from models.db import db, Ticket, TicketAttempt
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Multi-attempt ticket",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        first = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="1" * 40,
+            base_hash="0" * 40,
+            wave_num=0,
+            attempt_num=1,
+            status="proposed",
+            summary="first try",
+        )
+        second = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="2" * 40,
+            base_hash="0" * 40,
+            wave_num=0,
+            attempt_num=2,
+            status="proposed",
+            summary="second try",
+        )
+        db.session.add_all([first, second])
+        db.session.commit()
+        ticket_id = str(ticket.id)
+
+    resp = client.get(f"/api/projects/{pid}/tickets/{ticket_id}/attempts")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert [attempt["attempt_num"] for attempt in data] == [2, 1]
+    assert [attempt["status"] for attempt in data] == ["proposed", "proposed"]
+
+
+def test_accept_attempt_supersedes_prior_accepted_attempt(client, project):
+    pid = project["id"]
+    from models.db import db, Ticket, TicketAttempt
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Supersede ticket",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        first = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="a" * 40,
+            base_hash="f" * 40,
+            wave_num=0,
+            attempt_num=1,
+            status="proposed",
+            summary="first try",
+        )
+        second = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="b" * 40,
+            base_hash="f" * 40,
+            wave_num=0,
+            attempt_num=2,
+            status="proposed",
+            summary="second try",
+        )
+        db.session.add_all([first, second])
+        db.session.commit()
+        ticket_id = str(ticket.id)
+        first_attempt_id = str(first.id)
+        second_attempt_id = str(second.id)
+
+    first_accept = client.post(
+        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{first_attempt_id}/accept"
+    )
+    assert first_accept.status_code == 200
+    assert first_accept.get_json()["status"] == "accepted"
+
+    second_accept = client.post(
+        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{second_attempt_id}/accept"
+    )
+    assert second_accept.status_code == 200
+    assert second_accept.get_json()["status"] == "accepted"
+
+    resp = client.get(f"/api/projects/{pid}/tickets/{ticket_id}/attempts")
+    assert resp.status_code == 200
+    attempts = resp.get_json()
+    assert [attempt["attempt_num"] for attempt in attempts] == [2, 1]
+    assert [attempt["status"] for attempt in attempts] == ["accepted", "superseded"]
+
+
+def test_reject_attempt_returns_rejected_state(client, project):
+    pid = project["id"]
+    from models.db import db, Ticket, TicketAttempt
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Reject ticket",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="c" * 40,
+            base_hash="f" * 40,
+            wave_num=0,
+            attempt_num=1,
+            status="proposed",
+            summary="needs work",
+        )
+        db.session.add(attempt)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+        attempt_id = str(attempt.id)
+
+    resp = client.post(
+        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{attempt_id}/reject",
+        json={"reason": "not ready"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "rejected"
+
+    attempts = client.get(f"/api/projects/{pid}/tickets/{ticket_id}/attempts")
+    assert attempts.status_code == 200
+    assert attempts.get_json()[0]["status"] == "rejected"
+
+
+# ---------------------------------------------------------------------------
 # 8.4  Debug/audit endpoint
 # ---------------------------------------------------------------------------
 

@@ -2807,8 +2807,9 @@ def worker_ship_run_get(run_id):
 
 @api_bp.route("/worker/ship-run/<uuid:run_id>/composed", methods=["POST"])
 def worker_ship_run_composed(run_id):
-    """Shipper reports successful composition: release branch created, PR opened, ready to ship.
-    Body: release_branch, release_pr_url, release_pr_number, composed_commit_hash, base_main_hash,
+    """Legacy-compatible shipper callback for successful composition: release branch created,
+    PR opened, ready to ship. Body: release_branch, release_pr_url, release_pr_number,
+    composed_commit_hash, base_main_hash,
           test_status, test_output, changed_files, summary."""
     err, status = _require_worker_auth()
     if err is not None:
@@ -2854,8 +2855,9 @@ def worker_ship_run_composed(run_id):
 
 @api_bp.route("/worker/ship-run/<uuid:run_id>/fail", methods=["POST"])
 def worker_ship_run_fail(run_id):
-    """Shipper or merger reports failure. Body: error, fix_ticket_title, fix_ticket_description, compose_failed (bool).
-    If compose_failed=true, status is set to compose_failed rather than failed."""
+    """Shipper or merger reports failure. Body: error, fix_ticket_title, fix_ticket_description,
+    compose_failed (bool). If compose_failed=true, status is set to compose_failed rather
+    than failed for compatibility with the older callback flow."""
     err, status = _require_worker_auth()
     if err is not None:
         return err, status
