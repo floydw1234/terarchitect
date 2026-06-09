@@ -174,6 +174,8 @@ Keep operators on one path for swarm projects:
 4. inspect the `ShipRun`
 5. ship/merge at the final boundary
 
+Agents and coordinators are the primary users of the system. The UI remains a review/ship boundary for humans, and the CLI is the direct operator surface for the same ShipRun wave API.
+
 CLI and UI should follow the same wave flow:
 
 - `ta ship waves <project_id>`

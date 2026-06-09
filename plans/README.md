@@ -64,6 +64,8 @@ Use one operator path for swarm projects:
 4. inspect the resulting `ShipRun`
 5. ship/merge at the final wave boundary
 
+Agents and coordinators are the primary users of this system. The UI and human actions remain review/ship boundaries, and the CLI should mirror the ShipRun wave API: `ta ship waves`, `ta ship show`, `ta ship compose`, `ta ship feedback`, and `ta ship merge-pr`.
+
 Ticket-level PR review is not part of swarm mode. The review and ship boundary lives at the wave/`ShipRun` level.
 
 ## Related Operational Docs

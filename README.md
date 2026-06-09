@@ -1,9 +1,10 @@
 # Terarchitect
 
-Terarchitect is a visual-first SDLC orchestrator: model your system as a graph, define intents, and let a **Director → Worker** agent pair publish implementation attempts to an AgentHub DAG.
+Terarchitect is an agent-first, CLI-first SDLC orchestrator: model your system as a graph, define intents, and let a **Director → Worker** agent pair publish implementation attempts to an AgentHub DAG.
 
-- **You stay in control**: agent attempts become shippable only through Ship Room release/export flow.
-- **MVP ship path**: agent completes work, a human accepts the attempt, Ship Room composes a wave, you inspect the `ShipRun`, then ship/merge at the final boundary.
+- **Primary users are agents and coordinators**: the system is built around automated execution and wave composition.
+- **UI and human actions stay at the review/ship boundary**: agent attempts become shippable only through Ship Room release/export flow.
+- **MVP ship path**: agent completes work, a human accepts the attempt, Ship Room or the CLI composes a wave, you inspect the `ShipRun`, then ship/merge at the final boundary.
 - **One container per job**: reproducible, isolated runs.
 - **Coordinator-friendly**: run the coordinator on the same machine as the app, or on a completely separate machine.
 
@@ -96,6 +97,8 @@ Details: `docs/PHASE1_WORKER_API.md`.
 | **Agent image** | Director + Worker (OpenCode, Claude Code, or Codex). Clones or opens the project repo, implements the ticket, publishes an AgentHub attempt, exits. | **Docker container** started by the coordinator |
 
 High-level flow: **UI → enqueue → coordinator claims → agent container runs → AgentHub attempt created → Ship Room composes accepted leaves → release/export PR or local frontier advance**.
+
+The UI is an operator surface, not the primary execution surface. Agents and coordinators do the work; humans review accepted attempts and ship at the wave boundary. The CLI mirrors that same ShipRun wave API with `ta ship waves`, `ta ship show`, `ta ship compose`, `ta ship feedback`, and `ta ship merge-pr`.
 
 ---
 
