@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import time
+
 from cli._api import API, APIError
 from cli._config import load_config_file
 from cli._output import die, print_json, print_table, short_id
@@ -82,6 +83,25 @@ def register(subparsers) -> None:
     lo.add_argument("ticket_id")
     lo.add_argument("--raw", action="store_true", help="Include raw_output field")
 
+    at = sub.add_parser("attempts", help="List attempts for a ticket")
+    at.add_argument("project_id")
+    at.add_argument("ticket_id")
+    at.add_argument("--json", action="store_true", help="Print JSON output")
+
+    aa = sub.add_parser("accept-attempt", help="Accept a ticket attempt")
+    aa.add_argument("project_id")
+    aa.add_argument("ticket_id")
+    aa.add_argument("attempt_id")
+    aa.add_argument("--reason", help="Operator note recorded client-side for context")
+    aa.add_argument("--json", action="store_true", help="Print JSON output")
+
+    ra = sub.add_parser("reject-attempt", help="Reject a ticket attempt")
+    ra.add_argument("project_id")
+    ra.add_argument("ticket_id")
+    ra.add_argument("attempt_id")
+    ra.add_argument("--reason", required=True, help="Reason sent to the backend")
+    ra.add_argument("--json", action="store_true", help="Print JSON output")
+
     p.set_defaults(func=_dispatch)
 
 
@@ -101,6 +121,12 @@ def _dispatch(args, api: API) -> None:
         _cmd_cancel(args, api)
     elif cmd == "logs":
         _cmd_logs(args, api)
+    elif cmd == "attempts":
+        _cmd_attempts(args, api)
+    elif cmd == "accept-attempt":
+        _cmd_accept_attempt(args, api)
+    elif cmd == "reject-attempt":
+        _cmd_reject_attempt(args, api)
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +158,11 @@ def _cmd_list(args, api: API) -> None:
         ("priority", "PRIORITY"),
         ("attempt", "LATEST"),
     ])
+
+
+def _apply_json_flag(args) -> None:
+    if getattr(args, "json", False):
+        args.output = "json"
 
 
 def _cmd_create(args, api: API) -> None:
@@ -196,6 +227,48 @@ def _cmd_show(args, api: API) -> None:
             print(f"  {k}: {v}")
 
 
+def _render_attempt_row(attempt: dict) -> dict[str, str]:
+    return {
+        "id": short_id(attempt.get("id", "")),
+        "status": attempt.get("status", ""),
+        "commit": attempt.get("short_commit_hash") or "",
+        "wave": str(attempt.get("wave_num", "")),
+        "attempt": str(attempt.get("attempt_num", "")),
+        "tests": attempt.get("test_status") or "",
+    }
+
+
+def _cmd_attempts(args, api: API) -> None:
+    _apply_json_flag(args)
+    try:
+        attempts = api.get(f"/api/projects/{args.project_id}/tickets/{args.ticket_id}/attempts")
+    except APIError as e:
+        die(str(e))
+    if args.output == "json":
+        print_json(attempts)
+        return
+    if not attempts:
+        print("No attempts found for this ticket.")
+        return
+    print_table([_render_attempt_row(a) for a in attempts], [
+        ("id", "ID"),
+        ("status", "STATUS"),
+        ("commit", "COMMIT"),
+        ("wave", "WAVE"),
+        ("attempt", "ATTEMPT"),
+        ("tests", "TESTS"),
+    ])
+    latest = attempts[0]
+    print("")
+    print("Next:")
+    print(f"  ta attempt show {args.project_id} {latest.get('id')}")
+    print(f"  ta attempt diff {args.project_id} {latest.get('id')}")
+    if latest.get("status") not in {"accepted", "composed", "release_pr_open", "shipped"}:
+        print(f"  ta ticket accept-attempt {args.project_id} {args.ticket_id} {latest.get('id')}")
+    if latest.get("status") not in {"rejected", "shipped", "superseded", "failed"}:
+        print(f"  ta ticket reject-attempt {args.project_id} {args.ticket_id} {latest.get('id')} --reason \"needs revision\"")
+
+
 def _cmd_update(args, api: API) -> None:
     payload = {}
     if args.title:
@@ -228,6 +301,52 @@ def _cmd_update(args, api: API) -> None:
         print_json(ticket)
         return
     print(f"Updated ticket {args.ticket_id}")
+
+
+def _cmd_accept_attempt(args, api: API) -> None:
+    _apply_json_flag(args)
+    if args.reason and args.output != "json":
+        print("Note: --reason is not sent by the current accept endpoint; recording it only in CLI output.")
+    try:
+        attempt = api.post(
+            f"/api/projects/{args.project_id}/tickets/{args.ticket_id}/attempts/{args.attempt_id}/accept",
+            {},
+        )
+    except APIError as e:
+        die(str(e))
+    if args.output == "json":
+        print_json(attempt)
+        return
+    print(f"Accepted attempt {short_id(attempt.get('id', args.attempt_id))} for ticket {short_id(args.ticket_id)}.")
+    print(f"  Status: {attempt.get('status')}")
+    print(f"  Commit: {attempt.get('short_commit_hash') or attempt.get('agenthub_commit_hash') or 'unavailable'}")
+    print("")
+    print("Next:")
+    print(f"  ta attempt show {args.project_id} {attempt.get('id', args.attempt_id)}")
+    wave_num = attempt.get("wave_num")
+    if wave_num is not None:
+        print(f"  ta ship show {args.project_id} {wave_num}")
+
+
+def _cmd_reject_attempt(args, api: API) -> None:
+    _apply_json_flag(args)
+    try:
+        attempt = api.post(
+            f"/api/projects/{args.project_id}/tickets/{args.ticket_id}/attempts/{args.attempt_id}/reject",
+            {"reason": args.reason},
+        )
+    except APIError as e:
+        die(str(e))
+    if args.output == "json":
+        print_json(attempt)
+        return
+    print(f"Rejected attempt {short_id(attempt.get('id', args.attempt_id))} for ticket {short_id(args.ticket_id)}.")
+    print(f"  Status: {attempt.get('status')}")
+    print(f"  Reason: {args.reason}")
+    print("")
+    print("Next:")
+    print(f"  ta ticket attempts {args.project_id} {args.ticket_id}")
+    print(f"  ta ticket run {args.project_id} {args.ticket_id}")
 
 
 def _cmd_run(args, api: API) -> None:

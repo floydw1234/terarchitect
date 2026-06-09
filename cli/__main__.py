@@ -7,7 +7,9 @@ Usage:
 Commands:
     project    list | create | show | update | delete
     ticket     list | create | show | update | run | cancel | logs
+               | attempts | accept-attempt | reject-attempt
                (Intent fields: --rationale, --acceptance-criteria, --constraints, --intent-status)
+    attempt    list | show | files | diff
     ship       waves | show | compose | feedback | merge-pr
     workspace  leaves | list | create | show | compose | analyze | bless | promote | discard
     graph      get | set
@@ -29,7 +31,7 @@ import sys
 
 from cli._api import API
 from cli._config import get_api_url
-from cli.commands import graph, plan, project, ship, ticket, workspace
+from cli.commands import attempt, graph, plan, project, ship, ticket, workspace
 
 
 def main() -> None:
@@ -56,6 +58,7 @@ def main() -> None:
 
     project.register(subparsers)
     ticket.register(subparsers)
+    attempt.register(subparsers)
     ship.register(subparsers)
     workspace.register(subparsers)
     graph.register(subparsers)

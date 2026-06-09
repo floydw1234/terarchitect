@@ -20,14 +20,27 @@ class API:
         self.base_url = base_url.rstrip("/")
 
     def _request(self, method: str, path: str, body: Optional[dict] = None) -> Any:
+        return self._request_with_accept(method, path, body=body)
+
+    def _request_with_accept(
+        self,
+        method: str,
+        path: str,
+        body: Optional[dict] = None,
+        *,
+        accept: str = "application/json",
+        parse_json: bool = True,
+    ) -> Any:
         url = self.base_url + path
         data = json.dumps(body).encode() if body is not None else None
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        headers = {"Content-Type": "application/json", "Accept": accept}
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
                 text = resp.read().decode()
-                return json.loads(text) if text.strip() else None
+                if not text.strip():
+                    return None
+                return json.loads(text) if parse_json else text
         except urllib.error.HTTPError as e:
             text = e.read().decode()
             try:
@@ -43,6 +56,11 @@ class API:
 
     def get(self, path: str) -> Any:
         return self._request("GET", path)
+
+    def get_text(self, path: str, accept: str = "text/plain") -> str:
+        return self._request_with_accept(
+            "GET", path, accept=accept, parse_json=False
+        )
 
     def post(self, path: str, body: Optional[dict] = None) -> Any:
         return self._request("POST", path, body if body is not None else {})
