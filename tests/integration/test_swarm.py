@@ -335,49 +335,83 @@ class TestSwarmMode:
 
 
 @pytest.mark.swarm
-class TestMergeRunApi:
+class TestShipRunApi:
 
-    def test_merge_run_fetch_endpoint(self, api: API):
-        """GET /api/worker/merge/{run_id} returns the same payload shape as POST /worker/merge/next."""
+    def test_ship_run_fetch_endpoint(self, api: API, tmp_path: Path):
+        """Compose a wave, then verify worker ship-run fetch matches the claim payload."""
+        work_dir, _ = make_local_git_repo(tmp_path)
         p = api.post("/api/projects", {
-            "name": "merge-run-fetch-test",
+            "name": "ship-run-fetch-test",
+            "execution_mode": "local",
+            "project_path": str(work_dir),
             "git_mode": "swarm",
             "is_existing_repo": True,
         })
         pid = p["id"]
         try:
-            # Create a ticket so wave 0 exists
-            api.post(f"/api/projects/{pid}/tickets", {
+            graph = json.loads(
+                (Path(__file__).parent.parent / "fixtures" / "graph.json").read_text()
+            )
+            api.put(f"/api/projects/{pid}/graph", graph)
+
+            # Create a wave-0 ticket and publish one accepted attempt so compose is valid.
+            ticket = api.post(f"/api/projects/{pid}/tickets", {
                 "title": "Wave 0 ticket", "column_id": "done",
                 "priority": "low", "status": "todo",
             })
+            ticket_id = ticket["id"]
+            api.patch(f"/api/projects/{pid}/tickets/{ticket_id}", {"column_id": "in_progress"})
+            commit_hash = "a" * 40
+            base_hash = "b" * 40
+            api.post(f"/api/projects/{pid}/tickets/{ticket_id}/complete", {
+                "commit_hash": commit_hash,
+                "base_hash": base_hash,
+                "summary": "Accepted attempt for ship-run fetch test",
+                "agent_id": "test-agent",
+            })
 
-            # Manually queue a merge run for wave 0
-            run = api.post(f"/api/projects/{pid}/merge/trigger", {"wave_num": 0})
+            detail_before = api.get(f"/api/projects/{pid}/ship/waves/0")
+            assert detail_before["wave_num"] == 0
+            assert detail_before["all_done"] is True
+            assert detail_before["accepted_attempts"][0]["status"] == "accepted"
+            assert detail_before["accepted_attempts"][0]["agenthub_commit_hash"] == commit_hash
+
+            # Queue a ship run for wave 0 through the canonical ship API.
+            run = api.post(f"/api/projects/{pid}/ship/waves/0/compose", {})
             run_id = run["id"]
+            assert run["status"] == "queued"
 
-            # Claim it via the coordinator endpoint
-            claimed = api.post("/api/worker/merge/next", {})
+            detail = api.get(f"/api/projects/{pid}/ship/waves/0")
+            assert detail["ship_run"]["id"] == run_id
+            assert detail["accepted_attempts"] == detail_before["accepted_attempts"]
+
+            # Claim it via the coordinator endpoint.
+            claimed = api.post("/api/worker/ship-run/next", {})
             assert claimed["run"]["id"] == run_id
+            assert claimed["run"]["status"] == "composing"
+            assert claimed["commit_hashes"] == [commit_hash]
 
-            # Fetch the already-claimed run — should return the same shape
-            fetched = api.get(f"/api/worker/merge/{run_id}")
+            # Fetch the already-claimed run — should return the same shape.
+            fetched = api.get(f"/api/worker/ship-run/{run_id}")
             assert fetched["run"]["id"] == run_id
-            assert fetched["run"]["status"] == "running"
+            assert fetched["run"]["status"] == "composing"
             assert "project" in fetched
             assert "commit_hashes" in fetched
             assert "wave_tickets" in fetched
+            assert fetched["project"] == claimed["project"]
+            assert fetched["commit_hashes"] == claimed["commit_hashes"]
+            assert fetched["wave_tickets"] == claimed["wave_tickets"]
 
-            # Clean up: mark the run failed so it doesn't block future tests
-            api.post(f"/api/worker/merge/{run_id}/fail", {"error": "test cleanup"})
+            # Clean up: mark the run failed so it doesn't block future tests.
+            api.post(f"/api/worker/ship-run/{run_id}/fail", {"error": "test cleanup"})
         finally:
             try:
-                api.delete(f"/api/projects/{pid}", {"confirm_name": "merge-run-fetch-test"})
+                api.delete(f"/api/projects/{pid}", {"confirm_name": "ship-run-fetch-test"})
             except APIError:
                 pass
 
-    def test_merge_run_fetch_returns_404_for_unknown(self, api: API):
-        """GET /api/worker/merge/{unknown_id} returns 404."""
+    def test_ship_run_fetch_returns_404_for_unknown(self, api: API):
+        """GET /api/worker/ship-run/{unknown_id} returns 404."""
         with pytest.raises(APIError) as exc:
-            api.get("/api/worker/merge/00000000-0000-0000-0000-000000000000")
+            api.get("/api/worker/ship-run/00000000-0000-0000-0000-000000000000")
         assert exc.value.status == 404
