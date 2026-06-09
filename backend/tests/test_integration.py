@@ -115,6 +115,108 @@ def test_ship_wave_list_shows_wave(client, project, accepted_ticket_and_attempt)
     assert w0["all_done"] is True
 
 
+def test_ship_wave_detail_explains_unknown_dependency_refs(client, project):
+    pid = project["id"]
+    from models.db import db, Ticket, TicketAttempt
+    missing_dep = str(uuid.uuid4())
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Broken dependency ticket",
+            intent_status="active",
+            depends_on_ticket_ids=[missing_dep],
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        db.session.add(TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="d" * 40,
+            base_hash="f" * 40,
+            wave_num=0,
+            attempt_num=1,
+            status="accepted",
+            summary="done",
+        ))
+        db.session.commit()
+
+    resp = client.get(f"/api/projects/{pid}/ship/waves/0")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["can_compose"] is False
+    assert any("unknown dependency" in blocker.lower() for blocker in data["blockers"])
+    assert data["unknown_dependency_refs"][0]["unknown_dependency_ids"] == [missing_dep]
+    assert "Unknown refs" in data["tickets"][0]["dependency_reason"]
+
+
+def test_ship_wave_detail_explains_dependency_cycles(client, project):
+    pid = project["id"]
+    from models.db import db, Ticket, TicketAttempt
+
+    with client.application.app_context():
+        a = Ticket(project_id=pid, column_id="done", title="Cycle A", intent_status="active")
+        b = Ticket(project_id=pid, column_id="done", title="Cycle B", intent_status="active")
+        db.session.add_all([a, b])
+        db.session.flush()
+        a.depends_on_ticket_ids = [str(b.id)]
+        b.depends_on_ticket_ids = [str(a.id)]
+        db.session.add_all([
+            TicketAttempt(
+                project_id=pid,
+                ticket_id=a.id,
+                agenthub_commit_hash="a" * 40,
+                base_hash="f" * 40,
+                wave_num=0,
+                attempt_num=1,
+                status="accepted",
+                summary="a",
+            ),
+            TicketAttempt(
+                project_id=pid,
+                ticket_id=b.id,
+                agenthub_commit_hash="b" * 40,
+                base_hash="f" * 40,
+                wave_num=0,
+                attempt_num=1,
+                status="accepted",
+                summary="b",
+            ),
+        ])
+        db.session.commit()
+
+    resp = client.get(f"/api/projects/{pid}/ship/waves/0")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["can_compose"] is False
+    assert data["dependency_cycles"]
+    assert any("cycle" in blocker.lower() for blocker in data["blockers"])
+    assert any(t["dependency_cycles"] for t in data["tickets"])
+
+
+def test_ship_waves_explain_includes_blockers(client, project):
+    pid = project["id"]
+    from models.db import db, Ticket
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Needs attempt",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+    resp = client.get(f"/api/projects/{pid}/ship/waves?explain=1")
+    assert resp.status_code == 200
+    waves = resp.get_json()
+    wave = next(w for w in waves if w["wave_num"] == 0)
+    assert wave["can_compose"] is False
+    assert wave["next_actions"]
+
+
 # ---------------------------------------------------------------------------
 # 12.2c  Compose endpoint rejects when no accepted attempts
 # ---------------------------------------------------------------------------
@@ -190,6 +292,48 @@ def test_compose_rejects_wave_with_unshipped_dependency(client, project):
     data = resp.get_json()
     assert "Wave composition validation failed" in data.get("error", "")
     assert any("not shipped" in detail for detail in data.get("details", []))
+
+
+def test_dry_compose_reports_blockers_and_commit_hashes(client, project):
+    pid = project["id"]
+    from models.db import db, Ticket, TicketAttempt
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Dry compose ticket",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        db.session.add(TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="e" * 40,
+            base_hash="f" * 40,
+            wave_num=0,
+            attempt_num=1,
+            status="accepted",
+            summary="done",
+        ))
+        db.session.commit()
+
+    resp = client.get(f"/api/projects/{pid}/ship/waves/0/dry-compose")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["safe_to_compose"] is True
+    assert data["commit_hashes"] == ["e" * 40]
+    assert any("Compose wave 0" in action for action in data["next_actions"])
+
+
+def test_diff_requires_existing_composed_wave(client, project):
+    pid = project["id"]
+    resp = client.get(f"/api/projects/{pid}/ship/waves/0/diff")
+    assert resp.status_code == 409
+    data = resp.get_json()
+    assert "No ship run exists" in data["error"]
+    assert data["next_actions"]
 
 
 def test_compose_returns_existing_active_run_instead_of_duplicating(client, project):

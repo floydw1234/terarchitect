@@ -27,6 +27,7 @@ from .services.job_service import (
 )
 from .services.merge_service import (
     ACTIVE_SHIP_RUN_STATUSES as _ACTIVE_SHIP_RUN_STATUSES,
+    analyze_wave_dependencies as _analyze_wave_dependencies,
     compute_waves as _compute_waves,
     lock_project_for_update as _lock_project_for_update,
     maybe_trigger_wave_merge as _maybe_trigger_wave_merge,
@@ -2265,13 +2266,48 @@ def project_start(project_id):
 # Ship Room — human-facing wave composition and release PR management
 # ---------------------------------------------------------------------------
 
+def _wave_next_actions(*, wave_num: int, blockers: list[str], all_done: bool, ship_run, can_compose: bool, can_ship: bool) -> list[str]:
+    actions: list[str] = []
+    if blockers:
+        if any("unknown ticket" in b.lower() or "unknown dependency" in b.lower() for b in blockers):
+            actions.append("Fix or remove dependency references that point to missing tickets.")
+        if any("cycle" in b.lower() for b in blockers):
+            actions.append("Break the dependency cycle so tickets can be ordered into earlier waves.")
+        if any("no accepted attempt" in b.lower() for b in blockers):
+            actions.append("Wait for every ticket in this wave to reach an accepted attempt.")
+        if any("not shipped" in b.lower() for b in blockers):
+            actions.append("Ship prerequisite waves first, then re-run review or compose.")
+        if any("not the current frontier" in b.lower() or "base " in b.lower() for b in blockers):
+            actions.append("Refresh stale tickets from the current frontier before composing or shipping.")
+    if not all_done:
+        actions.append("Finish the remaining tickets in this wave before composing.")
+    if can_compose:
+        actions.append(f"Compose wave {wave_num} when you want a release-branch preview.")
+    elif ship_run and ship_run.status in ("queued", "composing", "running"):
+        actions.append("Wait for the active ship run to finish composing.")
+    elif ship_run and ship_run.status == "ready_to_ship":
+        actions.append("Review the composed ship run and diff before shipping.")
+    elif ship_run and ship_run.status == "shipped":
+        actions.append("Wave already shipped; inspect the shipped frontier or later waves.")
+    if can_ship:
+        actions.append(f"Ship wave {wave_num} to advance the shipped frontier.")
+
+    deduped: list[str] = []
+    for action in actions:
+        if action not in deduped:
+            deduped.append(action)
+    return deduped
+
+
 def _wave_detail(project_id, wave_num: int) -> dict:
     """Build the full wave detail payload used by multiple ship endpoints."""
     tickets = Ticket.query.filter_by(project_id=project_id).all()
-    waves = _compute_waves(tickets)
+    analysis = _analyze_wave_dependencies(tickets)
+    waves = analysis["waves"]
     wave_tickets = [t for t in tickets if waves.get(str(t.id), 0) == wave_num]
 
     accepted_attempts = []
+    stale_details = []
     for t in wave_tickets:
         a = _get_accepted_attempt(t.id)
         if a:
@@ -2289,31 +2325,100 @@ def _wave_detail(project_id, wave_num: int) -> dict:
         .first()
     )
 
-    # Wave is ready when all tickets have accepted attempts
     accepted_ticket_ids = {str(a.ticket_id) for a in accepted_attempts}
     all_done = bool(wave_tickets) and all(str(t.id) in accepted_ticket_ids for t in wave_tickets)
+
+    for a in accepted_attempts:
+        if frontier and a.base_hash and a.base_hash != frontier:
+            stale_details.append({
+                "ticket_id": str(a.ticket_id),
+                "attempt_id": str(a.id),
+                "attempt_base_hash": a.base_hash,
+                "shipped_frontier": frontier,
+                "reason": f"Attempt base {a.base_hash[:12]} differs from frontier {frontier[:12]}.",
+            })
+
+    compose_validation_errors = []
+    if wave_tickets:
+        compose_validation_errors = _validate_wave_composition(
+            project, wave_num, tickets, waves, wave_tickets, analysis=analysis
+        )
+
+    ship_validation_errors = list(compose_validation_errors)
+    if ship_run and ship_run.status == "ready_to_ship" and frontier and ship_run.base_main_hash and ship_run.base_main_hash != frontier:
+        ship_validation_errors.append(
+            f"Ship run base {ship_run.base_main_hash[:12]} is not the current frontier {frontier[:12]}."
+        )
+
     can_compose = (
         all_done and
         len(accepted_attempts) > 0 and
-        (ship_run is None or ship_run.status in ("compose_failed", "failed"))
+        (ship_run is None or ship_run.status in ("compose_failed", "failed")) and
+        not compose_validation_errors
     )
+    can_ship = bool(ship_run and ship_run.status == "ready_to_ship" and not ship_validation_errors)
 
-    stale_count = sum(
-        1 for a in accepted_attempts
-        if frontier and a.base_hash and a.base_hash != frontier
+    stale_count = len(stale_details)
+
+    ticket_payloads = []
+    blockers: list[str] = list(compose_validation_errors)
+    for ticket in wave_tickets:
+        payload = _ticket_to_json(ticket)
+        explanation = analysis["ticket_explanations"].get(str(ticket.id), {})
+        payload.update({
+            "wave_num": explanation.get("wave_num", wave_num),
+            "dependency_reason": explanation.get("dependency_reason"),
+            "blockers": explanation.get("blockers", []),
+            "unknown_dependency_ids": explanation.get("unknown_dependency_ids", []),
+            "dependency_cycles": explanation.get("dependency_cycles", []),
+        })
+        latest = payload.get("latest_attempt") or {}
+        if latest.get("stale"):
+            payload.setdefault("blockers", []).append("Latest attempt is stale against the shipped frontier.")
+        accepted = payload.get("accepted_attempt") or {}
+        if accepted.get("stale"):
+            payload.setdefault("blockers", []).append("Accepted attempt is stale against the shipped frontier.")
+        blockers.extend(payload.get("blockers", []))
+        ticket_payloads.append(payload)
+
+    for stale in stale_details:
+        blockers.append(stale["reason"])
+
+    deduped_blockers: list[str] = []
+    for blocker in blockers:
+        if blocker and blocker not in deduped_blockers:
+            deduped_blockers.append(blocker)
+
+    next_actions = _wave_next_actions(
+        wave_num=wave_num,
+        blockers=deduped_blockers,
+        all_done=all_done,
+        ship_run=ship_run,
+        can_compose=can_compose,
+        can_ship=can_ship,
     )
 
     return {
         "wave_num": wave_num,
-        "tickets": [_ticket_to_json(t) for t in wave_tickets],
+        "tickets": ticket_payloads,
         "accepted_attempts": [
             _attempt_to_json(a, shipped_frontier=frontier) for a in accepted_attempts
         ],
         "ship_run": _ship_run_to_json(ship_run) if ship_run else None,
         "can_compose": can_compose,
+        "can_ship": can_ship,
         "all_done": all_done,
         "shipped_frontier": frontier,
         "stale_count": stale_count,
+        "stale_details": stale_details,
+        "validation": {
+            "compose": compose_validation_errors,
+            "ship": ship_validation_errors,
+        },
+        "dependency_cycles": analysis["dependency_cycles"],
+        "unknown_dependency_refs": analysis["unknown_dependency_refs"],
+        "blockers": deduped_blockers,
+        "next_actions": next_actions,
     }
 
 
@@ -2324,7 +2429,9 @@ def ship_waves(project_id):
     tickets = Ticket.query.filter_by(project_id=project_id).all()
     if not tickets:
         return jsonify([])
-    waves = _compute_waves(tickets)
+    explain = (request.args.get("explain") or "").strip().lower() in ("1", "true", "yes")
+    analysis = _analyze_wave_dependencies(tickets)
+    waves = analysis["waves"]
     runs = {
         r.wave_num: r
         for r in ShipRun.query.filter_by(project_id=project_id).order_by(ShipRun.created_at.desc()).all()
@@ -2346,6 +2453,14 @@ def ship_waves(project_id):
         )
         run = runs.get(w)
         entry["ship_run"] = _ship_run_to_json(run) if run else None
+        if explain:
+            detail = _wave_detail(project_id, w)
+            entry["can_compose"] = detail["can_compose"]
+            entry["can_ship"] = detail["can_ship"]
+            entry["blockers"] = detail["blockers"]
+            entry["next_actions"] = detail["next_actions"]
+            entry["unknown_dependency_refs"] = detail["unknown_dependency_refs"]
+            entry["dependency_cycles"] = detail["dependency_cycles"]
 
     return jsonify(sorted(wave_map.values(), key=lambda x: x["wave_num"]))
 
@@ -2355,6 +2470,116 @@ def ship_wave_detail(project_id, wave_num):
     """Full detail for a wave: tickets, accepted attempts, ship run, staleness."""
     _get_project_or_404(project_id)
     return jsonify(_wave_detail(project_id, wave_num))
+
+
+@api_bp.route("/projects/<uuid:project_id>/ship/waves/<int:wave_num>/dry-compose", methods=["GET", "POST"])
+def ship_wave_dry_compose(project_id, wave_num):
+    """Read-only compose preview with blockers, commit hashes, and safe next actions."""
+    project = _get_project_or_404(project_id)
+    tickets = Ticket.query.filter_by(project_id=project_id).all()
+    analysis = _analyze_wave_dependencies(tickets)
+    waves = analysis["waves"]
+    wave_tickets = [t for t in tickets if waves.get(str(t.id), 0) == wave_num]
+    if not wave_tickets:
+        return jsonify({"error": f"No tickets in wave {wave_num}"}), 404
+
+    accepted_attempts = []
+    missing_ticket_ids = []
+    for ticket in wave_tickets:
+        attempt = _get_accepted_attempt(ticket.id)
+        if attempt:
+            accepted_attempts.append(attempt)
+        else:
+            missing_ticket_ids.append(str(ticket.id))
+
+    detail = _wave_detail(project_id, wave_num)
+    ship_run = detail.get("ship_run") or {}
+
+    return jsonify({
+        "wave_num": wave_num,
+        "safe_to_compose": detail["can_compose"],
+        "all_done": detail["all_done"],
+        "blockers": detail["blockers"],
+        "next_actions": detail["next_actions"],
+        "validation": detail["validation"],
+        "shipped_frontier": detail["shipped_frontier"],
+        "stale_details": detail["stale_details"],
+        "commit_hashes": [a.agenthub_commit_hash for a in accepted_attempts if a.agenthub_commit_hash],
+        "changed_files": ship_run.get("changed_files") or [],
+        "existing_ship_run": ship_run or None,
+        "missing_ticket_ids": missing_ticket_ids,
+        "tickets": detail["tickets"],
+        "dependency_cycles": analysis["dependency_cycles"],
+        "unknown_dependency_refs": analysis["unknown_dependency_refs"],
+    })
+
+
+@api_bp.route("/projects/<uuid:project_id>/ship/waves/<int:wave_num>/diff", methods=["GET"])
+def ship_wave_diff(project_id, wave_num):
+    """Return a best-effort diff preview for a composed wave."""
+    project = _get_project_or_404(project_id)
+    max_bytes_raw = (request.args.get("max_bytes") or "").strip()
+    try:
+        max_bytes = max(256, min(int(max_bytes_raw), 200_000)) if max_bytes_raw else 20_000
+    except ValueError:
+        max_bytes = 20_000
+
+    detail = _wave_detail(project_id, wave_num)
+    run = detail.get("ship_run") or {}
+    if not run:
+        return jsonify({
+            "error": "No ship run exists for this wave. Review or compose the wave first.",
+            "next_actions": detail["next_actions"],
+        }), 409
+    if not run.get("composed_commit_hash"):
+        return jsonify({
+            "error": "Wave is not composed yet. Compose or dry-compose the wave first.",
+            "next_actions": detail["next_actions"],
+        }), 409
+
+    changed_files = run.get("changed_files") or []
+    diff_text = None
+    truncated = False
+    diff_note = None
+    project_path = getattr(project, "project_path", None) or ""
+    base_hash = run.get("base_main_hash")
+    head_hash = run.get("composed_commit_hash")
+    if project_path and os.path.isdir(project_path) and base_hash and head_hash:
+        try:
+            cat = subprocess.run(
+                ["git", "cat-file", "-e", head_hash],
+                cwd=project_path, capture_output=True, text=True, timeout=10,
+            )
+            if cat.returncode == 0:
+                diff_proc = subprocess.run(
+                    ["git", "diff", "--stat", "--summary", "--find-renames", base_hash, head_hash],
+                    cwd=project_path, capture_output=True, text=True, timeout=20,
+                )
+                if diff_proc.returncode == 0:
+                    diff_text = diff_proc.stdout
+                    if len(diff_text.encode()) > max_bytes:
+                        encoded = diff_text.encode()[:max_bytes]
+                        diff_text = encoded.decode(errors="ignore")
+                        truncated = True
+            else:
+                diff_note = "Composed commit is not available in the local repo; returning metadata only."
+        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+            diff_note = f"Diff text unavailable: {exc}"
+    else:
+        diff_note = "Project path or compose base is unavailable; returning metadata only."
+
+    return jsonify({
+        "wave_num": wave_num,
+        "base_hash": base_hash,
+        "composed_commit_hash": head_hash,
+        "changed_files": changed_files,
+        "diff": diff_text,
+        "truncated": truncated,
+        "max_bytes": max_bytes,
+        "note": diff_note,
+        "next_actions": detail["next_actions"],
+        "blockers": detail["blockers"],
+    })
 
 
 @api_bp.route("/projects/<uuid:project_id>/ship/waves/<int:wave_num>/compose", methods=["POST"])
@@ -2730,7 +2955,15 @@ def _collect_wave_commit_hashes(wave_tickets: list, project) -> list:
     return hashes
 
 
-def _validate_wave_composition(project, wave_num: int, tickets: list, waves: dict, wave_tickets: list) -> list[str]:
+def _validate_wave_composition(
+    project,
+    wave_num: int,
+    tickets: list,
+    waves: dict,
+    wave_tickets: list,
+    *,
+    analysis: dict | None = None,
+) -> list[str]:
     """Return blocking validation errors for composing/shipping a wave.
 
     ShipRun composition only receives the selected wave's leaves. Dependencies
@@ -2740,6 +2973,7 @@ def _validate_wave_composition(project, wave_num: int, tickets: list, waves: dic
     ticket_by_id = {str(t.id): t for t in tickets}
     frontier = getattr(project, "shipped_frontier", None) or None
     errors: list[str] = []
+    analysis = analysis or _analyze_wave_dependencies(tickets)
 
     accepted_by_ticket = {
         str(t.id): _get_accepted_attempt(t.id)
@@ -2752,6 +2986,8 @@ def _validate_wave_composition(project, wave_num: int, tickets: list, waves: dic
     }
 
     for ticket in wave_tickets:
+        explanation = analysis["ticket_explanations"].get(str(ticket.id), {})
+        errors.extend(explanation.get("blockers", []))
         attempt = accepted_by_ticket.get(str(ticket.id))
         if not attempt:
             errors.append(f"Ticket '{ticket.title[:40]}' has no accepted attempt.")
@@ -2792,7 +3028,11 @@ def _validate_wave_composition(project, wave_num: int, tickets: list, waves: dic
                     f"which is {dep_attempt.status}, not shipped."
                 )
 
-    return errors
+    deduped: list[str] = []
+    for error in errors:
+        if error and error not in deduped:
+            deduped.append(error)
+    return deduped
 
 
 @api_bp.route("/worker/ship-run/next", methods=["POST"])
