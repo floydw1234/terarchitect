@@ -59,6 +59,11 @@ from .services.attempt_service import (
     transition_attempt as _transition_attempt,
     validate_attempt as _validate_attempt,
 )
+from .services.attempt_inspection_service import (
+    attempt_inspection_json as _attempt_inspection_json,
+    inspect_changed_files as _inspect_changed_files,
+    inspect_diff as _inspect_diff,
+)
 from .services.channel_service import (
     ticket_channel as _ticket_channel,
     wave_channel as _wave_channel,
@@ -1611,6 +1616,68 @@ def ticket_attempts_list(project_id, ticket_id):
         _attempt_to_json(a, include_test_output=include_output, shipped_frontier=frontier)
         for a in attempts
     ])
+
+
+@api_bp.route("/projects/<uuid:project_id>/attempts", methods=["GET"])
+def project_attempts_list(project_id):
+    """List attempts across a project with optional ticket/status filters."""
+    project = _get_project_or_404(project_id)
+    query = (
+        TicketAttempt.query
+        .filter_by(project_id=project_id)
+        .join(Ticket, Ticket.id == TicketAttempt.ticket_id)
+    )
+    ticket_id = (request.args.get("ticket_id") or "").strip()
+    status = (request.args.get("status") or "").strip()
+    if ticket_id:
+        try:
+            ticket_uuid = str(UUID(ticket_id))
+        except ValueError:
+            return jsonify({"error": "ticket_id must be a valid UUID"}), 400
+        query = query.filter(TicketAttempt.ticket_id == ticket_uuid)
+    if status:
+        query = query.filter(TicketAttempt.status == status)
+    attempts = (
+        query
+        .order_by(TicketAttempt.created_at.desc(), TicketAttempt.attempt_num.desc())
+        .all()
+    )
+    return jsonify([_attempt_inspection_json(project, attempt) for attempt in attempts])
+
+
+@api_bp.route("/projects/<uuid:project_id>/attempts/<uuid:attempt_id>", methods=["GET"])
+def project_attempt_detail(project_id, attempt_id):
+    """Fetch a single attempt with agent-friendly inspection metadata."""
+    project = _get_project_or_404(project_id)
+    attempt = TicketAttempt.query.filter_by(project_id=project_id, id=attempt_id).first_or_404()
+    return jsonify(_attempt_inspection_json(project, attempt))
+
+
+@api_bp.route("/projects/<uuid:project_id>/attempts/<uuid:attempt_id>/files", methods=["GET"])
+def project_attempt_files(project_id, attempt_id):
+    """Return structured file stats for an attempt."""
+    project = _get_project_or_404(project_id)
+    attempt = TicketAttempt.query.filter_by(project_id=project_id, id=attempt_id).first_or_404()
+    report = _inspect_changed_files(project, attempt)
+    return jsonify(report)
+
+
+@api_bp.route("/projects/<uuid:project_id>/attempts/<uuid:attempt_id>/diff", methods=["GET"])
+def project_attempt_diff(project_id, attempt_id):
+    """Return a diff for an attempt, optionally filtered to one file."""
+    project = _get_project_or_404(project_id)
+    attempt = TicketAttempt.query.filter_by(project_id=project_id, id=attempt_id).first_or_404()
+    file_path = (request.args.get("file") or "").strip() or None
+    max_bytes_raw = (request.args.get("max_bytes") or "").strip()
+    max_bytes = None
+    if max_bytes_raw:
+        try:
+            max_bytes = int(max_bytes_raw)
+        except ValueError:
+            return jsonify({"error": "max_bytes must be an integer"}), 400
+        if max_bytes < 0:
+            return jsonify({"error": "max_bytes must be >= 0"}), 400
+    return jsonify(_inspect_diff(project, attempt, file_path=file_path, max_bytes=max_bytes))
 
 
 @api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/attempts/<uuid:attempt_id>/accept", methods=["POST"])
