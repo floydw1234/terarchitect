@@ -435,6 +435,8 @@ def test_worker_claim_moves_ship_run_to_composing(client, project):
     claim_data = claim.get_json()
     assert claim_data["run"]["id"] == run_id
     assert claim_data["run"]["status"] == "composing"
+    assert claim_data["candidate"]["id"] == compose.get_json()["promotion_candidate_id"]
+    assert claim_data["membership"]["commit_hashes"] == ["c" * 40]
     assert claim_data["commit_hashes"] == ["c" * 40]
 
 
@@ -555,11 +557,120 @@ def test_ship_rejects_stale_composition_validation(client, project):
     resp = client.post(f"/api/projects/{pid}/ship/waves/0/ship", json={})
     assert resp.status_code == 409
     data = resp.get_json()
-    assert "Wave composition validation failed" in data.get("error", "")
+    assert "validation failed" in data.get("error", "")
     assert any(
         "not the current frontier" in detail or "Ship run base" in detail
         for detail in data.get("details", [])
     )
+
+
+def test_candidate_compose_and_inspect_run(client, project):
+    pid = project["id"]
+    from models.db import db, Ticket, TicketAttempt
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Candidate ticket",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="h" * 40,
+            base_hash="f" * 40,
+            wave_num=0,
+            attempt_num=1,
+            status="accepted",
+            summary="done",
+        )
+        db.session.add(attempt)
+        db.session.commit()
+        attempt_id = str(attempt.id)
+
+    candidate_resp = client.post(
+        f"/api/projects/{pid}/ship/candidates",
+        json={"selected_attempt_ids": [attempt_id]},
+    )
+    assert candidate_resp.status_code == 201
+    candidate = candidate_resp.get_json()
+
+    compose_resp = client.post(f"/api/projects/{pid}/ship/candidates/{candidate['id']}/compose", json={})
+    assert compose_resp.status_code == 201
+    run = compose_resp.get_json()
+    assert run["promotion_candidate_id"] == candidate["id"]
+    assert run["candidate"]["id"] == candidate["id"]
+
+    inspect_resp = client.get(f"/api/projects/{pid}/ship/runs/{run['id']}")
+    assert inspect_resp.status_code == 200
+    inspect = inspect_resp.get_json()
+    assert inspect["candidate"]["id"] == candidate["id"]
+    assert inspect["membership"]["attempts"][0]["id"] == attempt_id
+
+
+def test_candidate_ship_only_transitions_candidate_membership(client, project):
+    pid = project["id"]
+    from models.db import db, Ticket, TicketAttempt
+
+    with client.application.app_context():
+        ticket_a = Ticket(project_id=pid, column_id="done", title="A", intent_status="active")
+        ticket_b = Ticket(project_id=pid, column_id="done", title="B", intent_status="active")
+        db.session.add_all([ticket_a, ticket_b])
+        db.session.flush()
+        attempt_a = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket_a.id,
+            agenthub_commit_hash="a" * 40,
+            base_hash="f" * 40,
+            wave_num=0,
+            attempt_num=1,
+            status="accepted",
+            summary="a",
+        )
+        attempt_b = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket_b.id,
+            agenthub_commit_hash="b" * 40,
+            base_hash="f" * 40,
+            wave_num=0,
+            attempt_num=1,
+            status="accepted",
+            summary="b",
+        )
+        db.session.add_all([attempt_a, attempt_b])
+        db.session.commit()
+        attempt_a_id = str(attempt_a.id)
+        attempt_b_id = str(attempt_b.id)
+
+    candidate_resp = client.post(
+        f"/api/projects/{pid}/ship/candidates",
+        json={"selected_attempt_ids": [attempt_a_id]},
+    )
+    candidate = candidate_resp.get_json()
+    compose_resp = client.post(f"/api/projects/{pid}/ship/candidates/{candidate['id']}/compose", json={})
+    run_id = compose_resp.get_json()["id"]
+
+    composed = client.post(f"/api/worker/ship-run/{run_id}/composed", json={
+        "composed_commit_hash": "c" * 40,
+        "base_main_hash": "f" * 40,
+        "test_status": "passed",
+        "test_output": "ok",
+        "changed_files": ["src/app.py"],
+    })
+    assert composed.status_code == 200
+
+    ship_resp = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
+    assert ship_resp.status_code == 200
+    assert ship_resp.get_json()["candidate"]["id"] == candidate["id"]
+
+    with client.application.app_context():
+        shipped_a = db.session.get(TicketAttempt, attempt_a_id)
+        shipped_b = db.session.get(TicketAttempt, attempt_b_id)
+        assert shipped_a.status == "shipped"
+        assert shipped_b.status == "accepted"
 
 
 # ---------------------------------------------------------------------------

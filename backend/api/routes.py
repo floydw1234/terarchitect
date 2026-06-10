@@ -29,11 +29,15 @@ from .services.merge_service import (
     ACTIVE_SHIP_RUN_STATUSES as _ACTIVE_SHIP_RUN_STATUSES,
     analyze_wave_dependencies as _analyze_wave_dependencies,
     build_promotion_candidate_snapshot as _build_promotion_candidate_snapshot,
+    candidate_attempts as _candidate_attempts,
+    candidate_commit_hashes as _candidate_commit_hashes,
+    candidate_legacy_wave_num as _candidate_legacy_wave_num,
     compute_waves as _compute_waves,
     lock_project_for_update as _lock_project_for_update,
     maybe_trigger_wave_merge as _maybe_trigger_wave_merge,
     promotion_candidate_to_json as _promotion_candidate_to_json,
     ship_run_to_json as _ship_run_to_json,
+    validate_promotion_candidate as _validate_promotion_candidate,
 )
 from .services.notes_service import (
     join_note_link_ids as _join_note_link_ids,
@@ -601,16 +605,13 @@ def workspace_promote(project_id, workspace_id):
         if gate:
             return jsonify(gate), gate_status
 
-    # Determine wave_num from the selected attempts (use the max wave)
-    wave_num = 0
-    for aid in (ws.selected_attempt_ids or []):
-        attempt = db.session.get(TicketAttempt, aid)
-        if attempt:
-            wave_num = max(wave_num, attempt.wave_num)
+    candidate, _snapshot = _ensure_candidate_from_attempt_ids(project, list(ws.selected_attempt_ids or []))
+    wave_num = _candidate_legacy_wave_num(candidate)
 
     # Create a ShipRun — coordinator will dispatch the shipper
     run = ShipRun(
         project_id=str(project_id),
+        promotion_candidate_id=str(candidate.id),
         wave_num=wave_num,
         status="queued",
         summary=f"Promoted from Composite Workspace {str(workspace_id)[:8]}",
@@ -2272,6 +2273,128 @@ def project_start(project_id):
 # still expose wave-oriented endpoints until later phases replace them.
 # ---------------------------------------------------------------------------
 
+def _find_matching_candidate(project_id, selected_attempt_ids: list[str], base_root_hash: str | None):
+    normalized_ids = [str(attempt_id) for attempt_id in selected_attempt_ids or []]
+    candidates = (
+        PromotionCandidate.query
+        .filter_by(project_id=project_id)
+        .order_by(PromotionCandidate.created_at.desc())
+        .all()
+    )
+    for candidate in candidates:
+        if list(candidate.selected_attempt_ids or []) != normalized_ids:
+            continue
+        if (candidate.base_root_hash or None) != (base_root_hash or None):
+            continue
+        if candidate.status == "superseded":
+            continue
+        return candidate
+    return None
+
+
+def _ensure_candidate_from_attempt_ids(project, selected_attempt_ids: list[str]):
+    snapshot = _build_promotion_candidate_snapshot(project, selected_attempt_ids)
+    candidate = _find_matching_candidate(project.id, snapshot["selected_attempt_ids"], snapshot["base_root_hash"])
+    if candidate is None:
+        candidate = PromotionCandidate(
+            project_id=str(project.id),
+            selected_attempt_ids=snapshot["selected_attempt_ids"],
+            selected_leaf_hashes=snapshot["selected_leaf_hashes"],
+            base_root_hash=snapshot["base_root_hash"],
+            status=snapshot["status"],
+            validation_summary=snapshot["validation_summary"],
+            conflict_summary=snapshot["conflict_summary"],
+        )
+        db.session.add(candidate)
+        db.session.flush()
+    return candidate, snapshot
+
+
+def _ensure_wave_candidate(project, wave_num: int):
+    tickets = Ticket.query.filter_by(project_id=project.id).all()
+    waves = _compute_waves(tickets)
+    wave_tickets = [ticket for ticket in tickets if waves.get(str(ticket.id), 0) == wave_num]
+    if not wave_tickets:
+        return None, None, None, f"No tickets in wave {wave_num}"
+
+    accepted_attempts = [_get_accepted_attempt(ticket.id) for ticket in wave_tickets]
+    if not any(accepted_attempts):
+        return None, None, None, "No accepted attempts found for this wave. Agents must complete tickets first."
+    if not all(accepted_attempts):
+        missing = [wave_tickets[i].title for i, attempt in enumerate(accepted_attempts) if not attempt]
+        return None, None, None, f"Some tickets have no accepted attempt yet: {', '.join(missing[:3])}"
+
+    candidate, snapshot = _ensure_candidate_from_attempt_ids(
+        project,
+        [str(attempt.id) for attempt in accepted_attempts if attempt is not None],
+    )
+    return candidate, snapshot, wave_tickets, None
+
+
+def _candidate_membership_payload(candidate: PromotionCandidate) -> dict:
+    attempts = _candidate_attempts(candidate)
+    tickets: list[dict] = []
+    for attempt in attempts:
+        ticket = db.session.get(Ticket, attempt.ticket_id)
+        if ticket is None:
+            continue
+        tickets.append({
+            "id": str(ticket.id),
+            "title": ticket.title,
+            "column_id": ticket.column_id,
+            "depends_on_ticket_ids": [str(dep_id) for dep_id in (ticket.depends_on_ticket_ids or [])],
+        })
+    return {
+        "attempts": [_attempt_to_json(attempt) for attempt in attempts],
+        "tickets": tickets,
+        "commit_hashes": _candidate_commit_hashes(candidate),
+        "legacy_wave_num": _candidate_legacy_wave_num(candidate),
+    }
+
+
+def _ship_run_context(run: ShipRun) -> dict:
+    candidate = db.session.get(PromotionCandidate, run.promotion_candidate_id) if run.promotion_candidate_id else None
+    project = db.session.get(Project, run.project_id)
+    if candidate is not None:
+        membership = _candidate_membership_payload(candidate)
+        return {
+            "project": project,
+            "candidate": candidate,
+            "membership": membership,
+            "wave_tickets": membership["tickets"],
+            "commit_hashes": membership["commit_hashes"],
+            "wave_num": membership["legacy_wave_num"],
+            "validation_errors": _validate_promotion_candidate(candidate, project),
+        }
+
+    tickets = Ticket.query.filter_by(project_id=run.project_id).all()
+    waves = _compute_waves(tickets)
+    wave_tickets = [ticket for ticket in tickets if waves.get(str(ticket.id), 0) == run.wave_num]
+    return {
+        "project": project,
+        "candidate": None,
+        "membership": None,
+        "wave_tickets": [
+            {"id": str(ticket.id), "title": ticket.title, "column_id": ticket.column_id}
+            for ticket in wave_tickets
+        ],
+        "commit_hashes": _collect_wave_commit_hashes(wave_tickets, project),
+        "wave_num": run.wave_num,
+        "validation_errors": _validate_wave_composition(project, run.wave_num, tickets, waves, wave_tickets),
+    }
+
+
+def _ship_run_detail_payload(run: ShipRun) -> dict:
+    payload = _ship_run_to_json(run)
+    context = _ship_run_context(run)
+    candidate = context["candidate"]
+    payload["candidate"] = _promotion_candidate_to_json(candidate, include_attempts=True) if candidate else None
+    payload["membership"] = context["membership"]
+    payload["validation_errors"] = context["validation_errors"]
+    payload["wave_tickets"] = context["wave_tickets"]
+    payload["commit_hashes"] = context["commit_hashes"]
+    return payload
+
 def _wave_next_actions(*, wave_num: int, blockers: list[str], all_done: bool, ship_run, can_compose: bool, can_ship: bool) -> list[str]:
     actions: list[str] = []
     if blockers:
@@ -2346,9 +2469,13 @@ def _wave_detail(project_id, wave_num: int) -> dict:
 
     compose_validation_errors = []
     if wave_tickets:
-        compose_validation_errors = _validate_wave_composition(
-            project, wave_num, tickets, waves, wave_tickets, analysis=analysis
-        )
+        if ship_run and ship_run.promotion_candidate_id:
+            candidate = db.session.get(PromotionCandidate, ship_run.promotion_candidate_id)
+            compose_validation_errors = _validate_promotion_candidate(candidate, project) if candidate else []
+        else:
+            compose_validation_errors = _validate_wave_composition(
+                project, wave_num, tickets, waves, wave_tickets, analysis=analysis
+            )
 
     ship_validation_errors = list(compose_validation_errors)
     if ship_run and ship_run.status == "ready_to_ship" and frontier and ship_run.base_main_hash and ship_run.base_main_hash != frontier:
@@ -2489,17 +2616,12 @@ def ship_candidates(project_id):
     if not isinstance(selected_attempt_ids, list):
         return jsonify({"error": "selected_attempt_ids must be a list of accepted attempt ids."}), 400
 
-    snapshot = _build_promotion_candidate_snapshot(project, selected_attempt_ids)
-    candidate = PromotionCandidate(
-        project_id=str(project_id),
-        selected_attempt_ids=snapshot["selected_attempt_ids"],
-        selected_leaf_hashes=snapshot["selected_leaf_hashes"],
-        base_root_hash=snapshot["base_root_hash"],
-        status=snapshot["status"],
-        validation_summary=snapshot["validation_summary"],
-        conflict_summary=snapshot["conflict_summary"],
-    )
-    db.session.add(candidate)
+    candidate, snapshot = _ensure_candidate_from_attempt_ids(project, selected_attempt_ids)
+    candidate.selected_leaf_hashes = snapshot["selected_leaf_hashes"]
+    candidate.base_root_hash = snapshot["base_root_hash"]
+    candidate.status = snapshot["status"]
+    candidate.validation_summary = snapshot["validation_summary"]
+    candidate.conflict_summary = snapshot["conflict_summary"]
     db.session.commit()
     return jsonify(_promotion_candidate_to_json(candidate, include_attempts=True)), 201
 
@@ -2511,7 +2633,82 @@ def ship_candidate_detail(project_id, candidate_id):
     candidate = PromotionCandidate.query.filter_by(
         project_id=project_id, id=candidate_id
     ).first_or_404()
-    return jsonify(_promotion_candidate_to_json(candidate, include_attempts=True))
+    payload = _promotion_candidate_to_json(candidate, include_attempts=True)
+    latest_run = (
+        ShipRun.query
+        .filter_by(project_id=project_id, promotion_candidate_id=candidate_id)
+        .order_by(ShipRun.created_at.desc())
+        .first()
+    )
+    payload["latest_ship_run"] = _ship_run_detail_payload(latest_run) if latest_run else None
+    payload["membership"] = _candidate_membership_payload(candidate)
+    payload["validation_errors"] = _validate_promotion_candidate(candidate, db.session.get(Project, project_id))
+    return jsonify(payload)
+
+
+@api_bp.route("/projects/<uuid:project_id>/ship/candidates/<uuid:candidate_id>/compose", methods=["POST"])
+def ship_candidate_compose(project_id, candidate_id):
+    project = _lock_project_for_update(project_id)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+    if (getattr(project, "git_mode", None) or "swarm") != "swarm":
+        return jsonify({"error": "Project is not in swarm mode"}), 400
+
+    candidate = PromotionCandidate.query.filter_by(
+        project_id=project_id, id=candidate_id
+    ).first_or_404()
+
+    existing = (
+        ShipRun.query
+        .filter_by(project_id=project_id, promotion_candidate_id=candidate_id)
+        .filter(ShipRun.status.in_(_ACTIVE_SHIP_RUN_STATUSES))
+        .order_by(ShipRun.created_at.desc())
+        .first()
+    )
+    if existing:
+        return jsonify(_ship_run_detail_payload(existing)), 200
+
+    validation_errors = _validate_promotion_candidate(candidate, project)
+    if validation_errors:
+        return jsonify({
+            "error": "Candidate composition validation failed.",
+            "details": validation_errors,
+            "candidate": _promotion_candidate_to_json(candidate, include_attempts=True),
+        }), 409
+
+    run = ShipRun(
+        project_id=str(project_id),
+        promotion_candidate_id=str(candidate.id),
+        wave_num=_candidate_legacy_wave_num(candidate),
+        status="queued",
+    )
+    db.session.add(run)
+    db.session.commit()
+    current_app.logger.info("Compose queued for candidate %s project %s run %s", candidate_id, project_id, run.id)
+    return jsonify(_ship_run_detail_payload(run)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/ship/candidates/<uuid:candidate_id>/run", methods=["GET"])
+def ship_candidate_run(project_id, candidate_id):
+    _get_project_or_404(project_id)
+    candidate = PromotionCandidate.query.filter_by(
+        project_id=project_id, id=candidate_id
+    ).first_or_404()
+    run = (
+        ShipRun.query
+        .filter_by(project_id=project_id, promotion_candidate_id=candidate.id)
+        .order_by(ShipRun.created_at.desc())
+        .first()
+    )
+    if not run:
+        return jsonify({
+            "candidate": _promotion_candidate_to_json(candidate, include_attempts=True),
+            "ship_run": None,
+        }), 200
+    return jsonify({
+        "candidate": _promotion_candidate_to_json(candidate, include_attempts=True),
+        "ship_run": _ship_run_detail_payload(run),
+    })
 
 
 @api_bp.route("/projects/<uuid:project_id>/ship/waves/<int:wave_num>", methods=["GET"])
@@ -2644,9 +2841,6 @@ def ship_wave_compose(project_id, wave_num):
         return jsonify({"error": "Project not found"}), 404
     if (getattr(project, "git_mode", None) or "swarm") != "swarm":
         return jsonify({"error": "Project is not in swarm mode"}), 400
-
-    # Idempotent compose: if the wave already has an active ship run, return it
-    # instead of re-validating or creating a duplicate release branch/PR.
     existing = (
         ShipRun.query
         .filter_by(project_id=project_id, wave_num=wave_num)
@@ -2654,23 +2848,20 @@ def ship_wave_compose(project_id, wave_num):
         .order_by(ShipRun.created_at.desc())
         .first()
     )
+    candidate = None
     if existing:
-        return jsonify(_ship_run_to_json(existing)), 200
+        candidate, _snapshot, _wave_tickets, error = _ensure_wave_candidate(project, wave_num)
+        if not error and not existing.promotion_candidate_id and candidate is not None:
+            existing.promotion_candidate_id = str(candidate.id)
+            db.session.commit()
+        return jsonify(_ship_run_detail_payload(existing)), 200
+
+    candidate, snapshot, wave_tickets, error = _ensure_wave_candidate(project, wave_num)
+    if error:
+        return jsonify({"error": error}), 409 if "accepted" in error.lower() else 404
 
     tickets = Ticket.query.filter_by(project_id=project_id).all()
     waves = _compute_waves(tickets)
-    wave_tickets = [t for t in tickets if waves.get(str(t.id), 0) == wave_num]
-
-    if not wave_tickets:
-        return jsonify({"error": f"No tickets in wave {wave_num}"}), 404
-
-    accepted = [_get_accepted_attempt(t.id) for t in wave_tickets]
-    if not any(accepted):
-        return jsonify({"error": "No accepted attempts found for this wave. Agents must complete tickets first."}), 409
-    if not all(accepted):
-        missing = [wave_tickets[i].title for i, a in enumerate(accepted) if not a]
-        return jsonify({"error": f"Some tickets have no accepted attempt yet: {', '.join(missing[:3])}"}), 409
-
     validation_errors = _validate_wave_composition(project, wave_num, tickets, waves, wave_tickets)
     if validation_errors:
         return jsonify({
@@ -2679,57 +2870,34 @@ def ship_wave_compose(project_id, wave_num):
             "hint": "Ship prerequisite waves first, then recompose this wave from the current frontier.",
         }), 409
 
-    run = ShipRun(project_id=str(project_id), wave_num=wave_num, status="queued")
+    if snapshot and snapshot["status"] == "blocked":
+        return jsonify({
+            "error": "Wave composition validation failed.",
+            "details": snapshot["validation_summary"].get("blockers", []),
+            "hint": "Ship prerequisite waves first, then recompose this wave from the current frontier.",
+        }), 409
+
+    run = ShipRun(
+        project_id=str(project_id),
+        promotion_candidate_id=str(candidate.id),
+        wave_num=wave_num,
+        status="queued",
+    )
     db.session.add(run)
     db.session.commit()
-    current_app.logger.info("Compose queued for wave %d project %s run %s", wave_num, project_id, run.id)
-    return jsonify(_ship_run_to_json(run)), 201
+    current_app.logger.info("Compose queued for wave %d via candidate %s project %s run %s", wave_num, candidate.id, project_id, run.id)
+    return jsonify(_ship_run_detail_payload(run)), 201
 
 
-@api_bp.route("/projects/<uuid:project_id>/ship/waves/<int:wave_num>/ship", methods=["POST"])
-def ship_wave_ship(project_id, wave_num):
-    """Advance the shipped_frontier for this wave and mark attempts shipped.
-
-    Two paths (GitHub is optional):
-      - With github_url + release_pr_number: merge the release PR via gh, then advance.
-      - Without (local-mode or no-main): advance frontier directly from composed_commit_hash.
-
-    This is a legacy wave-keyed ship surface. The target contract is shipping a
-    ShipRun created from a stable promotion candidate.
-    """
-    project = _lock_project_for_update(project_id)
-    if not project:
-        return jsonify({"error": "Project not found"}), 404
+def _ship_run_ship_response(project, run, *, merge_method: str = "merge"):
     slug = _repo_slug_from_github_url(project.github_url) if project.github_url else None
-
-    run = (
-        ShipRun.query
-        .filter_by(project_id=project_id, wave_num=wave_num, status="ready_to_ship")
-        .order_by(ShipRun.created_at.desc())
-        .first()
-    )
-    if not run:
-        return jsonify({"error": "No ship run in ready_to_ship state for this wave"}), 409
 
     gate, gate_status = _evidence_gate_response(project, "ship_run", run.id)
     if gate:
         return jsonify(gate), gate_status
 
-    # Decide path: GitHub PR merge OR direct frontier advance
-    use_github = bool(slug and run.release_pr_number)
-    if not use_github and not run.composed_commit_hash:
-        return jsonify({
-            "error": "Ship run has no composed commit hash. Recompose the wave before shipping.",
-        }), 409
-
-    # Ancestry validation (plan 8.2): each accepted attempt's base must be traceable
-    # to the project's shipped_frontier or another accepted attempt's commit.
-    tickets_all_check = Ticket.query.filter_by(project_id=project_id).all()
-    waves_check = _compute_waves(tickets_all_check)
-    wave_tickets_check = [t for t in tickets_all_check if waves_check.get(str(t.id), 0) == wave_num]
-    validation_errors = _validate_wave_composition(
-        project, wave_num, tickets_all_check, waves_check, wave_tickets_check
-    )
+    context = _ship_run_context(run)
+    validation_errors = list(context["validation_errors"])
     current_frontier = getattr(project, "shipped_frontier", None) or None
     if run.base_main_hash and current_frontier and run.base_main_hash != current_frontier:
         validation_errors.append(
@@ -2737,53 +2905,22 @@ def ship_wave_ship(project_id, wave_num):
         )
     if validation_errors:
         return jsonify({
-            "error": "Wave composition validation failed.",
+            "error": "Ship run validation failed.",
             "details": validation_errors,
-            "hint": "Ship prerequisite waves first, then recompose this wave from the current frontier.",
+            "hint": "Recompose this ship run from the current frontier.",
         }), 409
 
-    frontier = current_frontier
-    if frontier:
-        accepted_hashes = set()
-        for t in wave_tickets_check:
-            a = _get_accepted_attempt(t.id)
-            if a and a.agenthub_commit_hash:
-                accepted_hashes.add(a.agenthub_commit_hash)
-        ancestry_errors = []
-        for t in wave_tickets_check:
-            a = _get_accepted_attempt(t.id)
-            if not a or not a.base_hash:
-                continue  # can't verify — skip
-            if a.base_hash == frontier:
-                continue  # built directly on root — clean
-            if a.base_hash in accepted_hashes:
-                continue  # built on a peer attempt — clean
-            # Unrecognized base: warn in logs, surface in error if clearly broken
-            current_app.logger.warning(
-                "ancestry_check project=%s wave=%d ticket=%s attempt=%s base=%s "
-                "not recognized as frontier=%s or peer attempt",
-                project_id, wave_num, t.id, a.id,
-                (a.base_hash or "")[:12], (frontier or "")[:12],
-            )
-            ancestry_errors.append(
-                f"Ticket '{t.title[:40]}' attempt base {a.base_hash[:12]} "
-                "is not the current frontier or a known peer attempt. "
-                "The release branch may have unexpected content."
-            )
-        if ancestry_errors:
-            return jsonify({
-                "error": "Ancestry validation failed — unsafe to ship.",
-                "details": ancestry_errors,
-                "hint": "Recompose this wave to rebuild the release branch from the current frontier.",
-            }), 409
+    use_github = bool(slug and run.release_pr_number)
+    if not use_github and not run.composed_commit_hash:
+        return jsonify({
+            "error": "Ship run has no composed commit hash. Recompose before shipping.",
+        }), 409
 
     run.status = "shipping"
     db.session.commit()
 
     new_tip = None
-
     if use_github:
-        # GitHub path: verify PR open, merge via gh, fetch new main tip
         try:
             r_check = subprocess.run(
                 [
@@ -2803,13 +2940,13 @@ def ship_wave_ship(project_id, wave_num):
                 if state == "CLOSED":
                     run.status = "ready_to_ship"
                     db.session.commit()
-                    return jsonify({"error": "Release PR was closed without merging. Recompose the wave."}), 409
+                    return jsonify({"error": "Release PR was closed without merging. Recompose the ship run."}), 409
                 head_ref = pr_state.get("headRefName") or ""
                 if run.release_branch and head_ref and head_ref != run.release_branch:
                     run.status = "ready_to_ship"
                     db.session.commit()
                     return jsonify({
-                        "error": "Release PR branch does not match this ship run. Recompose the wave.",
+                        "error": "Release PR branch does not match this ship run. Recompose the ship run.",
                         "expected_branch": run.release_branch,
                         "actual_branch": head_ref,
                     }), 409
@@ -2818,26 +2955,23 @@ def ship_wave_ship(project_id, wave_num):
                     run.status = "ready_to_ship"
                     db.session.commit()
                     return jsonify({
-                        "error": "Release PR head does not match the composed commit. Recompose the wave.",
+                        "error": "Release PR head does not match the composed commit. Recompose the ship run.",
                         "expected_head": run.composed_commit_hash,
                         "actual_head": head_oid,
                     }), 409
         except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass  # Can't verify — proceed
+            pass
 
-        data = request.json or {}
-        merge_method = (data.get("merge_method") or "merge").strip().lower()
         if merge_method not in ("merge", "squash", "rebase"):
             merge_method = "merge"
-
         try:
-            r = subprocess.run(
+            result = subprocess.run(
                 ["gh", "pr", "merge", str(run.release_pr_number), f"--{merge_method}", "-R", slug],
                 capture_output=True, text=True, timeout=60, env=_env_for_gh_user(),
             )
-            if r.returncode != 0:
+            if result.returncode != 0:
                 run.status = "ready_to_ship"
-                run.error = (r.stderr or r.stdout or "")[:2000]
+                run.error = (result.stderr or result.stdout or "")[:2000]
                 db.session.commit()
                 return jsonify({"error": "PR merge failed", "detail": run.error}), 502
         except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
@@ -2846,7 +2980,6 @@ def ship_wave_ship(project_id, wave_num):
             db.session.commit()
             return jsonify({"error": "PR merge failed", "detail": str(exc)}), 502
 
-        # Fetch new main tip from GitHub
         for branch in ("main", "master"):
             r_tip = subprocess.run(
                 ["gh", "api", f"repos/{slug}/git/refs/heads/{branch}"],
@@ -2858,27 +2991,35 @@ def ship_wave_ship(project_id, wave_num):
                 if new_tip:
                     break
     else:
-        # No-main / local path: advance frontier directly from composed_commit_hash.
-        # GitHub is optional — no PR merge needed.
         new_tip = run.composed_commit_hash
         current_app.logger.info(
-            "ship_wave_ship: no GitHub URL or PR — advancing frontier directly from composed hash %s",
+            "ship_run_ship: no GitHub URL or PR — advancing frontier directly from composed hash %s",
             (new_tip or "")[:12],
         )
 
-    # Shared: record shipped state, transition attempts, advance frontier
     from datetime import datetime, timezone
     run.status = "shipped"
     run.shipped_commit_hash = new_tip
     run.shipped_at = datetime.now(timezone.utc)
-    db.session.commit()
 
-    tickets = Ticket.query.filter_by(project_id=project_id).all()
-    all_waves = _compute_waves(tickets)
-    wave_tickets = [t for t in tickets if all_waves.get(str(t.id), 0) == wave_num]
-    for t in wave_tickets:
-        attempt = _get_accepted_attempt(t.id)
-        if not attempt or attempt.status == "shipped":
+    candidate = context["candidate"]
+    if candidate is not None:
+        candidate.status = "shipped"
+        candidate.composed_commit_hash = run.composed_commit_hash
+        attempts = _candidate_attempts(candidate)
+    else:
+        attempts = []
+        tickets = Ticket.query.filter_by(project_id=project.id).all()
+        all_waves = _compute_waves(tickets)
+        for ticket in tickets:
+            if all_waves.get(str(ticket.id), 0) != run.wave_num:
+                continue
+            attempt = _get_accepted_attempt(ticket.id)
+            if attempt is not None:
+                attempts.append(attempt)
+
+    for attempt in attempts:
+        if attempt.status == "shipped":
             continue
         try:
             path = {
@@ -2887,7 +3028,7 @@ def ship_wave_ship(project_id, wave_num):
                 "release_pr_open": ["shipped"],
             }
             for next_status in path.get(attempt.status, []):
-                _transition_attempt(attempt, next_status, reason=f"wave {wave_num} shipped")
+                _transition_attempt(attempt, next_status, reason=f"ship run {run.id} shipped")
         except ValueError:
             current_app.logger.warning(
                 "Could not transition attempt %s (status=%s) to shipped",
@@ -2901,33 +3042,102 @@ def ship_wave_ship(project_id, wave_num):
         except Exception as exc:
             current_app.logger.warning("Root refresh after ship failed: %s", exc)
 
+    wave_num = context["wave_num"]
     if use_github:
         _post_event(
             _wave_channel(project.name, wave_num),
             _event_content(
                 "release_pr_merged",
-                f"Release PR #{run.release_pr_number} merged"
-                + (f" at {new_tip[:12]}" if new_tip else ""),
+                f"Release PR #{run.release_pr_number} merged" + (f" at {new_tip[:12]}" if new_tip else ""),
                 {
                     "wave_num": wave_num,
                     "ship_run_id": str(run.id),
+                    "promotion_candidate_id": str(candidate.id) if candidate else None,
                     "release_pr_number": run.release_pr_number,
                     "release_pr_url": run.release_pr_url,
                     "shipped_commit_hash": new_tip,
                 },
             ),
         )
-
     _post_event(
         _wave_channel(project.name, wave_num),
         _event_content(
             "wave_shipped",
             f"Wave {wave_num} shipped" + (f" at {new_tip[:12]}" if new_tip else ""),
-            {"wave_num": wave_num, "shipped_commit_hash": new_tip, "ship_run_id": str(run.id)},
+            {
+                "wave_num": wave_num,
+                "ship_run_id": str(run.id),
+                "promotion_candidate_id": str(candidate.id) if candidate else None,
+                "shipped_commit_hash": new_tip,
+            },
         ),
     )
+    return jsonify(_ship_run_detail_payload(run))
 
-    return jsonify(_ship_run_to_json(run))
+
+@api_bp.route("/projects/<uuid:project_id>/ship/runs/<uuid:run_id>", methods=["GET"])
+def ship_run_detail(project_id, run_id):
+    _get_project_or_404(project_id)
+    run = ShipRun.query.filter_by(project_id=project_id, id=run_id).first_or_404()
+    return jsonify(_ship_run_detail_payload(run))
+
+
+@api_bp.route("/projects/<uuid:project_id>/ship/runs/<uuid:run_id>/ship", methods=["POST"])
+def ship_run_ship(project_id, run_id):
+    project = _lock_project_for_update(project_id)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+    run = ShipRun.query.filter_by(project_id=project_id, id=run_id, status="ready_to_ship").first()
+    if not run:
+        return jsonify({"error": "No ship run in ready_to_ship state for this run id"}), 409
+    merge_method = (request.json or {}).get("merge_method") or "merge"
+    return _ship_run_ship_response(project, run, merge_method=str(merge_method).strip().lower())
+
+
+@api_bp.route("/projects/<uuid:project_id>/ship/candidates/<uuid:candidate_id>/ship", methods=["POST"])
+def ship_candidate_ship(project_id, candidate_id):
+    project = _lock_project_for_update(project_id)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+    candidate = PromotionCandidate.query.filter_by(
+        project_id=project_id, id=candidate_id
+    ).first_or_404()
+    run = (
+        ShipRun.query
+        .filter_by(project_id=project_id, promotion_candidate_id=candidate.id, status="ready_to_ship")
+        .order_by(ShipRun.created_at.desc())
+        .first()
+    )
+    if not run:
+        return jsonify({"error": "No ship run in ready_to_ship state for this candidate"}), 409
+    merge_method = (request.json or {}).get("merge_method") or "merge"
+    return _ship_run_ship_response(project, run, merge_method=str(merge_method).strip().lower())
+
+
+@api_bp.route("/projects/<uuid:project_id>/ship/waves/<int:wave_num>/ship", methods=["POST"])
+def ship_wave_ship(project_id, wave_num):
+    """Advance the shipped_frontier for this wave and mark attempts shipped.
+
+    Two paths (GitHub is optional):
+      - With github_url + release_pr_number: merge the release PR via gh, then advance.
+      - Without (local-mode or no-main): advance frontier directly from composed_commit_hash.
+
+    This is a legacy wave-keyed ship surface. The target contract is shipping a
+    ShipRun created from a stable promotion candidate.
+    """
+    project = _lock_project_for_update(project_id)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+    run = (
+        ShipRun.query
+        .filter_by(project_id=project_id, wave_num=wave_num, status="ready_to_ship")
+        .order_by(ShipRun.created_at.desc())
+        .first()
+    )
+    if not run:
+        return jsonify({"error": "No ship run in ready_to_ship state for this wave"}), 409
+    merge_method = (request.json or {}).get("merge_method") or "merge"
+    return _ship_run_ship_response(project, run, merge_method=str(merge_method).strip().lower())
 
 
 @api_bp.route("/projects/<uuid:project_id>/ship/waves/<int:wave_num>/timeline", methods=["GET"])
@@ -3099,14 +3309,14 @@ def _validate_wave_composition(
 @api_bp.route("/worker/ship-run/next", methods=["POST"])
 def worker_ship_run_next():
     """Coordinator claims the next queued merge run.
-    Returns 204 if nothing to do, or {run, project, commit_hashes, wave_tickets}."""
+    Returns 204 if nothing to do, or candidate-backed run context."""
     err, status = _require_worker_auth()
     if err is not None:
         return err, status
 
     run = (
         ShipRun.query.filter_by(status="queued")
-        .order_by(ShipRun.created_at.asc())
+        .order_by(ShipRun.wave_num.asc(), ShipRun.created_at.asc(), ShipRun.id.asc())
         .with_for_update(skip_locked=True)
         .first()
     )
@@ -3116,21 +3326,21 @@ def worker_ship_run_next():
     run.status = "composing"
     db.session.commit()
 
-    project = db.session.get(Project, run.project_id)
+    context = _ship_run_context(run)
+    project = context["project"]
     if project:
         _post_event(
-            _wave_channel(project.name, run.wave_num),
+            _wave_channel(project.name, context["wave_num"]),
             _event_content(
                 "release_composition_started",
-                f"Release composition started for wave {run.wave_num}",
-                {"wave_num": run.wave_num, "ship_run_id": str(run.id)},
+                f"Release composition started for wave {context['wave_num']}",
+                {
+                    "wave_num": context["wave_num"],
+                    "ship_run_id": str(run.id),
+                    "promotion_candidate_id": str(run.promotion_candidate_id) if run.promotion_candidate_id else None,
+                },
             ),
         )
-    tickets = Ticket.query.filter_by(project_id=run.project_id).all()
-    waves = _compute_waves(tickets)
-    wave_tickets = [t for t in tickets if waves.get(str(t.id), 0) == run.wave_num]
-
-    commit_hashes = _collect_wave_commit_hashes(wave_tickets, project)
 
     return jsonify({
         "run": _ship_run_to_json(run),
@@ -3141,11 +3351,10 @@ def worker_ship_run_next():
             "github_url": project.github_url,
             "git_mode": project.git_mode,
         },
-        "wave_tickets": [
-            {"id": str(t.id), "title": t.title, "column_id": t.column_id}
-            for t in wave_tickets
-        ],
-        "commit_hashes": commit_hashes,
+        "candidate": _promotion_candidate_to_json(context["candidate"], include_attempts=True) if context["candidate"] else None,
+        "membership": context["membership"],
+        "wave_tickets": context["wave_tickets"],
+        "commit_hashes": context["commit_hashes"],
     }), 200
 
 
@@ -3157,11 +3366,8 @@ def worker_ship_run_get(run_id):
     if err is not None:
         return err, status
     run = ShipRun.query.filter_by(id=run_id).first_or_404()
-    project = db.session.get(Project, run.project_id)
-    tickets = Ticket.query.filter_by(project_id=run.project_id).all()
-    waves = _compute_waves(tickets)
-    wave_tickets = [t for t in tickets if waves.get(str(t.id), 0) == run.wave_num]
-    commit_hashes = _collect_wave_commit_hashes(wave_tickets, project)
+    context = _ship_run_context(run)
+    project = context["project"]
     return jsonify({
         "run": _ship_run_to_json(run),
         "project": {
@@ -3171,11 +3377,10 @@ def worker_ship_run_get(run_id):
             "github_url": project.github_url,
             "git_mode": project.git_mode,
         },
-        "wave_tickets": [
-            {"id": str(t.id), "title": t.title, "column_id": t.column_id}
-            for t in wave_tickets
-        ],
-        "commit_hashes": commit_hashes,
+        "candidate": _promotion_candidate_to_json(context["candidate"], include_attempts=True) if context["candidate"] else None,
+        "membership": context["membership"],
+        "wave_tickets": context["wave_tickets"],
+        "commit_hashes": context["commit_hashes"],
     }), 200
 
 
@@ -3200,31 +3405,39 @@ def worker_ship_run_composed(run_id):
     run.test_output = (data.get("test_output") or "")[:8000] or None
     run.changed_files = data.get("changed_files") or []
     run.summary = (data.get("summary") or "").strip() or None
+    candidate = db.session.get(PromotionCandidate, run.promotion_candidate_id) if run.promotion_candidate_id else None
+    if candidate is not None:
+        candidate.status = "composed"
+        candidate.composed_commit_hash = run.composed_commit_hash
     db.session.commit()
+    context = _ship_run_context(run)
     current_app.logger.info(
         "Ship run %s composed for wave %d: PR #%s branch %s",
-        run_id, run.wave_num, run.release_pr_number, run.release_branch,
+        run_id, context["wave_num"], run.release_pr_number, run.release_branch,
     )
     project = db.session.get(Project, run.project_id)
     if project:
         pr_ref = f"PR #{run.release_pr_number}" if run.release_pr_number else run.release_branch or "no PR"
         _post_event(
-            _wave_channel(project.name, run.wave_num),
+            _wave_channel(project.name, context["wave_num"]),
             _event_content(
                 "release_pr_opened",
                 f"{pr_ref} opened; tests={run.test_status or 'skipped'}; files={len(run.changed_files or [])}",
                 {
-                    "wave_num": run.wave_num,
+                    "wave_num": context["wave_num"],
                     "ship_run_id": str(run.id),
+                    "promotion_candidate_id": str(run.promotion_candidate_id) if run.promotion_candidate_id else None,
                     "release_pr_number": run.release_pr_number,
                     "release_pr_url": run.release_pr_url,
                     "release_branch": run.release_branch,
                     "test_status": run.test_status,
+                    "base_main_hash": run.base_main_hash,
+                    "composed_commit_hash": run.composed_commit_hash,
                     "changed_file_count": len(run.changed_files or []),
                 },
             ),
         )
-    return jsonify(_ship_run_to_json(run))
+    return jsonify(_ship_run_detail_payload(run))
 
 
 @api_bp.route("/worker/ship-run/<uuid:run_id>/fail", methods=["POST"])
@@ -3241,15 +3454,21 @@ def worker_ship_run_fail(run_id):
     run.error = (data.get("error") or "")[:4000]
     db.session.commit()
 
-    project = db.session.get(Project, run.project_id)
+    context = _ship_run_context(run)
+    project = context["project"]
     if project:
         error_short = (run.error or "")[:200]
         _post_event(
-            _wave_channel(project.name, run.wave_num),
+            _wave_channel(project.name, context["wave_num"]),
             _event_content(
                 "release_composition_failed",
                 error_short or "Release composition failed",
-                {"wave_num": run.wave_num, "ship_run_id": str(run.id), "error": run.error},
+                {
+                    "wave_num": context["wave_num"],
+                    "ship_run_id": str(run.id),
+                    "promotion_candidate_id": str(run.promotion_candidate_id) if run.promotion_candidate_id else None,
+                    "error": run.error,
+                },
             ),
         )
 
@@ -3271,7 +3490,7 @@ def worker_ship_run_fail(run_id):
         db.session.commit()
         fix_ticket_id = str(fix.id)
 
-    result = _ship_run_to_json(run)
+    result = _ship_run_detail_payload(run)
     if fix_ticket_id:
         result["fix_ticket_id"] = fix_ticket_id
     return jsonify(result)

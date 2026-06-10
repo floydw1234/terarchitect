@@ -339,21 +339,21 @@ def analyze_promotion_candidate_graph(
         ticket = ticket_by_id.get(ticket_id)
         attempt = included_attempts_by_ticket_id[ticket_id]
         dep_ids = dependency_ticket_ids_by_ticket.get(ticket_id, [])
-        unresolved_dep_ids = [
+        included_dep_ids = [
             dep_id
             for dep_id in dep_ids
             if dep_id in included_ticket_ids
         ]
 
-        if len(unresolved_dep_ids) > 1:
+        if len(included_dep_ids) > 1:
             dep_titles = [
                 str(getattr(ticket_by_id[dep_id], "title", dep_id))[:40]
-                for dep_id in unresolved_dep_ids
+                for dep_id in included_dep_ids
                 if dep_id in ticket_by_id
             ]
             blockers.append(
                 f"Ticket '{ticket.title[:40]}' has ambiguous multi-parent ancestry via "
-                + ", ".join(dep_titles or unresolved_dep_ids)
+                + ", ".join(dep_titles or included_dep_ids)
                 + "."
             )
 
@@ -363,10 +363,17 @@ def analyze_promotion_candidate_graph(
         allowed_bases = set(filter(None, [frontier])) | included_hashes
         if attempt.base_hash:
             if allowed_bases and attempt.base_hash not in allowed_bases:
-                blockers.append(
-                    f"Ticket '{ticket.title[:40]}' attempt base {attempt.base_hash[:12]} "
-                    "is not the current frontier or another included accepted attempt."
-                )
+                # Preserve the legacy no-frontier path for independent root attempts.
+                # Candidate-backed promotion should still validate dependency ancestry,
+                # but projects without a recorded shipped frontier may legitimately
+                # carry a historical base hash on the first accepted leaf.
+                if frontier is None and not included_dep_ids:
+                    pass
+                else:
+                    blockers.append(
+                        f"Ticket '{ticket.title[:40]}' attempt base {attempt.base_hash[:12]} "
+                        "is not the current frontier or another included accepted attempt."
+                    )
         elif frontier:
             blockers.append(f"Ticket '{ticket.title[:40]}' has no base hash for frontier validation.")
 
@@ -486,10 +493,90 @@ def promotion_candidate_to_json(candidate: PromotionCandidate, *, include_attemp
     return payload
 
 
+def _candidate_attempts_by_id(candidate: PromotionCandidate) -> dict[str, TicketAttempt]:
+    attempts = (
+        TicketAttempt.query
+        .filter(TicketAttempt.id.in_(candidate.selected_attempt_ids or []))
+        .order_by(TicketAttempt.created_at.asc(), TicketAttempt.attempt_num.asc())
+        .all()
+    )
+    return {str(attempt.id): attempt for attempt in attempts}
+
+
+def candidate_attempts(candidate: PromotionCandidate) -> list[TicketAttempt]:
+    attempts_by_id = _candidate_attempts_by_id(candidate)
+    ordered_attempts: list[TicketAttempt] = []
+    for attempt_id in candidate.selected_attempt_ids or []:
+        attempt = attempts_by_id.get(str(attempt_id))
+        if attempt is not None:
+            ordered_attempts.append(attempt)
+    return ordered_attempts
+
+
+def candidate_commit_hashes(candidate: PromotionCandidate) -> list[str]:
+    hashes = [h for h in (candidate.selected_leaf_hashes or []) if h]
+    if hashes:
+        return hashes
+    return [
+        attempt.agenthub_commit_hash
+        for attempt in candidate_attempts(candidate)
+        if attempt.agenthub_commit_hash
+    ]
+
+
+def candidate_legacy_wave_num(candidate: PromotionCandidate) -> int:
+    attempts = candidate_attempts(candidate)
+    if not attempts:
+        return 0
+    return max(int(attempt.wave_num or 0) for attempt in attempts)
+
+
+def validate_promotion_candidate(candidate: PromotionCandidate, project: Project) -> list[str]:
+    attempts = candidate_attempts(candidate)
+    candidate_attempts_by_ticket_id = {
+        str(attempt.ticket_id): attempt
+        for attempt in attempts
+    }
+    shipped_attempts = (
+        TicketAttempt.query
+        .filter_by(project_id=project.id, status="shipped")
+        .order_by(TicketAttempt.ticket_id.asc(), TicketAttempt.attempt_num.desc())
+        .all()
+    )
+    accepted_attempts_by_ticket_id = dict(candidate_attempts_by_ticket_id)
+    for attempt in shipped_attempts:
+        accepted_attempts_by_ticket_id.setdefault(str(attempt.ticket_id), attempt)
+
+    analysis = analyze_promotion_candidate_graph(
+        frontier=getattr(project, "shipped_frontier", None) or None,
+        tickets=Ticket.query.filter_by(project_id=project.id).all(),
+        selected_attempts=attempts,
+        accepted_attempts_by_ticket_id=accepted_attempts_by_ticket_id,
+    )
+    errors = list(analysis["validation_summary"].get("blockers", []))
+    if not attempts:
+        errors.append("Candidate has no selected attempts.")
+    missing_attempt_ids = [
+        str(attempt_id)
+        for attempt_id in (candidate.selected_attempt_ids or [])
+        if str(attempt_id) not in {str(attempt.id) for attempt in attempts}
+    ]
+    if missing_attempt_ids:
+        errors.append(
+            "Candidate references missing attempts: " + ", ".join(missing_attempt_ids)
+        )
+    deduped: list[str] = []
+    for error in errors:
+        if error and error not in deduped:
+            deduped.append(error)
+    return deduped
+
+
 def ship_run_to_json(run: ShipRun) -> dict:
     return {
         "id": str(run.id),
         "project_id": str(run.project_id),
+        "promotion_candidate_id": str(run.promotion_candidate_id) if run.promotion_candidate_id else None,
         "wave_num": run.wave_num,
         "status": run.status,
         "error": run.error,

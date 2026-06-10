@@ -261,8 +261,13 @@ def _run_shipper(base_url: str, run_data: dict) -> None:
     Coordinator pre-claimed the run; SHIP_RUN_ID tells shipper which run to process."""
     run_id = run_data["run"]["id"]
     wave_num = run_data["run"].get("wave_num", "?")
+    candidate_id = run_data["run"].get("promotion_candidate_id") or "-"
     project_name = run_data["project"].get("name", "")
-    print(f"[coordinator] starting shipper run={run_id} wave={wave_num} project={project_name!r}", flush=True)
+    print(
+        f"[coordinator] starting shipper run={run_id} candidate={candidate_id} "
+        f"wave={wave_num} project={project_name!r}",
+        flush=True,
+    )
 
     env = {}
     for key in _SHIPPER_ENV_KEYS:

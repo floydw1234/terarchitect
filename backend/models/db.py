@@ -207,15 +207,19 @@ class TicketAttempt(db.Model):
 class ShipRun(db.Model):
     """Execution record for composing/validating/shipping a selected set of work.
 
-    Phase 1 contract: ShipRun remains execution-only. The future canonical
-    operator object is a separate promotion candidate record, not ShipRun
-    itself. Live code still keys ShipRun by legacy wave metadata until later
-    phases complete."""
+    Phase 4 contract: ShipRun is composed from one stable promotion candidate
+    when available. ``wave_num`` remains as a legacy compatibility key for the
+    old endpoints and channels while candidate-backed routes become primary."""
 
     __tablename__ = "ship_runs"
 
     id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
     project_id = db.Column(UUID_TYPE, db.ForeignKey("projects.id"), nullable=False)
+    promotion_candidate_id = db.Column(
+        UUID_TYPE,
+        db.ForeignKey("promotion_candidates.id"),
+        nullable=True,
+    )
     # Legacy-only compatibility key until candidate-backed ShipRuns replace it.
     wave_num = db.Column(db.Integer, nullable=False)
     # MVP-facing states: queued | composing | failed | ready_to_ship | shipping | shipped
@@ -239,6 +243,8 @@ class ShipRun(db.Model):
     shipped_commit_hash = db.Column(db.String(255))
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
+
+    promotion_candidate = db.relationship("PromotionCandidate", backref="ship_runs")
 
 
 class PromotionCandidate(db.Model):

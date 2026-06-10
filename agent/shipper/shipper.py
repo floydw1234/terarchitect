@@ -7,7 +7,7 @@ current main, runs tests, and opens one release PR for human review.
 
 Flow:
   1. Coordinator pre-claims a ShipRun and passes SHIP_RUN_ID.
-  2. Shipper fetches the run data (wave tickets + accepted attempt hashes).
+  2. Shipper fetches the run data (candidate membership + leaf commit hashes).
   3. For each accepted attempt: downloads the AgentHub bundle, unbundles into local repo.
   4. Creates release branch: terarchitect/release/wave-{n}-{short_id}
   5. Merges each accepted hash onto the release branch with git merge --no-ff.
@@ -375,8 +375,11 @@ def run_once() -> bool:
     run = data["run"]
     run_id = run["id"]
     wave_num = run["wave_num"]
+    candidate = data.get("candidate") or {}
+    candidate_id = candidate.get("id") or run.get("promotion_candidate_id")
     project = data["project"]
     commit_hashes = data.get("commit_hashes") or []
+    membership = data.get("membership") or {}
     project_path = (project.get("project_path") or "").strip()
     slug = None
     github_url = (project.get("github_url") or "").strip()
@@ -388,8 +391,16 @@ def run_once() -> bool:
             slug = "/".join(parts[:2])
 
     wave_ch = _wave_channel(project['name'], wave_num)
-    print(f"[shipper] Run {run_id} wave {wave_num} project {project['name']!r}")
+    print(
+        f"[shipper] Run {run_id} candidate={candidate_id or '-'} "
+        f"wave {wave_num} project {project['name']!r}"
+    )
     print(f"[shipper] Commit hashes: {commit_hashes}")
+    if membership:
+        print(
+            f"[shipper] Candidate membership: attempts={len(membership.get('attempts') or [])} "
+            f"tickets={len(membership.get('tickets') or [])}"
+        )
 
     if not commit_hashes:
         _api_post(f"/api/worker/ship-run/{run_id}/fail", {
@@ -425,7 +436,12 @@ def run_once() -> bool:
             _event_content(
                 "release_composition_started",
                 f"Release composition started for {len(commit_hashes)} attempt(s)",
-                {"wave_num": wave_num, "ship_run_id": run_id, "attempt_count": len(commit_hashes)},
+                {
+                    "wave_num": wave_num,
+                    "ship_run_id": run_id,
+                    "promotion_candidate_id": candidate_id,
+                    "attempt_count": len(commit_hashes),
+                },
             ),
         )
         try:
@@ -439,7 +455,12 @@ def run_once() -> bool:
                 _event_content(
                     "release_composition_failed",
                     str(e)[:300],
-                    {"wave_num": wave_num, "ship_run_id": run_id, "error": str(e)[:2000]},
+                    {
+                        "wave_num": wave_num,
+                        "ship_run_id": run_id,
+                        "promotion_candidate_id": candidate_id,
+                        "error": str(e)[:2000],
+                    },
                 ),
             )
             _api_post(f"/api/worker/ship-run/{run_id}/fail", {
@@ -459,7 +480,12 @@ def run_once() -> bool:
                 _event_content(
                     "release_composition_failed",
                     f"Tests failed: {test_output[:300]}",
-                    {"wave_num": wave_num, "ship_run_id": run_id, "test_status": test_status},
+                    {
+                        "wave_num": wave_num,
+                        "ship_run_id": run_id,
+                        "promotion_candidate_id": candidate_id,
+                        "test_status": test_status,
+                    },
                 ),
             )
             _api_post(f"/api/worker/ship-run/{run_id}/fail", {
@@ -509,6 +535,7 @@ def run_once() -> bool:
                 {
                     "wave_num": wave_num,
                     "ship_run_id": run_id,
+                    "promotion_candidate_id": candidate_id,
                     "release_pr_number": pr_number,
                     "release_pr_url": pr_url,
                     "release_branch": branch,
