@@ -12,9 +12,9 @@ The MVP is done when all of the following are true for a swarm/AgentHub project:
 
 - Worker completion creates a `TicketAttempt` instead of depending on a ticket-level PR.
 - Each dispatched worker job has an explicit base hash derived from `shipped_frontier` or one accepted dependency.
-- A wave with accepted attempts can be composed through a `ShipRun`.
-- Ship Room can show wave status, accepted attempts, compose failures, and final ship state.
-- Shipping happens once at the wave boundary through `/ship/waves/:wave_num/ship`.
+- A promotion candidate with accepted attempts can be composed through a `ShipRun`.
+- Ship Room can show candidate status, accepted attempts, compose failures, and final ship state.
+- Shipping happens once at the promotion boundary through a candidate-backed `ShipRun`.
 - The final ship updates `projects.shipped_frontier` and marks selected attempts as `shipped`.
 - No per-ticket PR is required anywhere in the happy path.
 - Focused backend and frontend tests cover the happy path plus the obvious failure modes.
@@ -298,16 +298,18 @@ The UI is not enough; operators need one obvious control path.
 
 **Concrete changes**
 
-- Keep `ta ship` centered on the same wave flow as the UI:
-  - `ta ship waves <project_id>`
-  - `ta ship show <project_id> <wave_num>`
-  - `ta ship compose <project_id> <wave_num>`
-  - `ta ship feedback <project_id> <wave_num> "message"`
-  - `ta ship merge-pr <project_id> <wave_num>`
+- Keep `ta ship` centered on the same candidate/`ShipRun` flow as the UI:
+  - `ta ship candidates <project_id>`
+  - `ta ship candidate <project_id> <candidate_id>`
+  - `ta ship compose-candidate <project_id> <candidate_id>`
+  - `ta ship run <project_id> <run_id>`
+  - `ta ship ship-run <project_id> <run_id>`
+  - `ta ship ship-candidate <project_id> <candidate_id>`
+  - `ta ship feedback <project_id> <candidate_id> "message"`
 - Update docs so they describe one operator path:
   1. agent completes work
   2. human accepts attempt
-  3. compose wave
+  3. compose the promotion candidate
   4. inspect `ShipRun`
   5. ship/merge final boundary
 - Explicitly say ticket-level PR review is not part of swarm mode.
@@ -327,9 +329,9 @@ python3 -m py_compile cli/commands/ship.py
 
 Manual smoke check:
 ```bash
-ta ship waves <project_id>
-ta ship show <project_id> 0
-ta ship compose <project_id> 0
+ta ship candidates <project_id>
+ta ship candidate <project_id> <candidate_id>
+ta ship compose-candidate <project_id> <candidate_id>
 ```
 
 ---

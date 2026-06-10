@@ -176,10 +176,4 @@ Keep operators on one path for swarm projects:
 
 Agents and coordinators are the primary users of the system. The UI remains a review/ship boundary for humans, and the long-term CLI/API contract is candidate review plus `ShipRun` execution.
 
-Current live code still exposes legacy wave compatibility routes and CLI strings. They are not the target operator vocabulary, but they remain true today until later phases remove them:
-
-- `ta ship waves <project_id>`
-- `ta ship show <project_id> <wave_num>`
-- `ta ship compose <project_id> <wave_num>`
-- `ta ship feedback <project_id> <wave_num> "message"`
-- `ta ship merge-pr <project_id> <wave_num>`
+Current live code still keeps some legacy wave-keyed backend routes for compatibility and test coverage. Treat them as implementation details, not operator commands; the operator path is `ta ship candidates`, `ta ship candidate`, `ta ship compose-candidate`, `ta ship run`, `ta ship ship-run`, and `ta ship ship-candidate`.

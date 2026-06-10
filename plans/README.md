@@ -60,13 +60,13 @@ Use one operator path for swarm projects:
 
 1. agent completes work and publishes a `TicketAttempt`
 2. human accepts the attempt
-3. compose the wave
+3. review or create a promotion candidate
 4. inspect the resulting `ShipRun`
-5. ship/merge at the final wave boundary
+5. ship/merge at the final promotion boundary
 
-Agents and coordinators are the primary users of this system. The UI and human actions remain review/ship boundaries, and the CLI should mirror the ShipRun wave API: `ta ship waves`, `ta ship show`, `ta ship compose`, `ta ship feedback`, and `ta ship merge-pr`.
+Agents and coordinators are the primary users of this system. The UI and human actions remain review/ship boundaries, and the CLI should mirror the candidate/`ShipRun` API: `ta ship candidates`, `ta ship candidate`, `ta ship compose-candidate`, `ta ship run`, `ta ship ship-run`, `ta ship ship-candidate`, and `ta ship feedback`.
 
-Ticket-level PR review is not part of swarm mode. The review and ship boundary lives at the wave/`ShipRun` level.
+Ticket-level PR review is not part of swarm mode. The review and ship boundary lives at the promotion-candidate/`ShipRun` level.
 
 ## Related Operational Docs
 

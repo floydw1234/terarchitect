@@ -98,7 +98,7 @@ Details: `docs/PHASE1_WORKER_API.md`.
 
 High-level flow: **UI → enqueue → coordinator claims → agent container runs → AgentHub attempt created → accepted `TicketAttempt` → promotion candidate review → `ShipRun` compose/ship → release/export PR or local frontier advance**.
 
-The UI is an operator surface, not the primary execution surface. Agents and coordinators do the work; humans review accepted attempts and ship at the promotion boundary. The current CLI and HTTP surfaces still expose legacy wave-oriented endpoints such as `ta ship waves`, `ta ship show`, `ta ship compose`, `ta ship feedback`, and `ta ship merge-pr`; Phase 1 only freezes the replacement vocabulary and does not remove those compatibility routes yet.
+The UI is an operator surface, not the primary execution surface. Agents and coordinators do the work; humans review accepted attempts and ship at the promotion boundary. The primary operator workflow is promotion-candidate review followed by `ShipRun` compose/ship. Legacy wave-keyed HTTP routes remain backend compatibility surfaces only.
 
 ---
 
@@ -180,7 +180,7 @@ Full ops notes (systemd, env, verification): see `docs/RUNBOOK.md`.
 5. Terarchitect records the attempt as a `TicketAttempt`; accepted attempts are the inputs to future promotion candidates.
 6. The target Ship Room flow is: review a stable promotion candidate built from accepted attempts whose dependency closure is valid, create a `ShipRun` from that candidate set, then advance the shipped frontier when shipped.
 
-Ticket-level PR review is not part of the swarm-mode MVP path. The human review point is attempt acceptance, and the shipping object is a candidate-backed `ShipRun`. Current code may still use legacy wave-numbered endpoints until later phases complete.
+Ticket-level PR review is not part of the swarm-mode MVP path. The human review point is attempt acceptance, and the shipping object is a candidate-backed `ShipRun`. Legacy wave-numbered endpoints may still exist for backend compatibility, but they are not the operator workflow.
 
 No mixing with your project’s Dockerfile. The agent image is built once and reused.
 

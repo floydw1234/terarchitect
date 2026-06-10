@@ -10,7 +10,7 @@ Commands:
                | attempts | accept-attempt | reject-attempt
                (Intent fields: --rationale, --acceptance-criteria, --constraints, --intent-status)
     attempt    list | show | files | diff
-    ship       waves | show | compose | feedback | merge-pr
+    ship       candidates | candidate | compose-candidate | run | ship-run | ship-candidate | feedback
     workspace  leaves | list | create | show | compose | analyze | bless | promote | discard
     graph      get | set
     plan       <project-id>  — generate tickets from graph + notes via LLM
@@ -18,7 +18,7 @@ Commands:
 Product model:
     Tickets are intents: goal, rationale, acceptance criteria, constraints, architecture scope.
     Agents publish attempts to AgentHub (not GitHub PRs).
-    Ship Room composes accepted attempts into one release PR per wave.
+    Ship Room turns accepted attempts into promotion candidates and ShipRuns.
     Workspace lets you compose, preview, bless, and optionally promote candidate states
     without shipping to main.
 

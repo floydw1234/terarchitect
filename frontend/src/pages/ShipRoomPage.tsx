@@ -128,7 +128,7 @@ function getAttemptReviewLockReason(attempt: TicketAttempt, shipRunStatus: strin
 function formatCandidateLabel(candidateId: string, legacyWaveNum: number | null) {
   const readableId = candidateId.replace(/^candidate-/, '');
   const shortId = readableId.slice(0, 8) || candidateId.slice(0, 8);
-  return legacyWaveNum !== null ? `Candidate ${shortId} · legacy wave ${legacyWaveNum}` : `Candidate ${shortId}`;
+  return legacyWaveNum !== null ? `Candidate ${shortId}` : `Candidate ${shortId}`;
 }
 
 function normalizeCandidateDetail(detail: PromotionCandidateDetail): CandidateViewModel {
@@ -163,7 +163,7 @@ function normalizeLegacyWaveDetail(detail: WaveDetail): CandidateViewModel {
   return {
     id: `legacy-wave-${detail.wave_num}`,
     candidateId: null,
-    label: `Candidate · legacy wave ${detail.wave_num}`,
+    label: `Candidate set ${detail.wave_num}`,
     status: detail.ship_run?.status ?? (detail.can_compose ? 'draft' : detail.all_done ? 'blocked' : 'queued'),
     baseRootHash: detail.shipped_frontier,
     tickets: detail.tickets.map(ticket => ({ id: ticket.id, title: ticket.title })),

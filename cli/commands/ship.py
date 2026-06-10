@@ -79,11 +79,6 @@ def _want_json(args) -> bool:
 
 
 def _candidate_label(candidate: dict) -> str:
-    legacy_wave_num = ((candidate.get("membership") or {}).get("legacy_wave_num"))
-    if legacy_wave_num is None:
-        legacy_wave_num = candidate.get("legacy_wave_num")
-    if legacy_wave_num is not None:
-        return f"candidate {short_id(candidate.get('id', ''))} (legacy wave {legacy_wave_num})"
     return f"candidate {short_id(candidate.get('id', ''))}"
 
 

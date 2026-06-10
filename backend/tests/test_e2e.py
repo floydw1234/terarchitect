@@ -9,7 +9,7 @@ Uses Flask test client. External calls (AgentHub, GitHub) are mocked.
   3.  Simulate agent completing tickets (ticket_complete)
   4.  Attempts publish to AgentHub (mocked validation)
   5.  Attempts become accepted
-  6.  Ship Room compose wave
+  6.  Ship Room compose promotion candidate
   7.  Shipper reports composed (mocked)
   8.  Release PR merged (mocked gh)
   9.  shipped_frontier advances
@@ -107,7 +107,7 @@ def test_e2e_ship_happy_path(client, project):
 
     _complete_ticket(client, pid, t_b["id"], "b" * 40, base_hash="a" * 40)
 
-    # Step 6: Compose wave 0 (A)
+    # Step 6: Compose the candidate for the accepted frontier-ready attempt set
     compose_resp = client.post(f"/api/projects/{pid}/ship/waves/0/compose", json={})
     assert compose_resp.status_code in (200, 201)
     compose_data = compose_resp.get_json()

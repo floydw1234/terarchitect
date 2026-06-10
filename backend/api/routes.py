@@ -34,7 +34,6 @@ from .services.merge_service import (
     candidate_legacy_wave_num as _candidate_legacy_wave_num,
     compute_waves as _compute_waves,
     lock_project_for_update as _lock_project_for_update,
-    maybe_trigger_wave_merge as _maybe_trigger_wave_merge,
     promotion_candidate_to_json as _promotion_candidate_to_json,
     ship_run_to_json as _ship_run_to_json,
     validate_promotion_candidate as _validate_promotion_candidate,
@@ -1593,13 +1592,6 @@ def ticket_complete(project_id, ticket_id):
             _dispatch_unblocked_queued(project_id)
         except Exception as exc:
             current_app.logger.warning("Dispatch queued failed: %s", exc)
-        # Only trigger wave merge if the attempt was accepted; failed validation
-        # means no commit hash to merge, so queuing a ship run would fail immediately.
-        if attempt is not None and attempt.status == "accepted":
-            try:
-                _maybe_trigger_wave_merge(project_id, ticket_id)
-            except Exception as exc:
-                current_app.logger.warning("Wave merge trigger failed: %s", exc)
 
     return jsonify({"message": "Complete", "ticket_id": str(ticket.id)})
 

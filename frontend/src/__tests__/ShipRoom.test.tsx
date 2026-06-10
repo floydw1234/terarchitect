@@ -196,11 +196,11 @@ test('ready_to_ship run shows the release PR at ShipRun level', async () => {
   renderShipRoom();
 
   await waitFor(() => {
-    expect(screen.getAllByText(/legacy wave 0/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Candidate 1/i).length).toBeGreaterThan(0);
     expect(screen.getAllByRole('link', { name: /Release PR #42/i }).length).toBeGreaterThan(0);
   });
 
-  fireEvent.click(screen.getAllByText(/legacy wave 0/i).at(-1)!);
+  fireEvent.click(screen.getAllByText(/Candidate 1/i).at(-1)!);
 
   await waitFor(() => {
     const prLink = screen.getAllByRole('link', { name: /Release PR #42/i })[0];
@@ -219,11 +219,11 @@ test('compose_failed state shows its error text', async () => {
   renderShipRoom();
 
   await waitFor(() => {
-    expect(screen.getAllByText(/legacy wave 0/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Candidate 2/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText('Merge conflict in src/models.py').length).toBeGreaterThan(0);
   });
 
-  fireEvent.click(screen.getAllByText(/legacy wave 0/i).at(-1)!);
+  fireEvent.click(screen.getAllByText(/Candidate 2/i).at(-1)!);
 
   await waitFor(() => {
     expect(screen.getAllByText('Compose Failed').length).toBeGreaterThan(0);
@@ -253,10 +253,10 @@ test('shipped state is visually distinct from accepted state', async () => {
   renderShipRoom();
 
   await waitFor(() => {
-    expect(screen.getAllByText(/legacy wave/i).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText(/Candidate/i).length).toBeGreaterThanOrEqual(2);
   });
 
-  fireEvent.click(screen.getAllByText(/legacy wave 2/i).at(-1)!);
+  fireEvent.click(screen.getAllByText(/Candidate 3/i).at(-1)!);
 
   await waitFor(() => {
     expect(screen.getByText(/Shipped · shipped456/)).toBeInTheDocument();
@@ -282,7 +282,7 @@ test('Ship Room review controls can accept a proposed attempt', async () => {
   renderShipRoom();
 
   await waitFor(() => {
-    expect(screen.getAllByText(/legacy wave 0/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Candidate 1/i).length).toBeGreaterThan(0);
   });
 
   await waitFor(() => {
@@ -314,10 +314,10 @@ test('Ship Room review controls can reject a proposed attempt', async () => {
   renderShipRoom();
 
   await waitFor(() => {
-    expect(screen.getAllByText(/legacy wave 0/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Candidate 1/i).length).toBeGreaterThan(0);
   });
 
-  fireEvent.click(screen.getAllByText(/legacy wave 0/i).at(-1)!);
+  fireEvent.click(screen.getAllByText(/Candidate 1/i).at(-1)!);
 
   await waitFor(() => {
     expect(screen.getByRole('button', { name: 'Reject attempt #2' })).toBeEnabled();
@@ -340,10 +340,10 @@ test('locked attempts disable review actions with a useful explanation', async (
   renderShipRoom();
 
   await waitFor(() => {
-    expect(screen.getAllByText(/legacy wave 0/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Candidate 1/i).length).toBeGreaterThan(0);
   });
 
-  fireEvent.click(screen.getAllByText(/legacy wave 0/i).at(-1)!);
+  fireEvent.click(screen.getAllByText(/Candidate 1/i).at(-1)!);
 
   await waitFor(() => {
     const acceptButton = screen.getByRole('button', { name: 'Accept attempt #1' });
@@ -364,10 +364,10 @@ test('ticket rows do not show PR language', async () => {
   renderShipRoom();
 
   await waitFor(() => {
-    expect(screen.getAllByText(/legacy wave 0/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Candidate 1/i).length).toBeGreaterThan(0);
   });
 
-  fireEvent.click(screen.getAllByText(/legacy wave 0/i).at(-1)!);
+  fireEvent.click(screen.getAllByText(/Candidate 1/i).at(-1)!);
 
   await waitFor(() => {
     const ticketCard = screen.getByTestId('ticket-card-ticket-1');

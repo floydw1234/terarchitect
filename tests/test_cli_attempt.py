@@ -183,4 +183,4 @@ def test_ticket_accept_attempt_hits_accept_endpoint(capsys):
         "/api/projects/proj/tickets/ticket-1/attempts/attempt-1/accept",
         {},
     )
-    assert "ta ship show proj 2" in capsys.readouterr().out
+    assert "ta ship candidates proj" in capsys.readouterr().out

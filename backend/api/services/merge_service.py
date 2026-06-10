@@ -1,8 +1,6 @@
 """Ship run and wave-computation helpers (swarm mode)."""
 from collections import defaultdict
 
-from flask import current_app
-
 from models.db import db, Project, PromotionCandidate, Ticket, ShipRun, TicketAttempt
 from .attempt_service import SATISFIED_STATUSES as _SATISFIED_STATUSES
 
@@ -24,13 +22,6 @@ def lock_project_for_update(project_id):
     for the focused test app while keeping the production transaction shape.
     """
     return Project.query.filter_by(id=project_id).with_for_update().first()
-
-
-def _has_accepted_attempt(ticket_id) -> bool:
-    return TicketAttempt.query.filter_by(ticket_id=ticket_id).filter(
-        TicketAttempt.status.in_(_SATISFIED_STATUSES)
-    ).first() is not None
-
 
 def compute_waves(tickets: list) -> dict:
     """BFS topological layering over depends_on_ticket_ids.
@@ -181,38 +172,6 @@ def analyze_wave_dependencies(tickets: list) -> dict:
         ],
         "dependency_cycles": cycles,
     }
-
-
-def maybe_trigger_wave_merge(project_id, completed_ticket_id) -> None:
-    """Called after a swarm ticket reaches `done`. If every ticket in that
-    wave has an accepted attempt AND no ship run exists yet, enqueue one."""
-    project = lock_project_for_update(project_id)
-    if not project:
-        return
-
-    tickets = Ticket.query.filter_by(project_id=project_id).all()
-    if not tickets:
-        return
-    waves = compute_waves(tickets)
-    my_wave = waves.get(str(completed_ticket_id), 0)
-
-    wave_tickets = [t for t in tickets if waves.get(str(t.id), 0) == my_wave]
-    if not all(_has_accepted_attempt(t.id) for t in wave_tickets):
-        return
-
-    existing = ShipRun.query.filter_by(
-        project_id=project_id, wave_num=my_wave,
-    ).filter(ShipRun.status.in_(ACTIVE_SHIP_RUN_STATUSES + TERMINAL_SHIP_RUN_STATUSES)).first()
-    if existing:
-        return
-
-    run = ShipRun(project_id=str(project_id), wave_num=my_wave, status="queued")
-    db.session.add(run)
-    db.session.commit()
-    current_app.logger.info(
-        "Wave %d complete for project %s — ship run %s queued",
-        my_wave, project_id, run.id,
-    )
 
 
 def analyze_promotion_candidate_graph(

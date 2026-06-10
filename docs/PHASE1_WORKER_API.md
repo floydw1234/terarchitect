@@ -87,7 +87,7 @@ docker run --rm \
 
 **Required env:** `TICKET_ID`, `PROJECT_ID`, `TERARCHITECT_API_URL`, `REPO_URL`. Optional: `GITHUB_TOKEN`, `TERARCHITECT_WORKER_API_KEY`. Agent config (DIRECTOR_LLM_URL, WORKER_LLM_URL, WORKER_MODEL, etc.) must be set in the environment (e.g. coordinator passes them into the container).
 
-Workspace in container: `/workspace` (clone and run happen there). Exit 0 = success; non-zero = failure (coordinator uses this to call jobs/complete or jobs/fail). PR-review jobs have been removed; human feedback now flows through AgentHub channels and Ship Room/Workspace actions. Current Ship Room endpoints may still be wave-oriented during migration, but the target contract is candidate review followed by `ShipRun` execution.
+Workspace in container: `/workspace` (clone and run happen there). Exit 0 = success; non-zero = failure (coordinator uses this to call jobs/complete or jobs/fail). PR-review jobs have been removed; human feedback now flows through AgentHub channels and Ship Room/Workspace actions. The operator contract is candidate review followed by `ShipRun` execution; any remaining wave-keyed ship routes are backend compatibility shims.
 
 ---
 
@@ -120,7 +120,7 @@ python -m coordinator
 
 **Container reachability:** The coordinator passes its env (including `TERARCHITECT_API_URL`) to each container. If the app is on the host and the coordinator runs on the same host, set `TERARCHITECT_API_URL=http://host.docker.internal:5010` (or the host’s IP) so the container can reach the app. On Linux without Docker Desktop you may need `--add-host=host.docker.internal:host-gateway` when running the coordinator’s `docker run` (the coordinator does not add this by default).
 
-Operator note: this worker API doc freezes the DAG-native nouns only. It does not claim that the current shipping routes are already candidate-backed; legacy wave-keyed ship endpoints still exist in the live app until later phases.
+Operator note: this worker API doc freezes the DAG-native nouns only. It does not require every legacy backend route to be removed immediately; some wave-keyed ship endpoints may still exist as compatibility shims behind the candidate-first UI and CLI.
 
 ---
 
