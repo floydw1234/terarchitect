@@ -4,6 +4,8 @@ API Routes for Terarchitect
 import json
 import os
 import subprocess
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 from uuid import UUID
 
 from flask import Blueprint, abort, current_app, jsonify, request
@@ -134,6 +136,254 @@ def _evidence_gate_response(project, target_type: str, target_id) -> tuple[dict 
         "target_id": str(target_id),
         "evidence_policy": evaluation,
     }, 409
+
+
+def _ship_doctor_check(name: str, status: str, summary: str, *, detail: str | None = None, next_commands: list[str] | None = None) -> dict:
+    payload = {
+        "name": name,
+        "status": status,
+        "summary": summary,
+    }
+    if detail:
+        payload["detail"] = detail
+    if next_commands:
+        payload["next_commands"] = next_commands
+    return payload
+
+
+def _ship_doctor_report(project) -> dict:
+    from sqlalchemy import inspect as _sa_inspect
+
+    project_id = str(project.id)
+    checks: list[dict] = []
+    next_commands: list[str] = [f"ta ship doctor {project_id}"]
+
+    inspector = _sa_inspect(db.engine)
+    tables = set(inspector.get_table_names())
+    required_tables = {"ticket_attempts", "promotion_candidates", "ship_runs", "evidence_bundles", "evidence_checks"}
+    missing_tables = sorted(required_tables - tables)
+    if missing_tables:
+        checks.append(_ship_doctor_check(
+            "db_schema",
+            "fail",
+            "Ship Room schema is incomplete.",
+            detail="Missing tables: " + ", ".join(missing_tables),
+        ))
+    else:
+        checks.append(_ship_doctor_check("db_schema", "pass", "Ship Room tables are present."))
+
+    github_url = (project.github_url or "").strip()
+    slug = _repo_slug_from_github_url(github_url) if github_url else None
+    if slug:
+        checks.append(_ship_doctor_check("project_repo", "pass", f"GitHub target repo resolves to {slug}."))
+    else:
+        checks.append(_ship_doctor_check(
+            "project_repo",
+            "warn",
+            "Project GitHub target repo is not configured.",
+            next_commands=[f"ta project update {project_id} --github-url https://github.com/OWNER/REPO"],
+        ))
+        next_commands.append(f"ta project update {project_id} --github-url https://github.com/OWNER/REPO")
+
+    frontier = (project.shipped_frontier or "").strip()
+    if frontier:
+        checks.append(_ship_doctor_check("frontier", "pass", f"Shipped frontier is set to {frontier[:12]}."))
+    else:
+        checks.append(_ship_doctor_check(
+            "frontier",
+            "warn",
+            "Project shipped frontier is not set.",
+            next_commands=[f"ta project show {project_id}"],
+        ))
+        next_commands.append(f"ta project show {project_id}")
+
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "status", "--hostname", "github.com"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            env=_env_for_gh_user(),
+        )
+        if result.returncode == 0:
+            checks.append(_ship_doctor_check("github_auth", "pass", "Backend runtime can authenticate to GitHub."))
+        else:
+            checks.append(_ship_doctor_check(
+                "github_auth",
+                "warn",
+                "Backend runtime GitHub auth is unavailable.",
+                detail=(result.stderr or result.stdout or "").strip() or "gh auth status returned a non-zero exit code.",
+                next_commands=[f"ta ship doctor {project_id}"],
+            ))
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        checks.append(_ship_doctor_check(
+            "github_auth",
+            "warn",
+            "Backend runtime GitHub auth could not be verified.",
+            detail=str(exc),
+            next_commands=[f"ta ship doctor {project_id}"],
+        ))
+
+    agenthub_url = (os.environ.get("AGENTHUB_URL") or "").rstrip("/")
+    if not agenthub_url:
+        checks.append(_ship_doctor_check(
+            "agenthub",
+            "warn",
+            "AGENTHUB_URL is not configured in backend runtime.",
+            next_commands=[f"ta ship doctor {project_id}"],
+        ))
+    else:
+        try:
+            with urllib_request.urlopen(f"{agenthub_url}/health", timeout=5) as resp:
+                body = (resp.read() or b"").decode("utf-8", errors="ignore")
+            checks.append(_ship_doctor_check("agenthub", "pass", "AgentHub health check succeeded.", detail=body[:200] or None))
+        except (urllib_error.URLError, ValueError) as exc:
+            checks.append(_ship_doctor_check(
+                "agenthub",
+                "warn",
+                "AgentHub health check could not be completed.",
+                detail=str(exc),
+                next_commands=[f"ta ship doctor {project_id}"],
+            ))
+
+    statuses = {check["status"] for check in checks}
+    overall = "fail" if "fail" in statuses else "warn" if "warn" in statuses else "pass"
+    deduped_next = []
+    for command in next_commands:
+        if command not in deduped_next:
+            deduped_next.append(command)
+
+    return {
+        "project_id": project_id,
+        "status": overall,
+        "checks": checks,
+        "next_commands": deduped_next,
+    }
+
+
+def _ship_error_payload(project, run, *, detail: str, hint: str, phase: str, status_code: int = 502) -> tuple[dict, int]:
+    project_id = str(project.id)
+    payload = {
+        "error": "PR merge failed",
+        "detail": detail,
+        "hint": hint,
+        "phase": phase,
+        "request_id": f"ship-run:{run.id}",
+        "next_commands": [
+            f"ta ship doctor {project_id}",
+            f"ta ship run {project_id} {run.id}",
+        ],
+    }
+    return payload, status_code
+
+
+def _ship_run_evidence_summary(run: ShipRun) -> dict | None:
+    bundle = (
+        EvidenceBundle.query
+        .filter_by(project_id=run.project_id, target_type="ship_run", target_id=run.id)
+        .order_by(EvidenceBundle.created_at.desc())
+        .first()
+    )
+    if not bundle:
+        return None
+    return _evidence_bundle_to_json(bundle)
+
+
+def _collect_ship_run_evidence(run: ShipRun) -> dict | None:
+    try:
+        bundle = _collect_existing_target_evidence(run.project_id, {
+            "target_type": "ship_run",
+            "target_id": str(run.id),
+        })
+    except Exception as exc:
+        current_app.logger.warning("Collecting ship-run evidence failed for %s: %s", run.id, exc)
+        return None
+    return _evidence_bundle_to_json(bundle)
+
+
+def _finalize_shipped_run(project, run, *, new_tip: str | None, root_refresh_source: str):
+    from datetime import datetime, timezone
+
+    run.status = "shipped"
+    run.shipped_commit_hash = new_tip
+    run.shipped_at = datetime.now(timezone.utc)
+
+    context = _ship_run_context(run)
+    candidate = context["candidate"]
+    if candidate is not None:
+        candidate.status = "shipped"
+        candidate.composed_commit_hash = run.composed_commit_hash
+        attempts = _candidate_attempts(candidate)
+    else:
+        attempts = []
+        tickets = Ticket.query.filter_by(project_id=project.id).all()
+        all_waves = _compute_waves(tickets)
+        for ticket in tickets:
+            if all_waves.get(str(ticket.id), 0) != run.wave_num:
+                continue
+            attempt = _get_accepted_attempt(ticket.id)
+            if attempt is not None:
+                attempts.append(attempt)
+
+    for attempt in attempts:
+        if attempt.status == "shipped":
+            continue
+        try:
+            path = {
+                "accepted": ["composed", "release_pr_open", "shipped"],
+                "composed": ["release_pr_open", "shipped"],
+                "release_pr_open": ["shipped"],
+            }
+            for next_status in path.get(attempt.status, []):
+                _transition_attempt(attempt, next_status, reason=f"ship run {run.id} shipped")
+        except ValueError:
+            current_app.logger.warning(
+                "Could not transition attempt %s (status=%s) to shipped",
+                attempt.id, attempt.status,
+            )
+    db.session.commit()
+
+    if new_tip:
+        try:
+            _apply_root_refresh(project, new_tip, source=root_refresh_source)
+        except Exception as exc:
+            current_app.logger.warning("Root refresh after ship failed: %s", exc)
+
+    wave_num = context["wave_num"]
+    if run.release_pr_number:
+        _post_event(
+            _wave_channel(project.name, wave_num),
+            _event_content(
+                "release_pr_merged",
+                f"Release PR #{run.release_pr_number} merged" + (f" at {new_tip[:12]}" if new_tip else ""),
+                {
+                    "wave_num": wave_num,
+                    "ship_run_id": str(run.id),
+                    "promotion_candidate_id": str(candidate.id) if candidate else None,
+                    "release_pr_number": run.release_pr_number,
+                    "release_pr_url": run.release_pr_url,
+                    "shipped_commit_hash": new_tip,
+                },
+            ),
+        )
+    _post_event(
+        _wave_channel(project.name, wave_num),
+        _event_content(
+            "wave_shipped",
+            f"Wave {wave_num} shipped" + (f" at {new_tip[:12]}" if new_tip else ""),
+            {
+                "wave_num": wave_num,
+                "ship_run_id": str(run.id),
+                "promotion_candidate_id": str(candidate.id) if candidate else None,
+                "shipped_commit_hash": new_tip,
+            },
+        ),
+    )
+
+    evidence_summary = _collect_ship_run_evidence(run)
+    payload = _ship_run_detail_payload(run)
+    payload["evidence_summary"] = evidence_summary
+    return jsonify(payload)
 
 
 # Worker-facing route prefixes are already protected by _require_worker_auth (Bearer TERARCHITECT_WORKER_API_KEY).
@@ -2417,6 +2667,7 @@ def _ship_run_detail_payload(run: ShipRun) -> dict:
     payload["validation_errors"] = context["validation_errors"]
     payload["wave_tickets"] = context["wave_tickets"]
     payload["commit_hashes"] = context["commit_hashes"]
+    payload["evidence_summary"] = _ship_run_evidence_summary(run)
     return payload
 
 def _wave_next_actions(*, wave_num: int, blockers: list[str], all_done: bool, ship_run, can_compose: bool, can_ship: bool) -> list[str]:
@@ -2620,6 +2871,116 @@ def ship_waves(project_id):
             entry["dependency_cycles"] = detail["dependency_cycles"]
 
     return jsonify(sorted(wave_map.values(), key=lambda x: x["wave_num"]))
+
+
+@api_bp.route("/projects/<uuid:project_id>/ship/doctor", methods=["GET"])
+def ship_doctor(project_id):
+    project = _get_project_or_404(project_id)
+    return jsonify(_ship_doctor_report(project))
+
+
+@api_bp.route("/projects/<uuid:project_id>/ship/happy-path", methods=["POST"])
+def ship_happy_path(project_id):
+    project = _lock_project_for_update(project_id)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+
+    data = request.json or {}
+    ticket_id = (data.get("ticket_id") or "").strip()
+    if not ticket_id:
+        return jsonify({"error": "ticket_id is required"}), 400
+
+    ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first()
+    if not ticket:
+        return jsonify({"error": "Ticket not found"}), 404
+
+    attempt = _get_accepted_attempt(ticket.id)
+    if attempt is None:
+        return jsonify({
+            "error": "Ticket has no accepted attempt yet.",
+            "hint": "Accept an attempt before using ship happy-path.",
+            "next_commands": [f"ta ticket attempts {project_id} {ticket_id}"],
+        }), 409
+
+    candidate, snapshot = _ensure_candidate_from_attempt_ids(project, [str(attempt.id)])
+    candidate.selected_leaf_hashes = snapshot["selected_leaf_hashes"]
+    candidate.base_root_hash = snapshot["base_root_hash"]
+    candidate.status = snapshot["status"]
+    candidate.validation_summary = snapshot["validation_summary"]
+    candidate.conflict_summary = snapshot["conflict_summary"]
+    db.session.flush()
+
+    if snapshot["status"] == "blocked":
+        db.session.commit()
+        return jsonify({
+            "error": "Candidate composition validation failed.",
+            "details": snapshot["validation_summary"].get("blockers", []),
+            "hint": "Resolve candidate blockers, then retry ship happy-path.",
+            "next_commands": [
+                f"ta ship candidate {project_id} {candidate.id}",
+                f"ta ship doctor {project_id}",
+            ],
+        }), 409
+
+    run = (
+        ShipRun.query
+        .filter_by(project_id=project_id, promotion_candidate_id=candidate.id)
+        .order_by(ShipRun.created_at.desc())
+        .first()
+    )
+    if run is None or run.status in ("failed", "compose_failed"):
+        run = ShipRun(
+            project_id=str(project_id),
+            promotion_candidate_id=str(candidate.id),
+            wave_num=_candidate_legacy_wave_num(candidate),
+            status="queued",
+        )
+        db.session.add(run)
+        db.session.commit()
+        return jsonify({
+            "status": "queued",
+            "attempt_id": str(attempt.id),
+            "candidate_id": str(candidate.id),
+            "ship_run_id": str(run.id),
+            "next_commands": [
+                f"ta ship run {project_id} {run.id}",
+                f"ta ship candidate {project_id} {candidate.id}",
+            ],
+        }), 202
+
+    if run.status == "ready_to_ship":
+        ship_response = _ship_run_ship_response(
+            project,
+            run,
+            merge_method=str((data.get("merge_method") or "merge")).strip().lower(),
+        )
+        if getattr(ship_response, "status_code", 200) != 200:
+            return ship_response
+        shipped = ship_response.get_json()
+        return jsonify({
+            "status": "shipped",
+            "attempt_id": str(attempt.id),
+            "candidate_id": str(candidate.id),
+            "ship_run_id": str(run.id),
+            "shipped_commit_hash": shipped.get("shipped_commit_hash"),
+            "evidence_summary": shipped.get("evidence_summary"),
+            "next_commands": [
+                f"ta ship run {project_id} {run.id}",
+                f"ta ship candidate {project_id} {candidate.id}",
+            ],
+        })
+
+    db.session.commit()
+    return jsonify({
+        "status": run.status,
+        "attempt_id": str(attempt.id),
+        "candidate_id": str(candidate.id),
+        "ship_run_id": str(run.id),
+        "next_commands": [
+            f"ta ship run {project_id} {run.id}",
+            f"ta ship candidate {project_id} {candidate.id}",
+        ],
+    })
 
 
 @api_bp.route("/projects/<uuid:project_id>/ship/candidates", methods=["GET", "POST"])
@@ -2920,8 +3281,7 @@ def _ship_run_ship_response(project, run, *, merge_method: str = "merge"):
     if gate:
         return jsonify(gate), gate_status
 
-    context = _ship_run_context(run)
-    validation_errors = list(context["validation_errors"])
+    validation_errors = list(_ship_run_context(run)["validation_errors"])
     current_frontier = getattr(project, "shipped_frontier", None) or None
     if run.base_main_hash and current_frontier and run.base_main_hash != current_frontier:
         validation_errors.append(
@@ -2957,10 +3317,21 @@ def _ship_run_ship_response(project, run, *, merge_method: str = "merge"):
             if r_check.returncode == 0:
                 pr_state = json.loads(r_check.stdout or "{}")
                 state = (pr_state.get("state") or "").upper()
+                head_oid = pr_state.get("headRefOid") or ""
                 if state == "MERGED":
-                    run.status = "ready_to_ship"
-                    db.session.commit()
-                    return jsonify({"error": "Release PR is already merged."}), 409
+                    new_tip = head_oid or run.composed_commit_hash
+                    if not new_tip:
+                        for branch in ("main", "master"):
+                            r_tip = subprocess.run(
+                                ["gh", "api", f"repos/{slug}/git/refs/heads/{branch}"],
+                                capture_output=True, text=True, timeout=15, env=_env_for_gh_user(),
+                            )
+                            if r_tip.returncode == 0:
+                                ref_data = json.loads(r_tip.stdout or "{}")
+                                new_tip = (ref_data.get("object") or {}).get("sha") or None
+                                if new_tip:
+                                    break
+                    return _finalize_shipped_run(project, run, new_tip=new_tip, root_refresh_source="release_pr_reconcile")
                 if state == "CLOSED":
                     run.status = "ready_to_ship"
                     db.session.commit()
@@ -2974,7 +3345,6 @@ def _ship_run_ship_response(project, run, *, merge_method: str = "merge"):
                         "expected_branch": run.release_branch,
                         "actual_branch": head_ref,
                     }), 409
-                head_oid = pr_state.get("headRefOid") or ""
                 if run.composed_commit_hash and head_oid and head_oid != run.composed_commit_hash:
                     run.status = "ready_to_ship"
                     db.session.commit()
@@ -2997,12 +3367,26 @@ def _ship_run_ship_response(project, run, *, merge_method: str = "merge"):
                 run.status = "ready_to_ship"
                 run.error = (result.stderr or result.stdout or "")[:2000]
                 db.session.commit()
-                return jsonify({"error": "PR merge failed", "detail": run.error}), 502
+                payload, status_code = _ship_error_payload(
+                    project,
+                    run,
+                    detail=run.error,
+                    hint=f"GitHub merge failed in backend runtime. Run ta ship doctor {project.id} before retrying.",
+                    phase="merge",
+                )
+                return jsonify(payload), status_code
         except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
             run.status = "ready_to_ship"
             run.error = str(exc)[:2000]
             db.session.commit()
-            return jsonify({"error": "PR merge failed", "detail": str(exc)}), 502
+            payload, status_code = _ship_error_payload(
+                project,
+                run,
+                detail=str(exc),
+                hint=f"Backend runtime could not invoke gh. Run ta ship doctor {project.id} before retrying.",
+                phase="merge",
+            )
+            return jsonify(payload), status_code
 
         for branch in ("main", "master"):
             r_tip = subprocess.run(
@@ -3020,83 +3404,7 @@ def _ship_run_ship_response(project, run, *, merge_method: str = "merge"):
             "ship_run_ship: no GitHub URL or PR — advancing frontier directly from composed hash %s",
             (new_tip or "")[:12],
         )
-
-    from datetime import datetime, timezone
-    run.status = "shipped"
-    run.shipped_commit_hash = new_tip
-    run.shipped_at = datetime.now(timezone.utc)
-
-    candidate = context["candidate"]
-    if candidate is not None:
-        candidate.status = "shipped"
-        candidate.composed_commit_hash = run.composed_commit_hash
-        attempts = _candidate_attempts(candidate)
-    else:
-        attempts = []
-        tickets = Ticket.query.filter_by(project_id=project.id).all()
-        all_waves = _compute_waves(tickets)
-        for ticket in tickets:
-            if all_waves.get(str(ticket.id), 0) != run.wave_num:
-                continue
-            attempt = _get_accepted_attempt(ticket.id)
-            if attempt is not None:
-                attempts.append(attempt)
-
-    for attempt in attempts:
-        if attempt.status == "shipped":
-            continue
-        try:
-            path = {
-                "accepted": ["composed", "release_pr_open", "shipped"],
-                "composed": ["release_pr_open", "shipped"],
-                "release_pr_open": ["shipped"],
-            }
-            for next_status in path.get(attempt.status, []):
-                _transition_attempt(attempt, next_status, reason=f"ship run {run.id} shipped")
-        except ValueError:
-            current_app.logger.warning(
-                "Could not transition attempt %s (status=%s) to shipped",
-                attempt.id, attempt.status,
-            )
-    db.session.commit()
-
-    if new_tip:
-        try:
-            _apply_root_refresh(project, new_tip, source="release_pr_merge")
-        except Exception as exc:
-            current_app.logger.warning("Root refresh after ship failed: %s", exc)
-
-    wave_num = context["wave_num"]
-    if use_github:
-        _post_event(
-            _wave_channel(project.name, wave_num),
-            _event_content(
-                "release_pr_merged",
-                f"Release PR #{run.release_pr_number} merged" + (f" at {new_tip[:12]}" if new_tip else ""),
-                {
-                    "wave_num": wave_num,
-                    "ship_run_id": str(run.id),
-                    "promotion_candidate_id": str(candidate.id) if candidate else None,
-                    "release_pr_number": run.release_pr_number,
-                    "release_pr_url": run.release_pr_url,
-                    "shipped_commit_hash": new_tip,
-                },
-            ),
-        )
-    _post_event(
-        _wave_channel(project.name, wave_num),
-        _event_content(
-            "wave_shipped",
-            f"Wave {wave_num} shipped" + (f" at {new_tip[:12]}" if new_tip else ""),
-            {
-                "wave_num": wave_num,
-                "ship_run_id": str(run.id),
-                "promotion_candidate_id": str(candidate.id) if candidate else None,
-                "shipped_commit_hash": new_tip,
-            },
-        ),
-    )
-    return jsonify(_ship_run_detail_payload(run))
+    return _finalize_shipped_run(project, run, new_tip=new_tip, root_refresh_source="release_pr_merge")
 
 
 @api_bp.route("/projects/<uuid:project_id>/ship/runs/<uuid:run_id>", methods=["GET"])

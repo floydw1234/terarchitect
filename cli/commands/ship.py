@@ -1,7 +1,7 @@
 """ship subcommand: inspect promotion candidates, compose ShipRuns, and ship."""
 
 from cli._api import API, APIError
-from cli._output import die, print_json, print_table, short_id
+from cli._output import die, print_json, print_receipt, print_table, short_id
 
 
 def register(subparsers) -> None:
@@ -45,6 +45,17 @@ def register(subparsers) -> None:
                     help="Merge method (default: merge)")
     sc.add_argument("--json", action="store_true", help="Print JSON for this command")
 
+    doctor = sub.add_parser("doctor", help="Preflight Ship Room backend/runtime readiness for one project")
+    doctor.add_argument("project_id")
+    doctor.add_argument("--json", action="store_true", help="Print JSON for this command")
+
+    hp = sub.add_parser("happy-path", help="Create or reuse a candidate from an accepted attempt and progress it")
+    hp.add_argument("project_id")
+    hp.add_argument("--ticket", dest="ticket_id", required=True, help="Ticket ID with an accepted attempt")
+    hp.add_argument("--method", default="merge", choices=["merge", "squash", "rebase"],
+                    help="Merge method when shipping (default: merge)")
+    hp.add_argument("--json", action="store_true", help="Print JSON for this command")
+
     fb = sub.add_parser("feedback", help="Send operator feedback on a promotion candidate when supported")
     fb.add_argument("project_id")
     fb.add_argument("candidate_id")
@@ -70,6 +81,10 @@ def _dispatch(args, api: API) -> None:
         _cmd_ship_run(args, api)
     elif cmd == "ship-candidate":
         _cmd_ship_candidate(args, api)
+    elif cmd == "doctor":
+        _cmd_doctor(args, api)
+    elif cmd == "happy-path":
+        _cmd_happy_path(args, api)
     elif cmd == "feedback":
         _cmd_feedback(args, api)
 
@@ -96,7 +111,7 @@ def _cmd_candidates(args, api: API) -> None:
     try:
         candidates = api.get(f"/api/projects/{args.project_id}/ship/candidates")
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     if _want_json(args):
         print_json(candidates)
         return
@@ -191,7 +206,7 @@ def _cmd_candidate(args, api: API) -> None:
     try:
         detail = _fetch_candidate_detail(api, args.project_id, args.candidate_id)
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     if _want_json(args):
         print_json(detail)
         return
@@ -234,7 +249,7 @@ def _cmd_run(args, api: API) -> None:
     try:
         detail = api.get(f"/api/projects/{args.project_id}/ship/runs/{args.run_id}")
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     if _want_json(args):
         print_json(detail)
         return
@@ -245,7 +260,7 @@ def _cmd_compose_candidate(args, api: API) -> None:
     try:
         run = api.post(f"/api/projects/{args.project_id}/ship/candidates/{args.candidate_id}/compose", {})
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     if _want_json(args):
         print_json(run)
         return
@@ -260,7 +275,7 @@ def _cmd_ship_run(args, api: API) -> None:
             {"merge_method": args.method},
         )
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     if _want_json(args):
         print_json(run)
         return
@@ -278,7 +293,7 @@ def _cmd_ship_candidate(args, api: API) -> None:
             {"merge_method": args.method},
         )
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     if _want_json(args):
         print_json(run)
         return
@@ -289,11 +304,61 @@ def _cmd_ship_candidate(args, api: API) -> None:
         print(f"  PR:           {run['release_pr_url']}")
 
 
+def _cmd_doctor(args, api: API) -> None:
+    try:
+        report = api.get(f"/api/projects/{args.project_id}/ship/doctor")
+    except APIError as e:
+        die(e, output=args.output)
+    if _want_json(args):
+        print_json(report)
+        return
+
+    print(f"Ship doctor: {str(report.get('status') or 'unknown').upper()}")
+    for check in report.get("checks") or []:
+        print(f"  {check.get('name')}: {str(check.get('status') or '').upper()}  {check.get('summary') or ''}")
+    if report.get("next_commands"):
+        print("")
+        print("Next:")
+        for command in report["next_commands"]:
+            print(f"  {command}")
+
+
+def _cmd_happy_path(args, api: API) -> None:
+    try:
+        receipt = api.post(
+            f"/api/projects/{args.project_id}/ship/happy-path",
+            {"ticket_id": args.ticket_id, "merge_method": args.method},
+        )
+    except APIError as e:
+        die(e, output=args.output)
+    if _want_json(args):
+        print_json(receipt)
+        return
+
+    fields = [
+        ("Ticket", args.ticket_id),
+        ("Status", receipt.get("status") or "unknown"),
+    ]
+    if receipt.get("attempt_id"):
+        fields.append(("Attempt", short_id(receipt["attempt_id"], 12)))
+    if receipt.get("candidate_id"):
+        fields.append(("Candidate", short_id(receipt["candidate_id"], 12)))
+    if receipt.get("ship_run_id"):
+        fields.append(("ShipRun", short_id(receipt["ship_run_id"], 12)))
+    if receipt.get("shipped_commit_hash"):
+        fields.append(("Frontier", receipt["shipped_commit_hash"][:12]))
+    print_receipt(
+        "Ship happy path",
+        fields=fields,
+        next_commands=receipt.get("next_commands") or [],
+    )
+
+
 def _cmd_feedback(args, api: API) -> None:
     try:
         detail = _fetch_candidate_detail(api, args.project_id, args.candidate_id)
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     membership = detail.get("membership") or {}
     legacy_wave_num = membership.get("legacy_wave_num")
     if legacy_wave_num is None:

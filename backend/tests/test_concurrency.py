@@ -6,7 +6,7 @@ Tests run against a minimal in-memory SQLite app (no Docker, no AgentHub).
 Scenarios covered:
   1. Two simultaneous compose requests → one run created, not two
   2. Compose fires before wave is fully accepted → rejected 409
-  3. Pre-ship: PR already merged externally → 409
+  3. Pre-ship: PR already merged externally → reconcile as shipped
   4. Accept attempt while compose running → compose not affected
   5. Reject attempt after it is composed/release_pr_open → 409 (terminal state)
   6. Coordinator restart reset-stale endpoint → running ship runs re-queued
@@ -164,11 +164,11 @@ def test_compose_incomplete_wave_rejected(client, project):
 
 
 # ---------------------------------------------------------------------------
-# Scenario 3: Pre-ship check: PR already merged → 409
+# Scenario 3: Pre-ship check: PR already merged → reconcile as shipped
 # ---------------------------------------------------------------------------
 
 def test_ship_pr_already_merged(client, project, wave_with_accepted_attempt):
-    """ship_wave_ship should return 409 if the release PR was already merged."""
+    """ship_wave_ship should reconcile state if the release PR was already merged."""
     pid = project["id"]
 
     # Create a ready_to_ship run with a PR number
@@ -178,6 +178,7 @@ def test_ship_pr_already_merged(client, project, wave_with_accepted_attempt):
             project_id=pid,
             wave_num=0,
             status="ready_to_ship",
+            composed_commit_hash="c" * 40,
             release_pr_number=42,
             release_pr_url="https://github.com/o/r/pull/42",
         )
@@ -193,13 +194,14 @@ def test_ship_pr_already_merged(client, project, wave_with_accepted_attempt):
 
     merged_response = MagicMock()
     merged_response.returncode = 0
-    merged_response.stdout = '{"state":"MERGED","mergedAt":"2026-05-22T00:00:00Z"}'
+    merged_response.stdout = '{"state":"MERGED","mergedAt":"2026-05-22T00:00:00Z","headRefOid":"' + ("c" * 40) + '"}'
 
     with patch("subprocess.run", return_value=merged_response):
         r = client.post(f"/api/projects/{pid}/ship/waves/0/ship", json={})
 
-    assert r.status_code == 409
-    assert "already merged" in r.get_json().get("error", "").lower()
+    assert r.status_code == 200
+    assert r.get_json()["status"] == "shipped"
+    assert r.get_json()["shipped_commit_hash"] == "c" * 40
 
 
 def test_ship_rejects_release_pr_branch_mismatch(client, project, wave_with_accepted_attempt):
