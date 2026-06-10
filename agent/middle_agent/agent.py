@@ -278,6 +278,27 @@ def _director_relaxed_json_retry_messages(messages: List[Dict[str, str]]) -> Lis
     return relaxed_messages
 
 
+def _director_final_json_retry_messages(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Append a stronger final JSON-only reminder for the last chat-completions retry."""
+    if not messages:
+        return messages
+    final_messages = [dict(message) for message in messages]
+    reminder = (
+        "Final retry requirement: your previous replies were empty while JSON output was required. "
+        "Reply with exactly one valid JSON object matching the required keys and value types. "
+        "Output the JSON object only. Do not include markdown, code fences, comments, explanations, or any extra text."
+    )
+    last_message = final_messages[-1]
+    if last_message.get("role") == "user":
+        final_messages[-1] = {
+            **last_message,
+            "content": f"{last_message.get('content', '')}\n\n{reminder}",
+        }
+    else:
+        final_messages.append({"role": "user", "content": reminder})
+    return final_messages
+
+
 def _director_response_format_json_schema(phase: Optional[str] = None) -> Dict[str, Any]:
     schema_name = "director_plan_review_response" if phase == "plan_review" else "director_response"
     return {
@@ -558,10 +579,16 @@ class MiddleAgent:
                     data = _post_json(url, retry_payload)
                     content = data.get("choices", [{}])[0].get("message", {}).get("content") or ""
                     if not content:
-                        raise AgentAPIError(
-                            "Director API returned empty chat content twice while requesting JSON output",
-                            cause=None,
-                        )
+                        final_retry_payload = dict(payload)
+                        final_retry_payload["messages"] = _director_final_json_retry_messages(messages)
+                        final_retry_payload.pop("response_format", None)
+                        data = _post_json(url, final_retry_payload)
+                        content = data.get("choices", [{}])[0].get("message", {}).get("content") or ""
+                        if not content:
+                            raise AgentAPIError(
+                                "Director API returned empty chat content three times while requesting JSON output",
+                                cause=None,
+                            )
                 return content if isinstance(content, str) else str(content)
         except AgentAPIError:
             raise

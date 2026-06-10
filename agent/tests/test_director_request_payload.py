@@ -147,7 +147,7 @@ class TestDirectorRequestPayload(unittest.TestCase):
         self.assertEqual(payload["max_tokens"], 768)
         self.assertIn("Keep all four keys present.", payload["messages"][-1]["content"])
 
-    def test_local_chat_completions_empty_content_retries_with_json_object_mode(self):
+    def test_local_chat_completions_empty_content_uses_third_retry_without_response_format(self):
         agent = _make_agent(
             {
                 "DIRECTOR_LLM_URL": "http://localhost:8081/v1/chat/completions",
@@ -160,21 +160,26 @@ class TestDirectorRequestPayload(unittest.TestCase):
             "middle_agent.agent.requests.post",
             side_effect=[
                 _mock_chat_response(""),
+                _mock_chat_response(""),
                 _mock_chat_response('{"complete":true,"summary":"ok","next_prompt":""}'),
             ],
         ) as mock_post:
             content = agent._director_request(messages, json_mode=True)
 
         self.assertEqual(content, '{"complete":true,"summary":"ok","next_prompt":""}')
-        self.assertEqual(mock_post.call_count, 2)
+        self.assertEqual(mock_post.call_count, 3)
 
         first_payload = mock_post.call_args_list[0].kwargs["json"]
         second_payload = mock_post.call_args_list[1].kwargs["json"]
+        third_payload = mock_post.call_args_list[2].kwargs["json"]
         self.assertEqual(first_payload["response_format"]["type"], "json_schema")
         self.assertEqual(second_payload["response_format"]["type"], "json_object")
+        self.assertNotIn("response_format", third_payload)
         self.assertIn("Retry requirement: your previous reply was empty.", second_payload["messages"][-1]["content"])
+        self.assertIn("Final retry requirement: your previous replies were empty", third_payload["messages"][-1]["content"])
+        self.assertIn("Output the JSON object only.", third_payload["messages"][-1]["content"])
 
-    def test_agent_assess_recovers_from_empty_chat_content_retry(self):
+    def test_agent_assess_recovers_from_empty_chat_content_third_retry(self):
         agent = _make_agent(
             {
                 "DIRECTOR_LLM_URL": "http://localhost:8081/v1/chat/completions",
@@ -186,6 +191,7 @@ class TestDirectorRequestPayload(unittest.TestCase):
             "middle_agent.agent.requests.post",
             side_effect=[
                 _mock_chat_response(""),
+                _mock_chat_response(""),
                 _mock_chat_response('{"complete":false,"summary":"needs work","next_prompt":"continue"}'),
             ],
         ) as mock_post:
@@ -196,7 +202,7 @@ class TestDirectorRequestPayload(unittest.TestCase):
                 phase="execution",
             )
 
-        self.assertEqual(mock_post.call_count, 2)
+        self.assertEqual(mock_post.call_count, 3)
         self.assertFalse(response_dict["complete"])
         self.assertEqual(response_dict["summary"], "needs work")
         self.assertEqual(response_dict["next_prompt"], "continue")
@@ -205,6 +211,7 @@ class TestDirectorRequestPayload(unittest.TestCase):
             director_messages[-1]["content"],
             '{"complete":false,"summary":"needs work","next_prompt":"continue"}',
         )
+        self.assertNotIn("response_format", mock_post.call_args_list[2].kwargs["json"])
 
 
 if __name__ == "__main__":
