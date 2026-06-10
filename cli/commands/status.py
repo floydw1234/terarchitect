@@ -49,4 +49,3 @@ def run(args, api: API) -> None:
         kind = item.get("kind") or "event"
         suffix = f" ({item['status']})" if item.get("status") else ""
         print(f"  [{kind}] {label}{suffix}")
-
