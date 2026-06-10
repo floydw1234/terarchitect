@@ -157,10 +157,10 @@ See **docs/PHASE1_WORKER_API.md** → Phase 5 for OpenCode and required env. Age
 1. **App:** Open http://localhost:3000, create a project, add a ticket, move it to In Progress. A row should appear in `agent_jobs` with `status=pending`.
 2. **Coordinator:** Run the coordinator with that project’s `PROJECT_ID`. It should claim the job, start a container, and after the run call complete or fail.
 3. **Logs and attempts:** Ticket logs and the resulting AgentHub attempt appear in the UI via the API; the agent posts logs and completion through the worker API.
-4. **Accept attempt:** A human accepts the attempt that should move forward. Ticket-level PR review is not part of swarm mode.
-5. **Compose wave:** Open Ship Room or use `ta ship compose <project_id> <wave_num>` to compose the wave from accepted attempts.
-6. **Inspect ShipRun:** Check the `ShipRun` state, test output, and composed commit in Ship Room or with `ta ship show <project_id> <wave_num>`.
-7. **Ship/merge final boundary:** When the `ShipRun` is `ready_to_ship`, use the Ship Room ship action or `ta ship merge-pr <project_id> <wave_num>` to advance `shipped_frontier`.
+4. **Accept attempt:** A human accepts the `TicketAttempt` that should move forward. Ticket-level PR review is not part of swarm mode.
+5. **Promotion candidate review:** The target operator concept is a stable promotion candidate built from accepted attempts whose dependency closure is valid against `shipped_frontier`.
+6. **Inspect ShipRun:** A `ShipRun` should be created from that stable candidate set, then reviewed for composed commit, test output, and ship readiness.
+7. **Ship/merge final boundary:** When the `ShipRun` is `ready_to_ship`, shipping advances `shipped_frontier`.
 
 No in-process agent runs in the app; all execution is in containers started by the coordinator.
 
@@ -169,14 +169,14 @@ No in-process agent runs in the app; all execution is in containers started by t
 Keep operators on one path for swarm projects:
 
 1. agent completes work
-2. human accepts the attempt
-3. compose the wave
-4. inspect the `ShipRun`
+2. human accepts the `TicketAttempt`
+3. review a stable promotion candidate
+4. create and inspect the `ShipRun`
 5. ship/merge at the final boundary
 
-Agents and coordinators are the primary users of the system. The UI remains a review/ship boundary for humans, and the CLI is the direct operator surface for the same ShipRun wave API.
+Agents and coordinators are the primary users of the system. The UI remains a review/ship boundary for humans, and the long-term CLI/API contract is candidate review plus `ShipRun` execution.
 
-CLI and UI should follow the same wave flow:
+Current live code still exposes legacy wave compatibility routes and CLI strings. They are not the target operator vocabulary, but they remain true today until later phases remove them:
 
 - `ta ship waves <project_id>`
 - `ta ship show <project_id> <wave_num>`

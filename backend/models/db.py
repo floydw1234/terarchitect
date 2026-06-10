@@ -39,7 +39,8 @@ class Project(db.Model):
     github_url = db.Column(db.Text)    # GitHub repository URL for PR creation and docker-mode clone
     execution_mode = db.Column(db.String(50), nullable=False, default="docker")  # "docker" | "local"
     git_mode = db.Column(db.String(20), nullable=False, default="swarm")
-    # AgentHub DAG root: the last shipped main commit. All new agent work builds on top of this.
+    # Canonical DAG-native noun: the currently shipped frontier commit for this project.
+    # New work and future promotion validation should derive from this shipped state.
     shipped_frontier = db.Column(db.String(255))
     shipped_frontier_updated_at = db.Column(db.TIMESTAMP)
     # The currently blessed composite workspace (preferred candidate state, pre-ship)
@@ -174,7 +175,9 @@ class TicketAttempt(db.Model):
     The MVP path uses proposed/accepted/rejected/failed/shipped, but the live
     code still tolerates legacy-compatible validating/composed/release_pr_open
     states so older callbacks and tests keep working.
-    Each accepted attempt records the AgentHub commit hash and base hash for composability."""
+    Canonical DAG-native record: an accepted TicketAttempt is the accepted
+    implementation artifact for one ticket and carries the commit/base hashes
+    used to form later promotion candidates."""
 
     __tablename__ = "ticket_attempts"
 
@@ -183,6 +186,8 @@ class TicketAttempt(db.Model):
     ticket_id = db.Column(UUID_TYPE, db.ForeignKey("tickets.id"), nullable=False)
     agenthub_commit_hash = db.Column(db.String(255))
     base_hash = db.Column(db.String(255))
+    # Legacy-only compatibility field. Live wave APIs still populate/read this
+    # during migration, but it is no longer the target operator abstraction.
     wave_num = db.Column(db.Integer, default=0)
     attempt_num = db.Column(db.Integer, nullable=False, default=1)
     agent_id = db.Column(db.String(255))
@@ -199,12 +204,18 @@ class TicketAttempt(db.Model):
 
 
 class ShipRun(db.Model):
-    """Tracks wave ship runs. Auto-queued when a wave completes; shipper composes a release branch and PR."""
+    """Execution record for composing/validating/shipping a selected set of work.
+
+    Phase 1 contract: ShipRun remains execution-only. The future canonical
+    operator object is a separate promotion candidate record, not ShipRun
+    itself. Live code still keys ShipRun by legacy wave metadata until later
+    phases complete."""
 
     __tablename__ = "ship_runs"
 
     id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
     project_id = db.Column(UUID_TYPE, db.ForeignKey("projects.id"), nullable=False)
+    # Legacy-only compatibility key until candidate-backed ShipRuns replace it.
     wave_num = db.Column(db.Integer, nullable=False)
     # MVP-facing states: queued | composing | failed | ready_to_ship | shipping | shipped
     # Legacy-compatible callbacks still emit running | compose_failed.
@@ -232,7 +243,9 @@ class ShipRun(db.Model):
 class CompositeWorkspace(db.Model):
     """A candidate codebase state composed from selected AgentHub leaves.
     Separate from ShipRun — a workspace can be previewed and blessed
-    without shipping to main. Phase 9 lab-grade workspace surface."""
+    without shipping to main. This is not the planned Phase 1 promotion
+    candidate record; promotion candidates should stay separate from ShipRun
+    and from experimental workspace state."""
 
     __tablename__ = "composite_workspaces"
 

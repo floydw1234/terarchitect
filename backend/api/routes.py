@@ -229,7 +229,11 @@ def _fetch_github_default_branch_tip(github_url: str) -> str | None:
 
 
 def _apply_root_refresh(project, new_hash: str, source: str = "wave_merge") -> None:
-    """Update shipped_frontier and re-dispatch any newly unblocked queued tickets."""
+    """Update shipped_frontier and re-dispatch any newly unblocked queued tickets.
+
+    `shipped_frontier` is the canonical DAG-native shipped base even while the
+    live ship flow still uses legacy wave-triggered refresh paths.
+    """
     from datetime import datetime, timezone
     project.shipped_frontier = new_hash
     project.shipped_frontier_updated_at = datetime.now(timezone.utc)
@@ -2263,7 +2267,10 @@ def project_start(project_id):
 
 
 # ---------------------------------------------------------------------------
-# Ship Room — human-facing wave composition and release PR management
+# Ship Room legacy compatibility routes.
+# Phase 1 freezes the target vocabulary as shipped_frontier -> accepted
+# TicketAttempt -> promotion candidate -> ShipRun. The concrete routes below
+# still expose wave-oriented endpoints until later phases replace them.
 # ---------------------------------------------------------------------------
 
 def _wave_next_actions(*, wave_num: int, blockers: list[str], all_done: bool, ship_run, can_compose: bool, can_ship: bool) -> list[str]:
@@ -2300,7 +2307,7 @@ def _wave_next_actions(*, wave_num: int, blockers: list[str], all_done: bool, sh
 
 
 def _wave_detail(project_id, wave_num: int) -> dict:
-    """Build the full wave detail payload used by multiple ship endpoints."""
+    """Build the full legacy wave detail payload used by current ship endpoints."""
     tickets = Ticket.query.filter_by(project_id=project_id).all()
     analysis = _analyze_wave_dependencies(tickets)
     waves = analysis["waves"]
@@ -2424,7 +2431,7 @@ def _wave_detail(project_id, wave_num: int) -> dict:
 
 @api_bp.route("/projects/<uuid:project_id>/ship/waves", methods=["GET"])
 def ship_waves(project_id):
-    """List all waves with accepted attempt counts and ship run status."""
+    """List legacy wave groupings with accepted attempt counts and ship run status."""
     _get_project_or_404(project_id)
     tickets = Ticket.query.filter_by(project_id=project_id).all()
     if not tickets:
@@ -2467,7 +2474,7 @@ def ship_waves(project_id):
 
 @api_bp.route("/projects/<uuid:project_id>/ship/waves/<int:wave_num>", methods=["GET"])
 def ship_wave_detail(project_id, wave_num):
-    """Full detail for a wave: tickets, accepted attempts, ship run, staleness."""
+    """Full legacy wave detail: tickets, accepted attempts, ship run, staleness."""
     _get_project_or_404(project_id)
     return jsonify(_wave_detail(project_id, wave_num))
 
@@ -2584,7 +2591,12 @@ def ship_wave_diff(project_id, wave_num):
 
 @api_bp.route("/projects/<uuid:project_id>/ship/waves/<int:wave_num>/compose", methods=["POST"])
 def ship_wave_compose(project_id, wave_num):
-    """Queue a ship run for this wave. Coordinator will pick it up and run the shipper."""
+    """Queue a legacy wave-keyed ShipRun.
+
+    Phase 1 contract: the long-term model is "select promotion candidate, then
+    create ShipRun from that stable candidate set". This endpoint remains a
+    compatibility surface until candidate-backed routes replace it.
+    """
     project = _lock_project_for_update(project_id)
     if not project:
         return jsonify({"error": "Project not found"}), 404
@@ -2639,6 +2651,9 @@ def ship_wave_ship(project_id, wave_num):
     Two paths (GitHub is optional):
       - With github_url + release_pr_number: merge the release PR via gh, then advance.
       - Without (local-mode or no-main): advance frontier directly from composed_commit_hash.
+
+    This is a legacy wave-keyed ship surface. The target contract is shipping a
+    ShipRun created from a stable promotion candidate.
     """
     project = _lock_project_for_update(project_id)
     if not project:
@@ -2964,11 +2979,15 @@ def _validate_wave_composition(
     *,
     analysis: dict | None = None,
 ) -> list[str]:
-    """Return blocking validation errors for composing/shipping a wave.
+    """Return blocking validation errors for composing/shipping a legacy wave.
 
     ShipRun composition only receives the selected wave's leaves. Dependencies
     in earlier waves must therefore already be shipped into the project frontier;
     otherwise a later-wave release can silently include or omit parent work.
+
+    Phase 1 note: the target validation contract is candidate-based DAG closure,
+    not wave ordering. This helper remains only for the current compatibility
+    path.
     """
     ticket_by_id = {str(t.id): t for t in tickets}
     frontier = getattr(project, "shipped_frontier", None) or None

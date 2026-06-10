@@ -2,9 +2,9 @@
 
 Terarchitect is an agent-first, CLI-first SDLC orchestrator: model your system as a graph, define intents, and let a **Director → Worker** agent pair publish implementation attempts to an AgentHub DAG.
 
-- **Primary users are agents and coordinators**: the system is built around automated execution and wave composition.
-- **UI and human actions stay at the review/ship boundary**: agent attempts become shippable only through Ship Room release/export flow.
-- **MVP ship path**: agent completes work, a human accepts the attempt, Ship Room or the CLI composes a wave, you inspect the `ShipRun`, then ship/merge at the final boundary.
+- **Primary users are agents and coordinators**: the system is built around automated execution and DAG-native promotion/shipping.
+- **UI and human actions stay at the review/ship boundary**: accepted attempts become shippable through promotion-candidate review and `ShipRun` execution.
+- **Contract being frozen in Phase 1**: agent completes work, a human accepts the `TicketAttempt`, operators review a stable promotion candidate, create a `ShipRun`, inspect it, then ship/merge at the final boundary.
 - **One container per job**: reproducible, isolated runs.
 - **Coordinator-friendly**: run the coordinator on the same machine as the app, or on a completely separate machine.
 
@@ -28,7 +28,7 @@ If you’ve ever wanted architecture-aware agent swarms with a clear human shipp
 - **Architecture graph**: encode components + interfaces, not just TODO lists
 - **Intent-driven execution**: moving an intent/ticket to *In Progress* enqueues an agent job
 - **Director/Worker separation**: strategy (Director) vs code-writing execution (Worker, with Codex preferred for implementation-heavy work)
-- **AgentHub-native workflow**: agents publish attempts/leaves; Ship Room composes accepted leaves into release/export artifacts
+- **AgentHub-native workflow**: agents publish attempts/leaves; accepted `TicketAttempt`s become promotion candidates, and `ShipRun`s compose/release them
 - **Runs anywhere Docker runs**: single-box dev or two-box production
 
 ---
@@ -96,9 +96,9 @@ Details: `docs/PHASE1_WORKER_API.md`.
 | **Coordinator** | Claims jobs from the API and starts one agent container per job. | **Host process** (can be a different machine with Docker) |
 | **Agent image** | Director + Worker (OpenCode, Claude Code, or Codex). Clones or opens the project repo, implements the ticket, publishes an AgentHub attempt, exits. | **Docker container** started by the coordinator |
 
-High-level flow: **UI → enqueue → coordinator claims → agent container runs → AgentHub attempt created → Ship Room composes accepted leaves → release/export PR or local frontier advance**.
+High-level flow: **UI → enqueue → coordinator claims → agent container runs → AgentHub attempt created → accepted `TicketAttempt` → promotion candidate review → `ShipRun` compose/ship → release/export PR or local frontier advance**.
 
-The UI is an operator surface, not the primary execution surface. Agents and coordinators do the work; humans review accepted attempts and ship at the wave boundary. The CLI mirrors that same ShipRun wave API with `ta ship waves`, `ta ship show`, `ta ship compose`, `ta ship feedback`, and `ta ship merge-pr`.
+The UI is an operator surface, not the primary execution surface. Agents and coordinators do the work; humans review accepted attempts and ship at the promotion boundary. The current CLI and HTTP surfaces still expose legacy wave-oriented endpoints such as `ta ship waves`, `ta ship show`, `ta ship compose`, `ta ship feedback`, and `ta ship merge-pr`; Phase 1 only freezes the replacement vocabulary and does not remove those compatibility routes yet.
 
 ---
 
@@ -177,10 +177,10 @@ Full ops notes (systemd, env, verification): see `docs/RUNBOOK.md`.
    - runs Director + Worker (OpenCode, Claude Code, or Codex) to implement
    - commits and publishes an AgentHub attempt
    - exits
-5. Terarchitect records the attempt as a `TicketAttempt`; accepted attempts appear in Ship Room.
-6. Ship Room composes accepted leaves into a release branch and optional release/export PR, then advances the shipped frontier when shipped.
+5. Terarchitect records the attempt as a `TicketAttempt`; accepted attempts are the inputs to future promotion candidates.
+6. The target Ship Room flow is: review a stable promotion candidate built from accepted attempts whose dependency closure is valid, create a `ShipRun` from that candidate set, then advance the shipped frontier when shipped.
 
-Ticket-level PR review is not part of the swarm-mode MVP path. The human review point is attempt acceptance, and the ship boundary is the wave-level `ShipRun`.
+Ticket-level PR review is not part of the swarm-mode MVP path. The human review point is attempt acceptance, and the shipping object is a candidate-backed `ShipRun`. Current code may still use legacy wave-numbered endpoints until later phases complete.
 
 No mixing with your project’s Dockerfile. The agent image is built once and reused.
 
@@ -207,8 +207,8 @@ No mixing with your project’s Dockerfile. The agent image is built once and re
 
 ## Highlights
 
-- **Ship Room**: compose accepted AgentHub attempts into a coherent release/export artifact and advance the shipped frontier.
-- **Wave-boundary review**: accept attempts first, then inspect one `ShipRun` before the final ship/merge step.
+- **Ship Room**: review accepted AgentHub attempts as future promotion candidates, compose them into a `ShipRun`, and advance the shipped frontier.
+- **Promotion-boundary review**: accept attempts first, then inspect one `ShipRun` created from a stable candidate set before the final ship/merge step.
 - **Cancelable runs**: worker-facing cancel flag + polling endpoint so you can stop a run cleanly.
 - **Per-project execution mode**: run jobs in Docker (clone in container) or Local (run at a configured host path).
 - **Env-only config**: each service (backend, coordinator) uses a simple `.env` that fits its needs; no shared settings store. See `example.env`.

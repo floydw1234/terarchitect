@@ -49,6 +49,33 @@ Tasks:
 - [ ] Document that a ship run is created from a stable candidate set selected from accepted attempts whose dependency closure is valid.
 - [ ] Identify every route/CLI string that currently exposes “wave” as the primary operator abstraction and list them for replacement.
 
+Phase 1 contract decisions:
+
+- `shipped_frontier`: the project's canonical already-shipped DAG frontier. New work and future promotion validation should derive from this shipped state.
+- accepted `TicketAttempt`: the accepted implementation record for one ticket. It carries the attempt commit hash and base hash needed for DAG-native ancestry checks.
+- promotion candidate: the future primary operator review object. It is a stable selection of accepted attempts whose dependency closure is valid against the current `shipped_frontier`.
+- `ShipRun`: an execution record for composing, validating, and shipping one already-selected promotion candidate.
+- `wave_num`: legacy-only compatibility metadata. It remains in the live code and APIs during migration, but it is no longer the target operator vocabulary or long-term contract.
+- Promotion candidates should be modeled as a separate record from `ShipRun`, not as a `ShipRun` extension. `ShipRun` should stay execution-only, while candidate membership/stability remains a review/state concern.
+
+Legacy wave string inventory to replace in later phases:
+
+- Routes:
+  - `GET /api/projects/<project_id>/ship/waves`
+  - `GET /api/projects/<project_id>/ship/waves/<wave_num>`
+  - `GET|POST /api/projects/<project_id>/ship/waves/<wave_num>/dry-compose`
+  - `GET /api/projects/<project_id>/ship/waves/<wave_num>/diff`
+  - `POST /api/projects/<project_id>/ship/waves/<wave_num>/compose`
+  - `POST /api/projects/<project_id>/ship/waves/<wave_num>/ship`
+  - `GET /api/projects/<project_id>/ship/waves/<wave_num>/timeline`
+  - `POST /api/projects/<project_id>/ship/waves/<wave_num>/feedback`
+- CLI / operator strings:
+  - `ta ship waves`
+  - `ta ship show <project_id> <wave_num>`
+  - `ta ship compose <project_id> <wave_num>`
+  - `ta ship feedback <project_id> <wave_num> "message"`
+  - `ta ship merge-pr <project_id> <wave_num>`
+
 Verification:
 
 ```bash

@@ -30,7 +30,14 @@ Set `TERARCHITECT_WORKER_API_KEY` in the backend’s `.env` (or process env) whe
 | POST | `/api/worker/jobs/<job_id>/complete` | Mark job completed (container exited successfully). |
 | POST | `/api/worker/jobs/<job_id>/fail` | Mark job failed (container exited with failure). |
 
-**Job response (200):** `job_id`, `ticket_id`, `project_id`, `kind` (`ticket`), `repo_url`, `git_mode`, `base_hash`, and `shipped_frontier`. `base_hash` is the AgentHub commit the worker should build on when present.
+**Job response (200):** `job_id`, `ticket_id`, `project_id`, `kind` (`ticket`), `repo_url`, `git_mode`, `base_hash`, and `shipped_frontier`. `shipped_frontier` is the canonical already-shipped DAG frontier. `base_hash` is the AgentHub commit the worker should build on when present.
+
+Phase 1 vocabulary freeze:
+
+- accepted `TicketAttempt`: the accepted implementation record for one ticket
+- promotion candidate: the future stable selection of accepted attempts whose dependency closure is valid against `shipped_frontier`
+- `ShipRun`: an execution record created from a promotion candidate
+- `wave_num`: legacy-only compatibility metadata in the current codebase, not the target contract
 
 ---
 
@@ -80,7 +87,7 @@ docker run --rm \
 
 **Required env:** `TICKET_ID`, `PROJECT_ID`, `TERARCHITECT_API_URL`, `REPO_URL`. Optional: `GITHUB_TOKEN`, `TERARCHITECT_WORKER_API_KEY`. Agent config (DIRECTOR_LLM_URL, WORKER_LLM_URL, WORKER_MODEL, etc.) must be set in the environment (e.g. coordinator passes them into the container).
 
-Workspace in container: `/workspace` (clone and run happen there). Exit 0 = success; non-zero = failure (coordinator uses this to call jobs/complete or jobs/fail). PR-review jobs have been removed; human feedback now flows through AgentHub channels and Ship Room/Workspace actions.
+Workspace in container: `/workspace` (clone and run happen there). Exit 0 = success; non-zero = failure (coordinator uses this to call jobs/complete or jobs/fail). PR-review jobs have been removed; human feedback now flows through AgentHub channels and Ship Room/Workspace actions. Current Ship Room endpoints may still be wave-oriented during migration, but the target contract is candidate review followed by `ShipRun` execution.
 
 ---
 
@@ -112,6 +119,8 @@ python -m coordinator
 - **POLL_INTERVAL_SEC** — Seconds between claim attempts when no capacity or no job (default 10).
 
 **Container reachability:** The coordinator passes its env (including `TERARCHITECT_API_URL`) to each container. If the app is on the host and the coordinator runs on the same host, set `TERARCHITECT_API_URL=http://host.docker.internal:5010` (or the host’s IP) so the container can reach the app. On Linux without Docker Desktop you may need `--add-host=host.docker.internal:host-gateway` when running the coordinator’s `docker run` (the coordinator does not add this by default).
+
+Operator note: this worker API doc freezes the DAG-native nouns only. It does not claim that the current shipping routes are already candidate-backed; legacy wave-keyed ship endpoints still exist in the live app until later phases.
 
 ---
 
