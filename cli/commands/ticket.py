@@ -7,7 +7,7 @@ import time
 
 from cli._api import API, APIError
 from cli._config import load_config_file
-from cli._output import die, print_json, print_table, short_id
+from cli._output import die, print_json, print_receipt, print_table, short_id
 
 _POLL_INTERVAL = 5   # seconds between status checks for --wait
 _WAIT_TIMEOUT  = 3600  # max seconds to wait
@@ -135,7 +135,7 @@ def _cmd_list(args, api: API) -> None:
     try:
         tickets = api.get(f"/api/projects/{args.project_id}/tickets")
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     if args.output == "json":
         print_json(tickets)
         return
@@ -182,7 +182,7 @@ def _cmd_create(args, api: API) -> None:
             "status": "todo",
         }]
     else:
-        die("Provide --title or --file")
+        die("Provide --title or --file", output=args.output)
 
     created = []
     for td in ticket_defs:
@@ -218,7 +218,7 @@ def _cmd_show(args, api: API) -> None:
     try:
         ticket = api.get(f"/api/projects/{args.project_id}/tickets/{args.ticket_id}")
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     if args.output == "json":
         print_json(ticket)
         return
@@ -243,7 +243,7 @@ def _cmd_attempts(args, api: API) -> None:
     try:
         attempts = api.get(f"/api/projects/{args.project_id}/tickets/{args.ticket_id}/attempts")
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     if args.output == "json":
         print_json(attempts)
         return
@@ -290,13 +290,13 @@ def _cmd_update(args, api: API) -> None:
     if getattr(args, "constraints", None):
         payload["constraints"] = args.constraints
     if not payload:
-        die("No fields to update.")
+        die("No fields to update.", output=args.output)
     try:
         ticket = api.patch(
             f"/api/projects/{args.project_id}/tickets/{args.ticket_id}", payload
         )
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     if args.output == "json":
         print_json(ticket)
         return
@@ -313,17 +313,21 @@ def _cmd_accept_attempt(args, api: API) -> None:
             {},
         )
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     if args.output == "json":
         print_json(attempt)
         return
-    print(f"Accepted attempt {short_id(attempt.get('id', args.attempt_id))} for ticket {short_id(args.ticket_id)}.")
-    print(f"  Status: {attempt.get('status')}")
-    print(f"  Commit: {attempt.get('short_commit_hash') or attempt.get('agenthub_commit_hash') or 'unavailable'}")
-    print("")
-    print("Next:")
-    print(f"  ta attempt show {args.project_id} {attempt.get('id', args.attempt_id)}")
-    print(f"  ta ship candidates {args.project_id}")
+    print_receipt(
+        f"Accepted attempt {short_id(attempt.get('id', args.attempt_id))} for ticket {short_id(args.ticket_id)}.",
+        fields=[
+            ("Status", attempt.get("status")),
+            ("Commit", attempt.get("short_commit_hash") or attempt.get("agenthub_commit_hash") or "unavailable"),
+        ],
+        next_commands=[
+            f"ta attempt show {args.project_id} {attempt.get('id', args.attempt_id)}",
+            f"ta ship candidates {args.project_id}",
+        ],
+    )
 
 
 def _cmd_reject_attempt(args, api: API) -> None:
@@ -334,17 +338,21 @@ def _cmd_reject_attempt(args, api: API) -> None:
             {"reason": args.reason},
         )
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     if args.output == "json":
         print_json(attempt)
         return
-    print(f"Rejected attempt {short_id(attempt.get('id', args.attempt_id))} for ticket {short_id(args.ticket_id)}.")
-    print(f"  Status: {attempt.get('status')}")
-    print(f"  Reason: {args.reason}")
-    print("")
-    print("Next:")
-    print(f"  ta ticket attempts {args.project_id} {args.ticket_id}")
-    print(f"  ta ticket run {args.project_id} {args.ticket_id}")
+    print_receipt(
+        f"Rejected attempt {short_id(attempt.get('id', args.attempt_id))} for ticket {short_id(args.ticket_id)}.",
+        fields=[
+            ("Status", attempt.get("status")),
+            ("Reason", args.reason),
+        ],
+        next_commands=[
+            f"ta ticket attempts {args.project_id} {args.ticket_id}",
+            f"ta ticket run {args.project_id} {args.ticket_id}",
+        ],
+    )
 
 
 def _cmd_run(args, api: API) -> None:
@@ -359,7 +367,7 @@ def _cmd_run(args, api: API) -> None:
             {"column_id": "in_progress"},
         )
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
 
     print(f"Ticket {args.ticket_id} enqueued (column: in_progress)")
 
@@ -387,7 +395,7 @@ def _cmd_run(args, api: API) -> None:
                 print_json(ticket)
             return
     print()
-    die("Timed out waiting for ticket to complete.")
+    die("Timed out waiting for ticket to complete.", output=args.output)
 
 
 def _run_local(args, api: API) -> None:
@@ -396,7 +404,7 @@ def _run_local(args, api: API) -> None:
     try:
         project = api.get(f"/api/projects/{args.project_id}")
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
 
     repo_url = project.get("github_url") or ""
     api_url = api.base_url
@@ -425,7 +433,7 @@ def _cmd_cancel(args, api: API) -> None:
     try:
         api.post(f"/api/projects/{args.project_id}/tickets/{args.ticket_id}/cancel")
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     print(f"Cancellation requested for ticket {args.ticket_id}")
 
 
@@ -435,7 +443,7 @@ def _cmd_logs(args, api: API) -> None:
             f"/api/projects/{args.project_id}/tickets/{args.ticket_id}/logs"
         )
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     if args.output == "json":
         print_json(logs)
         return

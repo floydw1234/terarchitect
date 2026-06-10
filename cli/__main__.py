@@ -27,14 +27,14 @@ Environment:
 """
 
 import argparse
-import sys
 
-from cli._api import API
+from cli._api import API, APIError
 from cli._config import get_api_url
+from cli._output import die
 from cli.commands import attempt, graph, plan, project, ship, ticket, workspace
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ta",
         description="Terarchitect CLI — manage intents, agents, Ship Room, and Workspace.",
@@ -52,6 +52,12 @@ def main() -> None:
         default="human",
         help="Output format (default: human)",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="_global_json",
+        help="Alias for --output json",
+    )
 
     subparsers = parser.add_subparsers(dest="group", metavar="COMMAND")
     subparsers.required = True
@@ -63,10 +69,23 @@ def main() -> None:
     workspace.register(subparsers)
     graph.register(subparsers)
     plan.register(subparsers)
+    return parser
 
+
+def normalize_output_args(args: argparse.Namespace) -> None:
+    if getattr(args, "_global_json", False) or getattr(args, "json", False):
+        args.output = "json"
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
+    normalize_output_args(args)
     api = API(args.api_url or get_api_url())
-    args.func(args, api)
+    try:
+        args.func(args, api)
+    except APIError as exc:
+        die(exc, output=args.output)
 
 
 if __name__ == "__main__":

@@ -142,8 +142,14 @@ def _cmd_list(args, api: API) -> None:
         attempts = api.get(path)
     except APIError as e:
         if e.status in (404, 501):
-            die(f"{e}. {_attempt_endpoint_hint(args.project_id)}")
-        die(str(e))
+            die(
+                e.with_context(
+                    hint=e.hint or _attempt_endpoint_hint(args.project_id),
+                    next_commands=[f"ta ticket attempts {args.project_id} <ticket_id>"],
+                ),
+                output=args.output,
+            )
+        die(e, output=args.output)
     if args.output == "json":
         print_json(attempts)
         return
@@ -174,8 +180,14 @@ def _cmd_show(args, api: API) -> None:
         attempt = api.get(_project_attempts_endpoint(args.project_id, args.attempt_id))
     except APIError as e:
         if e.status in (404, 501):
-            die(f"{e}. {_attempt_endpoint_hint(args.project_id)}")
-        die(str(e))
+            die(
+                e.with_context(
+                    hint=e.hint or _attempt_endpoint_hint(args.project_id),
+                    next_commands=[f"ta ticket attempts {args.project_id} <ticket_id>"],
+                ),
+                output=args.output,
+            )
+        die(e, output=args.output)
     if args.output == "json":
         print_json(attempt)
         return
@@ -187,8 +199,14 @@ def _cmd_files(args, api: API) -> None:
         data = api.get(_project_attempts_endpoint(args.project_id, args.attempt_id) + "/files")
     except APIError as e:
         if e.status in (404, 501):
-            die(f"{e}. {_artifact_endpoint_hint(args.project_id, args.attempt_id)}")
-        die(str(e))
+            die(
+                e.with_context(
+                    hint=e.hint or _artifact_endpoint_hint(args.project_id, args.attempt_id),
+                    next_commands=[f"ta attempt show {args.project_id} {args.attempt_id}"],
+                ),
+                output=args.output,
+            )
+        die(e, output=args.output)
     if args.output == "json":
         print_json(data)
         return
@@ -222,8 +240,14 @@ def _cmd_diff(args, api: API) -> None:
         diff_text = api.get_text(path, accept="text/plain, application/json")
     except APIError as e:
         if e.status in (404, 501):
-            die(f"{e}. {_artifact_endpoint_hint(args.project_id, args.attempt_id)}")
-        die(str(e))
+            die(
+                e.with_context(
+                    hint=e.hint or _artifact_endpoint_hint(args.project_id, args.attempt_id),
+                    next_commands=[f"ta attempt show {args.project_id} {args.attempt_id}"],
+                ),
+                output=args.output,
+            )
+        die(e, output=args.output)
     if not diff_text:
         print("No diff returned for this attempt.")
         return

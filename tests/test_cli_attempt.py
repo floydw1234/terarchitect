@@ -147,7 +147,15 @@ def test_attempt_diff_uses_text_endpoint(capsys):
 def test_attempt_show_404_reports_actionable_hint(capsys):
     class MissingAPI(FakeAPI):
         def get(self, path):
-            raise APIError(404, "missing")
+            raise APIError(
+                404,
+                "missing",
+                detail="Project-scoped attempt endpoint is unavailable.",
+                hint="Use the ticket-scoped attempt endpoint for this backend.",
+                request_id="req-attempt-404",
+                phase="lookup",
+                next_commands=["ta ticket attempts proj <ticket_id>"],
+            )
 
     args = argparse.Namespace(
         attempt_cmd="show",
@@ -161,6 +169,10 @@ def test_attempt_show_404_reports_actionable_hint(capsys):
         attempt._dispatch(args, MissingAPI())
 
     stderr = capsys.readouterr().err
+    assert "Project-scoped attempt endpoint is unavailable." in stderr
+    assert "Use the ticket-scoped attempt endpoint for this backend." in stderr
+    assert "req-attempt-404" in stderr
+    assert "lookup" in stderr
     assert "ta ticket attempts proj <ticket_id>" in stderr
 
 

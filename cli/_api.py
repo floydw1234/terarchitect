@@ -9,10 +9,61 @@ from typing import Any, Optional
 
 
 class APIError(Exception):
-    def __init__(self, status: int, message: str):
+    def __init__(
+        self,
+        status: int,
+        message: str,
+        *,
+        detail: Optional[str] = None,
+        hint: Optional[str] = None,
+        request_id: Optional[str] = None,
+        phase: Optional[str] = None,
+        next_commands: Optional[list[str]] = None,
+    ):
         self.status = status
         self.message = message
+        self.detail = detail
+        self.hint = hint
+        self.request_id = request_id
+        self.phase = phase
+        self.next_commands = list(next_commands or [])
         super().__init__(f"API {status}: {message}")
+
+    def with_context(
+        self,
+        *,
+        detail: Optional[str] = None,
+        hint: Optional[str] = None,
+        request_id: Optional[str] = None,
+        phase: Optional[str] = None,
+        next_commands: Optional[list[str]] = None,
+    ) -> "APIError":
+        return APIError(
+            self.status,
+            self.message,
+            detail=detail if detail is not None else self.detail,
+            hint=hint if hint is not None else self.hint,
+            request_id=request_id if request_id is not None else self.request_id,
+            phase=phase if phase is not None else self.phase,
+            next_commands=next_commands if next_commands is not None else self.next_commands,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "status": self.status,
+            "message": self.message,
+        }
+        if self.detail:
+            payload["detail"] = self.detail
+        if self.hint:
+            payload["hint"] = self.hint
+        if self.request_id:
+            payload["request_id"] = self.request_id
+        if self.phase:
+            payload["phase"] = self.phase
+        if self.next_commands:
+            payload["next_commands"] = self.next_commands
+        return payload
 
 
 class API:
@@ -46,6 +97,17 @@ class API:
             try:
                 parsed = json.loads(text)
                 msg = parsed.get("error") or parsed.get("message") or text
+                raise APIError(
+                    e.code,
+                    msg,
+                    detail=parsed.get("detail"),
+                    hint=parsed.get("hint"),
+                    request_id=parsed.get("request_id"),
+                    phase=parsed.get("phase"),
+                    next_commands=parsed.get("next_commands"),
+                )
+            except APIError:
+                raise
             except Exception:
                 msg = text or e.reason
             raise APIError(e.code, msg)

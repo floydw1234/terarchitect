@@ -199,6 +199,7 @@ No mixing with your project’s Dockerfile. The agent image is built once and re
 
 ## Docs
 
+- `CLI_GUIDE.md`: shared CLI conventions for output, errors, receipts, and adding commands
 - `docs/RUNBOOK.md`: deployments, coordinator env, systemd, verification
 - `docs/PHASE1_WORKER_API.md`: worker API contract and behavior
 - `plans/`: product and architecture planning notes
