@@ -55,6 +55,7 @@ class Project(db.Model):
     notes = db.relationship("Note", backref="project", cascade="all, delete-orphan")
     execution_logs = db.relationship("ExecutionLog", backref="project", cascade="all, delete-orphan")
     ship_runs = db.relationship("ShipRun", backref="project", cascade="all, delete-orphan")
+    promotion_candidates = db.relationship("PromotionCandidate", backref="project", cascade="all, delete-orphan")
     evidence_bundles = db.relationship("EvidenceBundle", backref="project", cascade="all, delete-orphan")
     evidence_runs = db.relationship("EvidenceRun", backref="project", cascade="all, delete-orphan")
     # No cascade, noload: embedding column is pgvector (OID 16397); ORM must never SELECT it (unknown to ARRAY(Float)).
@@ -236,6 +237,30 @@ class ShipRun(db.Model):
     # Ship record
     shipped_at = db.Column(db.TIMESTAMP)
     shipped_commit_hash = db.Column(db.String(255))
+    created_at = db.Column(db.TIMESTAMP, default=db.func.now())
+    updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
+
+
+class PromotionCandidate(db.Model):
+    """Stable promotion candidate snapshot derived from accepted attempt closure.
+
+    This is the first-class operator review object for DAG-native promotion
+    selection. ShipRun remains the execution record and is not yet keyed to
+    candidates until a later phase.
+    """
+
+    __tablename__ = "promotion_candidates"
+
+    id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
+    project_id = db.Column(UUID_TYPE, db.ForeignKey("projects.id"), nullable=False)
+    selected_attempt_ids = db.Column(JSON_TYPE, default=list)
+    selected_leaf_hashes = db.Column(JSON_TYPE, default=list)
+    base_root_hash = db.Column(db.String(255))
+    # valid | blocked | composed | shipped | superseded
+    status = db.Column(db.String(50), nullable=False, default="valid")
+    validation_summary = db.Column(JSON_TYPE, default=dict)
+    conflict_summary = db.Column(db.Text)
+    composed_commit_hash = db.Column(db.String(255))
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
 

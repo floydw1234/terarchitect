@@ -53,7 +53,7 @@ def _move_to_in_progress(client, project_id, ticket_id):
         db.session.commit()
 
 
-def _complete_ticket(client, project_id, ticket_id, commit_hash):
+def _complete_ticket(client, project_id, ticket_id, commit_hash, base_hash=None):
     """Simulate agent calling /complete. Mocks AgentHub validation to accept."""
     ok_resp = MagicMock()
     ok_resp.ok = True
@@ -62,7 +62,11 @@ def _complete_ticket(client, project_id, ticket_id, commit_hash):
         with patch.dict(os.environ, {"AGENTHUB_URL": "http://agenthub:8088"}):
             resp = client.post(
                 f"/api/projects/{project_id}/tickets/{ticket_id}/complete",
-                json={"commit_hash": commit_hash, "summary": f"Completed {ticket_id[:8]}"},
+                json={
+                    "commit_hash": commit_hash,
+                    "base_hash": base_hash,
+                    "summary": f"Completed {ticket_id[:8]}",
+                },
             )
     return resp
 
@@ -101,7 +105,7 @@ def test_e2e_ship_happy_path(client, project):
         assert t_b_db.column_id == "in_progress", \
             f"B should be in_progress after A accepted, got {t_b_db.column_id}"
 
-    _complete_ticket(client, pid, t_b["id"], "b" * 40)
+    _complete_ticket(client, pid, t_b["id"], "b" * 40, base_hash="a" * 40)
 
     # Step 6: Compose wave 0 (A)
     compose_resp = client.post(f"/api/projects/{pid}/ship/waves/0/compose", json={})
@@ -158,3 +162,51 @@ def test_e2e_ship_happy_path(client, project):
         statuses_by_commit = {a.agenthub_commit_hash: a.status for a in attempts}
         assert statuses_by_commit["a" * 40] == "shipped"
         assert statuses_by_commit["b" * 40] == "accepted"
+
+
+def test_e2e_create_promotion_candidate_from_accepted_attempts(client, project):
+    pid = project["id"]
+    frontier = "f" * 40
+
+    frontier_resp = client.post(f"/api/projects/{pid}/frontier", json={
+        "hash": frontier,
+        "source": "test",
+    })
+    assert frontier_resp.status_code == 200
+
+    t_a = _create_ticket(client, pid, "Ticket A")
+    t_b = _create_ticket(client, pid, "Ticket B depends on A", deps=[t_a["id"]], column_id="queued")
+
+    _move_to_in_progress(client, pid, t_a["id"])
+    resp_a = _complete_ticket(client, pid, t_a["id"], "a" * 40, base_hash=frontier)
+    assert resp_a.status_code == 200
+
+    from api.services.ticket_service import dispatch_unblocked_queued
+    from models.db import db, TicketAttempt
+    with client.application.app_context():
+        dispatch_unblocked_queued(pid)
+
+    resp_b = _complete_ticket(client, pid, t_b["id"], "b" * 40, base_hash="a" * 40)
+    assert resp_b.status_code == 200
+
+    attempts_resp = client.get(f"/api/projects/{pid}/attempts?status=accepted")
+    assert attempts_resp.status_code == 200
+    attempts = attempts_resp.get_json()
+    by_commit = {attempt["agenthub_commit_hash"]: attempt for attempt in attempts}
+
+    candidate_resp = client.post(
+        f"/api/projects/{pid}/ship/candidates",
+        json={"selected_attempt_ids": [by_commit["b" * 40]["id"]]},
+    )
+    assert candidate_resp.status_code == 201
+    candidate = candidate_resp.get_json()
+    assert candidate["status"] == "valid"
+    assert set(candidate["selected_attempt_ids"]) == {by_commit["a" * 40]["id"], by_commit["b" * 40]["id"]}
+    assert candidate["selected_leaf_hashes"] == ["b" * 40]
+
+    with client.application.app_context():
+        stored_attempt_ids = set(
+            db.session.get(TicketAttempt, attempt_id).agenthub_commit_hash
+            for attempt_id in candidate["selected_attempt_ids"]
+        )
+        assert stored_attempt_ids == {"a" * 40, "b" * 40}

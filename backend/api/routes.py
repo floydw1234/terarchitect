@@ -9,7 +9,7 @@ from uuid import UUID
 from flask import Blueprint, abort, current_app, jsonify, request
 from sqlalchemy import text
 
-from models.db import db, Project, Graph, KanbanBoard, Ticket, Note, ExecutionLog, AgentJob, ShipRun, TicketAttempt, CompositeWorkspace, EvidenceBundle, EvidenceRun
+from models.db import db, Project, Graph, KanbanBoard, Ticket, Note, ExecutionLog, AgentJob, ShipRun, TicketAttempt, PromotionCandidate, CompositeWorkspace, EvidenceBundle, EvidenceRun
 from utils.embedding_client import embed_single
 from utils.rag import upsert_embedding, delete_embeddings_for_source
 from utils.app_settings import (
@@ -28,9 +28,11 @@ from .services.job_service import (
 from .services.merge_service import (
     ACTIVE_SHIP_RUN_STATUSES as _ACTIVE_SHIP_RUN_STATUSES,
     analyze_wave_dependencies as _analyze_wave_dependencies,
+    build_promotion_candidate_snapshot as _build_promotion_candidate_snapshot,
     compute_waves as _compute_waves,
     lock_project_for_update as _lock_project_for_update,
     maybe_trigger_wave_merge as _maybe_trigger_wave_merge,
+    promotion_candidate_to_json as _promotion_candidate_to_json,
     ship_run_to_json as _ship_run_to_json,
 )
 from .services.notes_service import (
@@ -2467,6 +2469,49 @@ def ship_waves(project_id):
             entry["dependency_cycles"] = detail["dependency_cycles"]
 
     return jsonify(sorted(wave_map.values(), key=lambda x: x["wave_num"]))
+
+
+@api_bp.route("/projects/<uuid:project_id>/ship/candidates", methods=["GET", "POST"])
+def ship_candidates(project_id):
+    """List or create first-class promotion candidates without altering legacy wave APIs."""
+    project = _get_project_or_404(project_id)
+
+    if request.method == "GET":
+        status = (request.args.get("status") or "").strip()
+        query = PromotionCandidate.query.filter_by(project_id=project_id)
+        if status:
+            query = query.filter_by(status=status)
+        candidates = query.order_by(PromotionCandidate.created_at.desc()).all()
+        return jsonify([_promotion_candidate_to_json(candidate) for candidate in candidates])
+
+    data = request.json or {}
+    selected_attempt_ids = data.get("selected_attempt_ids")
+    if not isinstance(selected_attempt_ids, list):
+        return jsonify({"error": "selected_attempt_ids must be a list of accepted attempt ids."}), 400
+
+    snapshot = _build_promotion_candidate_snapshot(project, selected_attempt_ids)
+    candidate = PromotionCandidate(
+        project_id=str(project_id),
+        selected_attempt_ids=snapshot["selected_attempt_ids"],
+        selected_leaf_hashes=snapshot["selected_leaf_hashes"],
+        base_root_hash=snapshot["base_root_hash"],
+        status=snapshot["status"],
+        validation_summary=snapshot["validation_summary"],
+        conflict_summary=snapshot["conflict_summary"],
+    )
+    db.session.add(candidate)
+    db.session.commit()
+    return jsonify(_promotion_candidate_to_json(candidate, include_attempts=True)), 201
+
+
+@api_bp.route("/projects/<uuid:project_id>/ship/candidates/<uuid:candidate_id>", methods=["GET"])
+def ship_candidate_detail(project_id, candidate_id):
+    """Fetch one stored promotion candidate snapshot."""
+    _get_project_or_404(project_id)
+    candidate = PromotionCandidate.query.filter_by(
+        project_id=project_id, id=candidate_id
+    ).first_or_404()
+    return jsonify(_promotion_candidate_to_json(candidate, include_attempts=True))
 
 
 @api_bp.route("/projects/<uuid:project_id>/ship/waves/<int:wave_num>", methods=["GET"])

@@ -622,3 +622,127 @@ def test_project_debug_reports_frontier_attempts_runs_and_jobs(client, project):
     assert data["wave_summary"][0]["stale_count"] == 1
     assert data["open_ship_runs"][0]["status"] == "queued"
     assert data["active_jobs"][0]["status"] == "pending"
+
+
+# ---------------------------------------------------------------------------
+# 12.3h  Promotion candidates
+# ---------------------------------------------------------------------------
+
+def test_create_promotion_candidate_resolves_dependency_closure(client, project):
+    pid = project["id"]
+    frontier = "f" * 40
+
+    resp = client.post(f"/api/projects/{pid}/frontier", json={
+        "hash": frontier,
+        "source": "test",
+    })
+    assert resp.status_code == 200
+
+    from models.db import db, Ticket, TicketAttempt
+    with client.application.app_context():
+        parent = Ticket(project_id=pid, column_id="done", title="Parent", intent_status="active")
+        db.session.add(parent)
+        db.session.flush()
+        child = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Child",
+            intent_status="active",
+            depends_on_ticket_ids=[str(parent.id)],
+        )
+        db.session.add(child)
+        db.session.flush()
+        parent_attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=parent.id,
+            agenthub_commit_hash="p" * 40,
+            base_hash=frontier,
+            wave_num=0,
+            attempt_num=1,
+            status="accepted",
+            summary="parent accepted",
+        )
+        child_attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=child.id,
+            agenthub_commit_hash="c" * 40,
+            base_hash="p" * 40,
+            wave_num=1,
+            attempt_num=1,
+            status="accepted",
+            summary="child accepted",
+        )
+        db.session.add_all([parent_attempt, child_attempt])
+        db.session.commit()
+        child_attempt_id = str(child_attempt.id)
+
+    create_resp = client.post(
+        f"/api/projects/{pid}/ship/candidates",
+        json={"selected_attempt_ids": [child_attempt_id]},
+    )
+
+    assert create_resp.status_code == 201
+    data = create_resp.get_json()
+    assert data["status"] == "valid"
+    assert set(data["selected_attempt_ids"]) == set(data["validation_summary"]["seed_attempt_ids"] + data["validation_summary"]["auto_included_dependency_attempt_ids"])
+    assert data["selected_leaf_hashes"] == ["c" * 40]
+    assert data["base_root_hash"] == frontier
+    assert data["validation_summary"]["blockers"] == []
+
+
+def test_create_promotion_candidate_blocks_missing_dependency_attempt(client, project):
+    pid = project["id"]
+    frontier = "f" * 40
+
+    resp = client.post(f"/api/projects/{pid}/frontier", json={
+        "hash": frontier,
+        "source": "test",
+    })
+    assert resp.status_code == 200
+
+    from models.db import db, Ticket, TicketAttempt
+    with client.application.app_context():
+        parent = Ticket(project_id=pid, column_id="queued", title="Parent", intent_status="ready")
+        db.session.add(parent)
+        db.session.flush()
+        child = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Child",
+            intent_status="active",
+            depends_on_ticket_ids=[str(parent.id)],
+        )
+        db.session.add(child)
+        db.session.flush()
+        child_attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=child.id,
+            agenthub_commit_hash="c" * 40,
+            base_hash=frontier,
+            wave_num=1,
+            attempt_num=1,
+            status="accepted",
+            summary="child accepted",
+        )
+        db.session.add(child_attempt)
+        db.session.commit()
+        child_attempt_id = str(child_attempt.id)
+
+    create_resp = client.post(
+        f"/api/projects/{pid}/ship/candidates",
+        json={"selected_attempt_ids": [child_attempt_id]},
+    )
+
+    assert create_resp.status_code == 201
+    data = create_resp.get_json()
+    assert data["status"] == "blocked"
+    assert "no accepted attempt" in (data["conflict_summary"] or "")
+
+    list_resp = client.get(f"/api/projects/{pid}/ship/candidates?status=blocked")
+    assert list_resp.status_code == 200
+    candidates = list_resp.get_json()
+    assert len(candidates) == 1
+
+    detail_resp = client.get(f"/api/projects/{pid}/ship/candidates/{data['id']}")
+    assert detail_resp.status_code == 200
+    assert detail_resp.get_json()["id"] == data["id"]

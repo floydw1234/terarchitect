@@ -5,6 +5,7 @@ Tests that require no HTTP or DB — pure service/model logic.
 
 Covers:
   - wave computation
+  - promotion candidate graph analysis
   - base selection (compute_base_hash)
   - TicketAttempt state transitions, including legacy compatibility paths
   - compute_ticket_display_state
@@ -88,6 +89,74 @@ def test_compute_waves_cycle_fallback():
     waves = compute_waves(tickets)
     assert waves["a"] == 0
     assert waves["b"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 12.1aa  Promotion candidate graph analysis
+# ---------------------------------------------------------------------------
+
+def _make_attempt(aid, ticket_id, commit_hash, base_hash, status="accepted", attempt_num=1):
+    attempt = MagicMock()
+    attempt.id = aid
+    attempt.ticket_id = ticket_id
+    attempt.agenthub_commit_hash = commit_hash
+    attempt.base_hash = base_hash
+    attempt.status = status
+    attempt.attempt_num = attempt_num
+    return attempt
+
+
+def test_promotion_candidate_graph_auto_includes_dependency_closure():
+    from api.services.merge_service import analyze_promotion_candidate_graph
+
+    tickets = [
+        _make_ticket("parent"),
+        _make_ticket("child", deps=["parent"]),
+    ]
+    parent_attempt = _make_attempt("a-parent", "parent", "p" * 40, "f" * 40)
+    child_attempt = _make_attempt("a-child", "child", "c" * 40, "p" * 40)
+
+    result = analyze_promotion_candidate_graph(
+        frontier="f" * 40,
+        tickets=tickets,
+        selected_attempts=[child_attempt],
+        accepted_attempts_by_ticket_id={
+            "parent": parent_attempt,
+            "child": child_attempt,
+        },
+    )
+
+    assert result["status"] == "valid"
+    assert result["selected_attempt_ids"] == ["a-child", "a-parent"]
+    assert result["selected_leaf_hashes"] == ["c" * 40]
+    assert result["validation_summary"]["auto_included_dependency_attempt_ids"] == ["a-parent"]
+
+
+def test_promotion_candidate_graph_blocks_ambiguous_multi_parent_ancestry():
+    from api.services.merge_service import analyze_promotion_candidate_graph
+
+    tickets = [
+        _make_ticket("left"),
+        _make_ticket("right"),
+        _make_ticket("child", deps=["left", "right"]),
+    ]
+    left_attempt = _make_attempt("a-left", "left", "l" * 40, "f" * 40)
+    right_attempt = _make_attempt("a-right", "right", "r" * 40, "f" * 40)
+    child_attempt = _make_attempt("a-child", "child", "c" * 40, "l" * 40)
+
+    result = analyze_promotion_candidate_graph(
+        frontier="f" * 40,
+        tickets=tickets,
+        selected_attempts=[child_attempt],
+        accepted_attempts_by_ticket_id={
+            "left": left_attempt,
+            "right": right_attempt,
+            "child": child_attempt,
+        },
+    )
+
+    assert result["status"] == "blocked"
+    assert any("ambiguous multi-parent ancestry" in blocker for blocker in result["validation_summary"]["blockers"])
 
 
 # ---------------------------------------------------------------------------
