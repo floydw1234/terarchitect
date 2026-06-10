@@ -257,12 +257,13 @@ def test_mvp_base_selection_uses_accepted_dependency_hash(client, project):
         )
         db.session.add(parent)
         db.session.flush()
+        parent_id = str(parent.id)
         child = Ticket(
             project_id=proj.id,
             column_id="queued",
             title="Child",
             intent_status="ready",
-            depends_on_ticket_ids=[str(parent.id)],
+            depends_on_ticket_ids=[parent_id],
         )
         db.session.add(child)
         db.session.flush()
@@ -281,6 +282,8 @@ def test_mvp_base_selection_uses_accepted_dependency_hash(client, project):
 
     assert ctx["base_hash"] == dep_hash
     assert ctx["base_source"] == "accepted_dependency"
+    assert ctx["resolved_from_ticket_id"] == parent_id
+    assert ctx["accepted_unshipped_dependency_ticket_ids"] == [parent_id]
     assert ctx["blocked"] is False
 
 
@@ -301,12 +304,13 @@ def test_mvp_base_selection_uses_frontier_when_dependencies_already_shipped(clie
         )
         db.session.add(parent)
         db.session.flush()
+        parent_id = str(parent.id)
         child = Ticket(
             project_id=proj.id,
             column_id="queued",
             title="Child",
             intent_status="ready",
-            depends_on_ticket_ids=[str(parent.id)],
+            depends_on_ticket_ids=[parent_id],
         )
         db.session.add(child)
         db.session.flush()
@@ -325,6 +329,7 @@ def test_mvp_base_selection_uses_frontier_when_dependencies_already_shipped(clie
 
     assert ctx["base_hash"] == frontier
     assert ctx["base_source"] == "shipped_frontier"
+    assert ctx["shipped_dependency_ticket_ids"] == [parent_id]
     assert ctx["blocked"] is False
 
 
@@ -340,12 +345,14 @@ def test_mvp_base_selection_blocks_multiple_unshipped_dependencies(client, proje
         parent_b = Ticket(project_id=proj.id, column_id="done", title="Parent B", intent_status="active")
         db.session.add_all([parent_a, parent_b])
         db.session.flush()
+        parent_a_id = str(parent_a.id)
+        parent_b_id = str(parent_b.id)
         child = Ticket(
             project_id=proj.id,
             column_id="queued",
             title="Child",
             intent_status="ready",
-            depends_on_ticket_ids=[str(parent_a.id), str(parent_b.id)],
+            depends_on_ticket_ids=[parent_a_id, parent_b_id],
         )
         db.session.add(child)
         db.session.flush()
@@ -376,7 +383,8 @@ def test_mvp_base_selection_blocks_multiple_unshipped_dependencies(client, proje
 
     assert ctx["base_hash"] is None
     assert ctx["blocked"] is True
-    assert "Multiple accepted unshipped dependencies" in ctx["blocked_reason"]
+    assert ctx["accepted_unshipped_dependency_ticket_ids"] == [parent_a_id, parent_b_id]
+    assert "Promote or ship prerequisite work first" in ctx["blocked_reason"]
 
 
 def test_coordinator_job_to_env_forwards_base_hashes():
@@ -390,7 +398,7 @@ def test_coordinator_job_to_env_forwards_base_hashes():
             "job_id": "j1",
             "kind": "ticket",
             "base_hash": "b" * 40,
-            "shipped_frontier": "f" * 40,
+            "agenthub_root_hash": "f" * 40,
         },
         for_docker=False,
     )

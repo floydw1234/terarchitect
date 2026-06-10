@@ -1,9 +1,8 @@
 """Worker job queue helpers: swarm job claiming and response serialisation."""
-from collections import Counter
 
 from flask import current_app
 
-from models.db import db, Project, Ticket, AgentJob, TicketAttempt, CompositeWorkspace
+from models.db import db, Project, Ticket, AgentJob, TicketAttempt
 from .attempt_service import SATISFIED_STATUSES as _SATISFIED_STATUSES
 
 
@@ -76,14 +75,8 @@ def claim_swarm_job(project_id):
 
 
 def compute_base_hash(ticket: Ticket, project: Project) -> str | None:
-    """Select the AgentHub commit hash this ticket should build on top of.
-
-    Priority (from AGENTHUB-CONVERSION.md §Agent Base Selection):
-      1. Single explicit dependency → use that dep's accepted attempt hash.
-      2. Multiple unshipped dependencies → use their composed temporary base.
-      3. No deps → use project.shipped_frontier.
-    """
-    context = dependency_base_context(ticket, project)
+    """Return the DAG-native base hash for a ticket job, if one is available."""
+    context = mvp_dependency_base_context(ticket, project)
     return context.get("base_hash")
 
 
@@ -105,10 +98,13 @@ def mvp_dependency_base_context(ticket: Ticket, project: Project) -> dict:
         return {
             "base_hash": frontier,
             "base_source": "shipped_frontier",
+            "dependency_ticket_ids": [],
             "dependency_parent_hashes": [],
+            "accepted_unshipped_dependency_ticket_ids": [],
+            "shipped_dependency_ticket_ids": [],
+            "resolved_from_ticket_id": None,
             "blocked": False,
             "blocked_reason": None,
-            "temporary_base_required": False,
         }
 
     accepted_unshipped_attempts: list[TicketAttempt] = []
@@ -132,167 +128,51 @@ def mvp_dependency_base_context(ticket: Ticket, project: Project) -> dict:
         return {
             "base_hash": frontier,
             "base_source": "shipped_frontier",
+            "dependency_ticket_ids": [str(dep_id) for dep_id in dep_ids],
             "dependency_parent_hashes": [
                 attempt.agenthub_commit_hash
                 for attempt in shipped_attempts
                 if attempt.agenthub_commit_hash
             ],
+            "accepted_unshipped_dependency_ticket_ids": [],
+            "shipped_dependency_ticket_ids": [str(attempt.ticket_id) for attempt in shipped_attempts],
+            "resolved_from_ticket_id": None,
             "blocked": False,
             "blocked_reason": None,
-            "temporary_base_required": False,
         }
 
     if len(accepted_unshipped_attempts) == 1:
-        parent_hash = accepted_unshipped_attempts[0].agenthub_commit_hash or frontier
+        parent_attempt = accepted_unshipped_attempts[0]
+        parent_hash = parent_attempt.agenthub_commit_hash or frontier
         return {
             "base_hash": parent_hash,
             "base_source": "accepted_dependency",
+            "dependency_ticket_ids": [str(dep_id) for dep_id in dep_ids],
             "dependency_parent_hashes": [parent_hash] if parent_hash else [],
+            "accepted_unshipped_dependency_ticket_ids": [str(parent_attempt.ticket_id)],
+            "shipped_dependency_ticket_ids": [str(attempt.ticket_id) for attempt in shipped_attempts],
+            "resolved_from_ticket_id": str(parent_attempt.ticket_id),
             "blocked": False,
             "blocked_reason": None,
-            "temporary_base_required": False,
         }
 
     parent_hashes = _attempt_hashes(accepted_unshipped_attempts)
     return {
         "base_hash": None,
         "base_source": "blocked_multiple_unshipped_dependencies",
+        "dependency_ticket_ids": [str(dep_id) for dep_id in dep_ids],
         "dependency_parent_hashes": parent_hashes,
+        "accepted_unshipped_dependency_ticket_ids": [
+            str(attempt.ticket_id) for attempt in accepted_unshipped_attempts
+        ],
+        "shipped_dependency_ticket_ids": [str(attempt.ticket_id) for attempt in shipped_attempts],
+        "resolved_from_ticket_id": None,
         "blocked": True,
         "blocked_reason": (
             "Multiple accepted unshipped dependencies are blocked in the MVP path. "
-            "Ship prerequisite work first or reduce the ticket to a single unshipped dependency."
+            "Promote or ship prerequisite work first so exactly one stable base commit remains."
         ),
-        "temporary_base_required": False,
     }
-
-
-def dependency_base_context(ticket: Ticket, project: Project) -> dict:
-    """Compatibility base-selection context.
-
-    This retains the older workspace-based behavior for legacy callers, but the
-    MVP dispatch path uses mvp_dependency_base_context().
-    """
-    dep_ids = ticket.depends_on_ticket_ids or []
-    frontier = (project.shipped_frontier or None) if project else None
-
-    if not dep_ids:
-        # Prefer blessed composite's composed commit over raw frontier
-        # so agents building after a bless start from the preferred candidate state
-        blessed_ws_id = getattr(project, "blessed_workspace_id", None) if project else None
-        if blessed_ws_id:
-            blessed = CompositeWorkspace.query.filter_by(
-                id=blessed_ws_id, status="blessed"
-            ).first()
-            if blessed and blessed.composed_commit_hash:
-                return {
-                    "base_hash": blessed.composed_commit_hash,
-                    "base_source": "blessed_workspace",
-                    "dependency_parent_hashes": [],
-                    "temporary_base_workspace_id": str(blessed.id),
-                    "temporary_base_status": blessed.status,
-                    "temporary_base_required": False,
-                }
-        return {
-            "base_hash": frontier,
-            "base_source": "frontier",
-            "dependency_parent_hashes": [],
-            "temporary_base_workspace_id": None,
-            "temporary_base_status": None,
-            "temporary_base_required": False,
-        }
-
-    unshipped_attempts = unshipped_dependency_attempts(ticket)
-    if not unshipped_attempts:
-        return {
-            "base_hash": frontier,
-            "base_source": "frontier",
-            "dependency_parent_hashes": [],
-            "temporary_base_workspace_id": None,
-            "temporary_base_status": None,
-            "temporary_base_required": False,
-        }
-    if len(unshipped_attempts) == 1:
-        parent_hash = unshipped_attempts[0].agenthub_commit_hash or frontier
-        return {
-            "base_hash": parent_hash,
-            "base_source": "single_dependency",
-            "dependency_parent_hashes": [parent_hash] if parent_hash else [],
-            "temporary_base_workspace_id": None,
-            "temporary_base_status": None,
-            "temporary_base_required": False,
-        }
-
-    workspace = ensure_temporary_dependency_base(ticket, project, unshipped_attempts)
-    parent_hashes = _attempt_hashes(unshipped_attempts)
-    ready = workspace and workspace.composed_commit_hash and workspace.status in {"preview_ready", "blessed", "snapshot_candidate"}
-    return {
-        "base_hash": workspace.composed_commit_hash if ready else None,
-        "base_source": "temporary_dependency_base",
-        "dependency_parent_hashes": parent_hashes,
-        "temporary_base_workspace_id": str(workspace.id) if workspace else None,
-        "temporary_base_status": workspace.status if workspace else None,
-        "temporary_base_required": True,
-    }
-
-
-def unshipped_dependency_attempts(ticket: Ticket) -> list[TicketAttempt]:
-    """Return satisfied dependency attempts that are not yet shipped into the frontier."""
-    attempts: list[TicketAttempt] = []
-    for dep_id in ticket.depends_on_ticket_ids or []:
-        attempt = (
-            TicketAttempt.query
-            .filter_by(ticket_id=dep_id)
-            .filter(TicketAttempt.status.in_(_SATISFIED_STATUSES))
-            .order_by(TicketAttempt.attempt_num.desc())
-            .first()
-        )
-        if attempt and attempt.status != "shipped":
-            attempts.append(attempt)
-    return attempts
-
-
-def ensure_temporary_dependency_base(ticket: Ticket, project: Project, attempts: list[TicketAttempt]) -> CompositeWorkspace | None:
-    """Find or create a Composite Workspace that composes multiple dependency leaves."""
-    parent_hashes = _attempt_hashes(attempts)
-    if len(parent_hashes) < 2:
-        return None
-    existing = _find_temporary_dependency_workspace(project.id, parent_hashes)
-    if existing:
-        return existing
-    workspace = CompositeWorkspace(
-        project_id=project.id,
-        selected_attempt_ids=[str(attempt.id) for attempt in attempts],
-        selected_leaf_hashes=parent_hashes,
-        base_root_hash=project.shipped_frontier,
-        status="queued",
-        summary=f"Temporary dependency base for {ticket.title or ticket.id}",
-        created_by="dependency_base_composer",
-    )
-    db.session.add(workspace)
-    db.session.commit()
-    current_app.logger.info(
-        "base_selection created temporary dependency workspace=%s ticket=%s parents=%s",
-        workspace.id,
-        getattr(ticket, "id", None),
-        parent_hashes,
-    )
-    return workspace
-
-
-def _find_temporary_dependency_workspace(project_id, parent_hashes: list[str]) -> CompositeWorkspace | None:
-    candidates = (
-        CompositeWorkspace.query
-        .filter_by(project_id=project_id, created_by="dependency_base_composer")
-        .filter(CompositeWorkspace.status.in_(["queued", "composing", "preview_ready", "blessed", "snapshot_candidate"]))
-        .order_by(CompositeWorkspace.created_at.desc())
-        .all()
-    )
-    wanted = Counter(parent_hashes)
-    for workspace in candidates:
-        if Counter(workspace.selected_leaf_hashes or []) == wanted:
-            return workspace
-    return None
 
 
 def _attempt_hashes(attempts: list[TicketAttempt]) -> list[str]:
@@ -333,6 +213,7 @@ def job_to_response(job):
         "project_path": (project.project_path or "").strip() or None if project else None,
         "base_hash": base_hash,
         "shipped_frontier": shipped_frontier,
+        "agenthub_root_hash": shipped_frontier,
         "base_selection": base_context,
     }
     return out

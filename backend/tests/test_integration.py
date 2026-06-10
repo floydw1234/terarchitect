@@ -62,6 +62,7 @@ def test_ticket_complete_creates_attempt(client, project):
         attempts = TicketAttempt.query.filter_by(ticket_id=tid).all()
         assert len(attempts) == 1
         assert attempts[0].agenthub_commit_hash == "a" * 40
+        assert attempts[0].wave_num == 0
 
 
 def test_ticket_complete_creates_no_pr_row(client, project):
@@ -741,15 +742,19 @@ def test_single_dependency_ticket_dispatches_from_parent_attempt_base(client, pr
     client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
 
     with client.application.app_context():
+        from models.db import Project
+        proj = db.session.get(Project, pid)
+        proj.shipped_frontier = frontier
         parent = Ticket(project_id=pid, column_id="done", title="Parent", intent_status="active")
         db.session.add(parent)
         db.session.flush()
+        parent_id = str(parent.id)
         child = Ticket(
             project_id=pid,
             column_id="queued",
             title="Child",
             intent_status="ready",
-            depends_on_ticket_ids=[str(parent.id)],
+            depends_on_ticket_ids=[parent_id],
         )
         db.session.add(child)
         db.session.flush()
@@ -772,7 +777,10 @@ def test_single_dependency_ticket_dispatches_from_parent_attempt_base(client, pr
     assert resp.status_code == 200
     payload = resp.get_json()
     assert payload["base_hash"] == parent_hash
+    assert payload["agenthub_root_hash"] == frontier
     assert payload["base_selection"]["base_source"] == "accepted_dependency"
+    assert payload["base_selection"]["resolved_from_ticket_id"] == parent_id
+    assert payload["base_selection"]["accepted_unshipped_dependency_ticket_ids"] == [parent_id]
     assert payload["base_selection"]["blocked"] is False
 
 
@@ -791,12 +799,13 @@ def test_shipped_dependency_ticket_dispatches_from_current_frontier(client, proj
         parent = Ticket(project_id=pid, column_id="done", title="Parent", intent_status="active")
         db.session.add(parent)
         db.session.flush()
+        parent_id = str(parent.id)
         child = Ticket(
             project_id=pid,
             column_id="queued",
             title="Child",
             intent_status="ready",
-            depends_on_ticket_ids=[str(parent.id)],
+            depends_on_ticket_ids=[parent_id],
         )
         db.session.add(child)
         db.session.flush()
@@ -819,13 +828,16 @@ def test_shipped_dependency_ticket_dispatches_from_current_frontier(client, proj
     assert resp.status_code == 200
     payload = resp.get_json()
     assert payload["base_hash"] == frontier
+    assert payload["agenthub_root_hash"] == frontier
     assert payload["base_selection"]["base_source"] == "shipped_frontier"
+    assert payload["base_selection"]["shipped_dependency_ticket_ids"] == [parent_id]
     assert payload["base_selection"]["blocked"] is False
 
 
 def test_multi_dependency_ticket_stays_queued_in_mvp(client, project):
     """Multiple accepted unshipped dependencies remain blocked in the MVP path."""
-    from models.db import db, Ticket, TicketAttempt, CompositeWorkspace, AgentJob
+    from models.db import db, Project, Ticket, TicketAttempt, AgentJob
+    from api.services.job_service import mvp_dependency_base_context
 
     pid = project["id"]
     client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
@@ -874,12 +886,12 @@ def test_multi_dependency_ticket_stays_queued_in_mvp(client, project):
 
     with client.application.app_context():
         child = db.session.get(Ticket, child_id)
+        project_row = db.session.get(Project, pid)
+        base_context = mvp_dependency_base_context(child, project_row)
         assert child.column_id == "queued"
         assert AgentJob.query.filter_by(ticket_id=child_id).count() == 0
-        assert CompositeWorkspace.query.filter_by(
-            project_id=pid,
-            created_by="dependency_base_composer",
-        ).count() == 0
+        assert base_context["blocked"] is True
+        assert "Promote or ship prerequisite work first" in base_context["blocked_reason"]
 
 
 # ---------------------------------------------------------------------------

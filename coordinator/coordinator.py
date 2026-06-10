@@ -380,11 +380,13 @@ def job_to_env(job: dict, for_docker: bool = False) -> dict:
     env["JOB_ID"] = str(job.get("job_id", ""))
     env["JOB_KIND"] = str(job.get("kind", "ticket"))
     env["TERARCHITECT_MODE"] = "swarm"
-    # AgentHub base selection: tell the agent which commit to build on
+    # AgentHub DAG selection: ticket jobs always receive an explicit base commit
+    # and the current shipped root without any wave-derived meaning.
     if job.get("base_hash"):
         env["BASE_HASH"] = str(job["base_hash"])
-    if job.get("shipped_frontier"):
-        env["AGENTHUB_ROOT_HASH"] = str(job["shipped_frontier"])
+    root_hash = job.get("agenthub_root_hash") or job.get("shipped_frontier")
+    if root_hash:
+        env["AGENTHUB_ROOT_HASH"] = str(root_hash)
     # When execution_mode=local, agent runs on host and uses this path instead of cloning
     if job.get("execution_mode") == "local" and job.get("project_path"):
         env["AGENT_WORKSPACE"] = str(job["project_path"]).strip()

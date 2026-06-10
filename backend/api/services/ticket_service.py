@@ -247,18 +247,6 @@ def enqueue_ticket_job(ticket_id):
                 ticket.intent_status = "ready"
                 db.session.commit()
             return
-        if base_context.get("temporary_base_required") and not base_context.get("base_hash"):
-            current_app.logger.info(
-                "Skipping enqueue: ticket %s awaiting temporary dependency base workspace=%s status=%s",
-                ticket_id,
-                base_context.get("temporary_base_workspace_id"),
-                base_context.get("temporary_base_status"),
-            )
-            if ticket.column_id == "in_progress":
-                ticket.column_id = "queued"
-                ticket.intent_status = "ready"
-                db.session.commit()
-            return
 
     existing = AgentJob.query.filter(
         AgentJob.ticket_id == ticket_id,
@@ -312,15 +300,6 @@ def dispatch_unblocked_queued(project_id):
                     "dispatch waiting ticket=%s reason=%s deps=%s",
                     t.id,
                     base_context.get("blocked_reason"),
-                    dep_ids,
-                )
-                continue
-            if base_context.get("temporary_base_required") and not base_context.get("base_hash"):
-                current_app.logger.info(
-                    "dispatch waiting ticket=%s reason=temporary_dependency_base status=%s workspace=%s deps=%s",
-                    t.id,
-                    base_context.get("temporary_base_status"),
-                    base_context.get("temporary_base_workspace_id"),
                     dep_ids,
                 )
                 continue

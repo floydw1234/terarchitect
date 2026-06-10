@@ -1509,14 +1509,11 @@ def ticket_complete(project_id, ticket_id):
     is_swarm = project and (getattr(project, "git_mode", None) or "swarm") == "swarm"
     attempt = None
     if is_swarm:
-        tickets_all = Ticket.query.filter_by(project_id=project_id).all()
-        wave_num = _compute_waves(tickets_all).get(str(ticket_id), 0)
         attempt = _create_attempt(
             project_id=project_id,
             ticket_id=ticket.id,
             commit_hash=commit_hash,
             base_hash=base_hash,
-            wave_num=wave_num,
             agent_id=agent_id_val,
             summary=summary or None,
             initial_status="proposed",

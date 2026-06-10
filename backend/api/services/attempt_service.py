@@ -224,7 +224,7 @@ def list_ready_attempts(project_id) -> list[TicketAttempt]:
     return (
         TicketAttempt.query
         .filter_by(project_id=project_id, status="accepted")
-        .order_by(TicketAttempt.wave_num, TicketAttempt.attempt_num)
+        .order_by(TicketAttempt.created_at.asc(), TicketAttempt.attempt_num.asc())
         .all()
     )
 
@@ -239,12 +239,16 @@ def create_attempt(
     ticket_id,
     commit_hash: Optional[str] = None,
     base_hash: Optional[str] = None,
-    wave_num: int = 0,
+    wave_num: Optional[int] = None,
     agent_id: Optional[str] = None,
     summary: Optional[str] = None,
     initial_status: str = "proposed",
 ) -> TicketAttempt:
-    """Create and persist a new TicketAttempt, auto-incrementing attempt_num."""
+    """Create and persist a new TicketAttempt, auto-incrementing attempt_num.
+
+    `wave_num` is legacy-only compatibility metadata. Callers no longer need to
+    supply it for acceptance, inspection, or later promotion selection paths.
+    """
     if initial_status not in ALL_STATUSES:
         raise ValueError(f"Unknown initial status: {initial_status!r}")
 
@@ -255,13 +259,14 @@ def create_attempt(
         .first()
     )
     attempt_num = (last.attempt_num + 1) if last else 1
+    compatibility_wave_num = 0 if wave_num is None else wave_num
 
     attempt = TicketAttempt(
         project_id=project_id,
         ticket_id=ticket_id,
         agenthub_commit_hash=commit_hash,
         base_hash=base_hash,
-        wave_num=wave_num,
+        wave_num=compatibility_wave_num,
         attempt_num=attempt_num,
         agent_id=agent_id,
         status=initial_status,
