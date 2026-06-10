@@ -86,6 +86,48 @@ func (s *Server) handleListPosts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, posts)
 }
 
+func (s *Server) handleListChannelEvents(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	ch, err := s.db.GetChannelByName(name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	if ch == nil {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	posts, err := s.db.ListPosts(ch.ID, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	events := make([]normalizedEvent, 0, len(posts))
+	for _, post := range posts {
+		events = append(events, normalizePostEvent(db.PostWithChannel{Post: post, ChannelName: ch.Name}))
+	}
+	writeJSON(w, http.StatusOK, events)
+}
+
+func (s *Server) handleListRecentEvents(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	channelPrefix := r.URL.Query().Get("channel_prefix")
+
+	posts, err := s.db.RecentPostsByChannelPrefix(channelPrefix, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	events := make([]normalizedEvent, 0, len(posts))
+	for _, post := range posts {
+		events = append(events, normalizePostEvent(post))
+	}
+	writeJSON(w, http.StatusOK, events)
+}
+
 func (s *Server) handleCreatePost(w http.ResponseWriter, r *http.Request) {
 	agent := auth.AgentFromContext(r.Context())
 	name := r.PathValue("name")

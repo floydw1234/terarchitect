@@ -17,6 +17,7 @@ import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _BACKEND_DIR not in sys.path:
@@ -746,3 +747,35 @@ def test_create_promotion_candidate_blocks_missing_dependency_attempt(client, pr
     detail_resp = client.get(f"/api/projects/{pid}/ship/candidates/{data['id']}")
     assert detail_resp.status_code == 200
     assert detail_resp.get_json()["id"] == data["id"]
+
+
+def test_agenthub_client_receipt_and_events_methods():
+    from utils.agenthub_client import AgenthubClient
+
+    client = AgenthubClient("http://agenthub:8088", "secret")
+    receipt_payload = {"hash": "a" * 40, "exists": True}
+    event_payload = [{"channel_name": "ticket-123", "event_type": "attempt_published"}]
+    doctor_payload = {"status": "ok", "checks": [{"name": "database", "ok": True}]}
+
+    with patch.object(client, "_get", side_effect=[receipt_payload, event_payload, doctor_payload]) as mocked_get:
+        assert client.receipt("a" * 40)["exists"] is True
+        assert client.events(channel_prefix="ticket-", limit=10)[0]["event_type"] == "attempt_published"
+        assert client.doctor()["status"] == "ok"
+
+    assert mocked_get.call_args_list[0].args[0] == f"/api/git/receipts/{'a' * 40}"
+    assert mocked_get.call_args_list[1].args[0] == "/api/events"
+    assert mocked_get.call_args_list[1].kwargs == {"channel_prefix": "ticket-", "limit": 10}
+    assert mocked_get.call_args_list[2].args[0] == "/api/doctor"
+
+
+def test_agenthub_client_seed_not_supported_surfaces_server_message():
+    from utils.agenthub_client import AgenthubClient, AgenthubError
+
+    client = AgenthubClient("http://agenthub:8088", "secret")
+    response = MagicMock(spec=requests.Response)
+    response.status_code = 501
+    response.text = '{"error":"server-side seed not yet supported"}'
+
+    with patch.object(client._session, "post", return_value=response):
+        with pytest.raises(AgenthubError, match="not yet supported"):
+            client.seed("/tmp/repo", "a" * 40)

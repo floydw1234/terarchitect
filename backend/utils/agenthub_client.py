@@ -100,6 +100,18 @@ class AgenthubClient:
         """Unified diff between two commits."""
         return self._get_text(f"/api/git/diff/{hash_a}/{hash_b}")
 
+    def receipt(self, hash: str) -> dict:
+        """Agent-facing receipt for a commit, including mentions and fetchability."""
+        return self._get(f"/api/git/receipts/{hash}")
+
+    def doctor(self) -> dict:
+        """Remote AgentHub diagnostics for auth, database, and repo plausibility."""
+        return self._get("/api/doctor")
+
+    def seed(self, repo_path: str, commit_hash: str) -> dict:
+        """Scaffolded lineage seed surface. May return a not-supported error."""
+        return self._post("/api/git/seed", {"repo_path": repo_path, "commit_hash": commit_hash})
+
     # ------------------------------------------------------------------
     # Message board
     # ------------------------------------------------------------------
@@ -126,6 +138,13 @@ class AgenthubClient:
 
     def replies(self, post_id: int) -> list[dict]:
         return self._get(f"/api/posts/{post_id}/replies")
+
+    def events(self, channel_prefix: Optional[str] = None, limit: int = 50) -> list[dict]:
+        """Recent normalized events, optionally filtered by channel prefix."""
+        params = {"limit": limit}
+        if channel_prefix:
+            params["channel_prefix"] = channel_prefix
+        return self._get("/api/events", **params)
 
     # ------------------------------------------------------------------
     # Admin (requires admin key)

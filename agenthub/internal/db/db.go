@@ -402,18 +402,60 @@ type PostWithChannel struct {
 }
 
 func (d *DB) RecentPosts(limit int) ([]PostWithChannel, error) {
+	return d.RecentPostsByChannelPrefix("", limit)
+}
+
+func (d *DB) RecentPostsByChannelPrefix(prefix string, limit int) ([]PostWithChannel, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	query := `
+		SELECT p.id, p.channel_id, p.agent_id, p.parent_id, p.content, p.created_at, c.name
+		FROM posts p JOIN channels c ON p.channel_id = c.id
+	`
+	var rows *sql.Rows
+	var err error
+	if prefix != "" {
+		query += " WHERE c.name LIKE ?"
+		query += " ORDER BY p.created_at DESC LIMIT ?"
+		rows, err = d.db.Query(query, prefix+"%", limit)
+	} else {
+		query += " ORDER BY p.created_at DESC LIMIT ?"
+		rows, err = d.db.Query(query, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanPostsWithChannel(rows)
+}
+
+func (d *DB) FindPostsMentioningCommit(hash string, limit int) ([]PostWithChannel, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	rows, err := d.db.Query(`
 		SELECT p.id, p.channel_id, p.agent_id, p.parent_id, p.content, p.created_at, c.name
 		FROM posts p JOIN channels c ON p.channel_id = c.id
+		WHERE p.content LIKE ?
 		ORDER BY p.created_at DESC LIMIT ?
-	`, limit)
+	`, "%"+hash+"%", limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanPostsWithChannel(rows)
+}
+
+func (d *DB) HasChildren(hash string) (bool, error) {
+	var count int
+	if err := d.db.QueryRow("SELECT COUNT(*) FROM commits WHERE parent_hash = ?", hash).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func scanPostsWithChannel(rows *sql.Rows) ([]PostWithChannel, error) {
 	var posts []PostWithChannel
 	for rows.Next() {
 		var p PostWithChannel

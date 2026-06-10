@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -109,6 +110,13 @@ func (c *Client) postFile(path string, filePath string) (*http.Response, error) 
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	req.Header.Set("Content-Type", "application/octet-stream")
 	return c.HTTP.Do(req)
+}
+
+type doctorCheck struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail"`
+	Hint   string `json:"hint"`
 }
 
 func readJSON(resp *http.Response, v any) error {
@@ -374,6 +382,198 @@ func cmdDiff(args []string) {
 	fmt.Print(body)
 }
 
+func cmdReceipt(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: ah receipt <hash>")
+		os.Exit(1)
+	}
+	cfg := mustLoadConfig()
+	client := newClient(cfg)
+
+	resp, err := client.get("/api/git/receipts/" + args[0])
+	if err != nil {
+		fatal("request failed: %v", err)
+	}
+
+	var receipt map[string]any
+	if err := readJSON(resp, &receipt); err != nil {
+		fatal("receipt failed: %v", err)
+	}
+
+	fmt.Printf("hash: %s\n", str(receipt["hash"]))
+	fmt.Printf("exists: %v\n", receipt["exists"])
+	if receipt["exists"] != true {
+		return
+	}
+	fmt.Printf("summary: %s\n", str(receipt["summary"]))
+	if author := strings.TrimSpace(str(receipt["author_name"])); author != "" {
+		email := strings.TrimSpace(str(receipt["author_email"]))
+		if email != "" {
+			fmt.Printf("author: %s <%s>\n", author, email)
+		} else {
+			fmt.Printf("author: %s\n", author)
+		}
+	}
+	fmt.Printf("base: %s\n", str(receipt["base"]))
+	fmt.Printf("is_leaf: %v\n", receipt["is_leaf"])
+	fmt.Printf("bundle_fetchable: %v\n", receipt["bundle_fetchable"])
+
+	if parents, ok := receipt["parents"].([]any); ok && len(parents) > 0 {
+		values := make([]string, 0, len(parents))
+		for _, parent := range parents {
+			values = append(values, str(parent))
+		}
+		fmt.Printf("parents: %s\n", strings.Join(values, ", "))
+	}
+	if channels, ok := receipt["channels"].([]any); ok && len(channels) > 0 {
+		values := make([]string, 0, len(channels))
+		for _, channel := range channels {
+			values = append(values, str(channel))
+		}
+		sort.Strings(values)
+		fmt.Printf("channels: %s\n", strings.Join(values, ", "))
+	}
+	if mentions, ok := receipt["mentions"].([]any); ok {
+		fmt.Printf("mentions: %d\n", len(mentions))
+		for _, raw := range mentions {
+			mention, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			fmt.Printf("  - #%v in %s [%s] %s\n", mention["id"], str(mention["channel_name"]), str(mention["event_type"]), str(mention["message"]))
+		}
+	}
+}
+
+func cmdDoctor(args []string) {
+	checks := []doctorCheck{}
+	ok := true
+
+	cfg, err := loadConfig()
+	if err != nil {
+		ok = false
+		checks = append(checks, doctorCheck{
+			Name:   "config",
+			OK:     false,
+			Detail: err.Error(),
+			Hint:   "Run `ah join --server <url> --name <id> --admin-key <key>` or set AGENTHUB_* env vars.",
+		})
+	} else {
+		checks = append(checks, doctorCheck{
+			Name:   "config",
+			OK:     cfg.ServerURL != "" && cfg.APIKey != "" && cfg.AgentID != "",
+			Detail: fmt.Sprintf("server=%s agent=%s", cfg.ServerURL, cfg.AgentID),
+			Hint:   "Ensure server URL, API key, and agent id are all configured.",
+		})
+		if cfg.ServerURL == "" || cfg.APIKey == "" || cfg.AgentID == "" {
+			ok = false
+		}
+	}
+
+	if _, err := gitOutput("rev-parse", "--git-dir"); err != nil {
+		ok = false
+		checks = append(checks, doctorCheck{
+			Name:   "local_repo",
+			OK:     false,
+			Detail: "current directory is not a git repository",
+			Hint:   "Run AgentHub commands from inside the repo you want the agent to publish.",
+		})
+	} else {
+		checks = append(checks, doctorCheck{
+			Name:   "local_repo",
+			OK:     true,
+			Detail: "local git repository is available.",
+		})
+	}
+
+	if cfg != nil {
+		client := newClient(cfg)
+		resp, err := client.get("/api/doctor")
+		if err != nil {
+			ok = false
+			checks = append(checks, doctorCheck{
+				Name:   "server",
+				OK:     false,
+				Detail: err.Error(),
+				Hint:   "Check network reachability and the AGENTHUB_URL value.",
+			})
+		} else {
+			var payload struct {
+				Status string        `json:"status"`
+				Checks []doctorCheck `json:"checks"`
+			}
+			if err := readJSON(resp, &payload); err != nil {
+				ok = false
+				checks = append(checks, doctorCheck{
+					Name:   "server",
+					OK:     false,
+					Detail: err.Error(),
+					Hint:   "Check whether the AgentHub server returned valid JSON.",
+				})
+			} else {
+				for _, check := range payload.Checks {
+					if !check.OK {
+						ok = false
+					}
+					checks = append(checks, check)
+				}
+			}
+		}
+	}
+
+	for _, check := range checks {
+		state := "ok"
+		if !check.OK {
+			state = "fail"
+		}
+		fmt.Printf("[%s] %s: %s\n", state, check.Name, check.Detail)
+		if !check.OK && check.Hint != "" {
+			fmt.Printf("      hint: %s\n", check.Hint)
+		}
+	}
+	if !ok {
+		os.Exit(1)
+	}
+}
+
+func cmdSeed(args []string) {
+	fs := flag.NewFlagSet("seed", flag.ExitOnError)
+	repoPath := fs.String("repo", "", "path to the source repository")
+	commitHash := fs.String("commit", "", "commit hash to seed")
+	fs.Parse(args)
+
+	if *repoPath == "" || *commitHash == "" {
+		fmt.Fprintln(os.Stderr, "usage: ah seed --repo <path> --commit <hash>")
+		os.Exit(1)
+	}
+
+	cfg := mustLoadConfig()
+	client := newClient(cfg)
+	resp, err := client.postJSON("/api/git/seed", map[string]string{
+		"repo_path":   *repoPath,
+		"commit_hash": *commitHash,
+	})
+	if err != nil {
+		fatal("seed failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		fatal("seed failed: %v", err)
+	}
+	if resp.StatusCode >= 400 {
+		fmt.Fprintf(os.Stderr, "error: %s\n", str(payload["error"]))
+		if hint := str(payload["hint"]); hint != "" {
+			fmt.Fprintf(os.Stderr, "hint: %s\n", hint)
+		}
+		os.Exit(1)
+	}
+	fmt.Printf("seed response: %s\n", str(payload["error"]))
+	if hint := str(payload["hint"]); hint != "" {
+		fmt.Printf("hint: %s\n", hint)
+	}
+}
+
 func cmdChannels(args []string) {
 	cfg := mustLoadConfig()
 	client := newClient(cfg)
@@ -616,6 +816,12 @@ func main() {
 		cmdLineage(args)
 	case "diff":
 		cmdDiff(args)
+	case "receipt":
+		cmdReceipt(args)
+	case "doctor":
+		cmdDoctor(args)
+	case "seed":
+		cmdSeed(args)
 	case "channels":
 		cmdChannels(args)
 	case "post":
@@ -643,6 +849,9 @@ Git commands:
   leaves                                      frontier commits
   lineage <hash>                              ancestry to root
   diff <hash-a> <hash-b>                      diff two commits
+  receipt <hash>                              summarize commit receipt and mentions
+  doctor                                      verify local config and remote AgentHub health
+  seed --repo <path> --commit <hash>          seed lineage (currently scaffolded)
 
 Board commands:
   channels                                    list channels

@@ -26,6 +26,14 @@ type Repo struct {
 	mu   sync.Mutex // held during write operations (unbundle)
 }
 
+type CommitDetails struct {
+	Hash        string
+	Parents     []string
+	AuthorName  string
+	AuthorEmail string
+	Summary     string
+}
+
 // Init creates or opens a bare git repository.
 func Init(path string) (*Repo, error) {
 	if _, err := exec.LookPath("git"); err != nil {
@@ -108,27 +116,43 @@ func (r *Repo) CommitExists(hash string) bool {
 
 // GetCommitInfo returns the parent hash(es) and subject of a commit.
 func (r *Repo) GetCommitInfo(hash string) (parentHash, message string, err error) {
-	if !IsValidHash(hash) {
-		return "", "", fmt.Errorf("invalid hash: %s", hash)
-	}
-	// Use NUL byte separator to avoid ambiguity with empty parent lines
-	out, err := r.gitOutput("log", "-1", "--format=%P%x00%s", hash)
+	details, err := r.GetCommitDetails(hash)
 	if err != nil {
-		return "", "", fmt.Errorf("git log: %w", err)
+		return "", "", err
+	}
+	if len(details.Parents) > 0 {
+		parentHash = details.Parents[0]
+	}
+	return parentHash, details.Summary, nil
+}
+
+func (r *Repo) GetCommitDetails(hash string) (*CommitDetails, error) {
+	if !IsValidHash(hash) {
+		return nil, fmt.Errorf("invalid hash: %s", hash)
+	}
+	out, err := r.gitOutput("log", "-1", "--format=%H%x00%P%x00%an%x00%ae%x00%s", hash)
+	if err != nil {
+		return nil, fmt.Errorf("git log: %w", err)
 	}
 	out = strings.TrimRight(out, "\n")
-	parts := strings.SplitN(out, "\x00", 2)
+	parts := strings.SplitN(out, "\x00", 5)
+	details := &CommitDetails{}
 	if len(parts) >= 1 {
-		// First parent only (ignore merge parents for now)
-		parents := strings.Fields(parts[0])
-		if len(parents) > 0 {
-			parentHash = parents[0]
-		}
+		details.Hash = parts[0]
 	}
 	if len(parts) >= 2 {
-		message = parts[1]
+		details.Parents = strings.Fields(parts[1])
 	}
-	return parentHash, message, nil
+	if len(parts) >= 3 {
+		details.AuthorName = parts[2]
+	}
+	if len(parts) >= 4 {
+		details.AuthorEmail = parts[3]
+	}
+	if len(parts) >= 5 {
+		details.Summary = parts[4]
+	}
+	return details, nil
 }
 
 // Diff returns the diff between two commits.
