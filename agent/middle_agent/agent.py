@@ -170,6 +170,105 @@ def _director_prompt_is_stuck(prompt_history: list, next_prompt: str, threshold:
 # Number of Director messages to summarize at once (2 user + 2 assistant = 2 full turns).
 _DIRECTOR_COMPACT_CHUNK_SIZE = 4
 
+_DIRECTOR_DEFAULT_RESPONSE_JSON_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "complete": {
+            "type": "boolean",
+            "description": "Whether the worker's task is complete and no further prompt is needed.",
+        },
+        "summary": {
+            "type": "string",
+            "description": "A concise summary of the worker's progress or completion state.",
+        },
+        "next_prompt": {
+            "type": "string",
+            "description": "The next prompt for the worker. Use an empty string when no follow-up is needed.",
+        },
+    },
+    "required": ["complete", "summary", "next_prompt"],
+    "additionalProperties": False,
+}
+
+_DIRECTOR_PLAN_REVIEW_RESPONSE_JSON_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "plan_approved": {
+            "type": "boolean",
+            "description": "Whether the plan is approved during the plan-review phase.",
+        },
+        "feedback": {
+            "type": "string",
+            "description": "Concise plan-review feedback. Use an empty string only when no feedback is needed.",
+        },
+        "next_prompt": {
+            "type": "string",
+            "description": "The next prompt for the worker. Use an empty string when the plan is approved.",
+        },
+        "approved_plan_text": {
+            "type": "string",
+            "description": "The approved execution checklist for plan-review mode.",
+        },
+    },
+    "required": ["plan_approved", "feedback", "next_prompt", "approved_plan_text"],
+    "additionalProperties": False,
+}
+
+_DIRECTOR_JSON_RESPONSE_INSTRUCTIONS = (
+    "JSON output requirements (must follow):\n"
+    "- Return exactly one compact JSON object that matches the schema.\n"
+    "- Include every required schema key exactly once, even when the value is an empty string.\n"
+    "- No markdown fences, no prose before or after the JSON, no comments.\n"
+    "- Do not pad with whitespace, blank lines, or repeated spaces.\n"
+)
+
+
+def _director_json_user_instructions(phase: Optional[str] = None) -> str:
+    if phase == "plan_review":
+        return (
+            "Respond with exactly one compact JSON object using these keys:\n"
+            "- plan_approved (true/false)\n"
+            "- feedback (2-4 sentences max; use empty string only if truly unnecessary)\n"
+            "- next_prompt (string; empty when the plan is approved)\n"
+            "- approved_plan_text (string; concise execution checklist when approved, else empty string)\n\n"
+            "Keep all four keys present. If plan_approved is false, next_prompt must contain the actionable fixes to send the worker "
+            "(bullet points ok, no code fences, no preamble). No whitespace padding."
+        )
+    return (
+        "Respond with exactly one compact JSON object using these keys:\n"
+        "- complete (true/false)\n"
+        "- summary (short status summary; use empty string only when truly unnecessary)\n"
+        "- next_prompt (string; empty when complete is true)\n\n"
+        "Keep all three keys present. If complete is false, next_prompt must contain the exact next worker prompt. "
+        "No markdown, no prose outside the JSON, and no whitespace padding."
+    )
+
+
+def _director_assessment_max_tokens(phase: Optional[str] = None) -> int:
+    if phase == "plan_review":
+        return 768
+    if phase == "execution":
+        return 512
+    return 512
+
+
+def _director_response_schema(phase: Optional[str] = None) -> Dict[str, Any]:
+    if phase == "plan_review":
+        return _DIRECTOR_PLAN_REVIEW_RESPONSE_JSON_SCHEMA
+    return _DIRECTOR_DEFAULT_RESPONSE_JSON_SCHEMA
+
+
+def _director_response_format_json_schema(phase: Optional[str] = None) -> Dict[str, Any]:
+    schema_name = "director_plan_review_response" if phase == "plan_review" else "director_response"
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": schema_name,
+            "strict": True,
+            "schema": _director_response_schema(phase),
+        },
+    }
+
 
 def _count_tokens_for_messages(messages: List[Dict[str, str]]) -> int:
     """Return total token count for a list of message dicts with 'role' and 'content'. Fallback: ~4 chars per token."""
@@ -269,6 +368,7 @@ class MiddleAgent:
         self.worker_extra_tools: list[str] = [t.strip() for t in raw_extra.split(",") if t.strip()]
         raw_extra_flags = (get_setting_or_env("CODEX_EXTRA_FLAGS") or "").strip()
         self.codex_extra_flags: list[str] = [f.strip() for f in raw_extra_flags.split(",") if f.strip()]
+        self.codex_sandbox = (get_setting_or_env("CODEX_SANDBOX") or "workspace-write").strip()
 
         # Active ticket context for intra-turn logging (OpenCode streaming). Set per process_ticket call.
         self._active_project_id: Optional[uuid.UUID] = None
@@ -327,6 +427,7 @@ class MiddleAgent:
         temperature: float = 0.2,
         timeout: int = 300,
         json_mode: bool = False,
+        phase: Optional[str] = None,
     ) -> str:
         """POST to the Director LLM and return the text content.
 
@@ -372,7 +473,9 @@ class MiddleAgent:
                 "temperature": temperature,
             }
             if json_mode:
-                payload["response_format"] = {"type": "json_object"}
+                payload["response_format"] = _director_response_format_json_schema(phase)
+                if "openrouter.ai" in url:
+                    payload["provider"] = {"require_parameters": True}
 
         try:
             resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
@@ -694,7 +797,7 @@ class MiddleAgent:
             if agent_response.get("complete") and not is_first_execution_turn:
                 self._debug_log(f"{prefix}Task complete")
                 completion_summary = agent_response.get("summary", "Task completed")
-                self._cleanup_after_completion(session_id, project_path, ticket_id)
+                self._cleanup_after_completion(ticket.project_id, session_id, project_path, ticket_id)
                 self._index_completion_memory(
                     ticket=ticket,
                     summary=completion_summary,
@@ -1172,7 +1275,13 @@ class MiddleAgent:
             out.append(copy)
         return out
 
-    def _cleanup_after_completion(self, session_id: str, project_path: str, ticket_id) -> None:
+    def _cleanup_after_completion(
+        self,
+        project_id: uuid.UUID,
+        session_id: str,
+        project_path: str,
+        ticket_id,
+    ) -> None:
         """Send a final worker prompt to delete the plan file and remove fluff tests.
 
         This runs after the director signals complete. Failures are logged but never
@@ -1192,11 +1301,11 @@ class MiddleAgent:
                 f"Do not make any other code changes."
             )
             self._debug_log("[Cleanup] Sending post-completion cleanup prompt")
-            self._log(project_path, ticket_id, session_id, "cleanup_prompt", "Post-completion cleanup", raw_output=cleanup_prompt)
+            self._log(project_id, ticket_id, session_id, "cleanup_prompt", "Post-completion cleanup", raw_output=cleanup_prompt)
             response = self._send_to_worker(cleanup_prompt, session_id, project_path, resume=True)
             out = (response.get("output") or "")[:500]
             self._debug_log(f"[Cleanup] Done: {out}")
-            self._log(project_path, ticket_id, session_id, "cleanup_done", "Cleanup complete", raw_output=out)
+            self._log(project_id, ticket_id, session_id, "cleanup_done", "Cleanup complete", raw_output=out)
         except Exception as e:
             self._debug_log(f"[Cleanup] Cleanup step failed (non-fatal): {e}")
 
@@ -1405,10 +1514,18 @@ class MiddleAgent:
         if should_resume:
             cmd = ["codex", "exec", "resume", "--json"]
         else:
-            cmd = ["codex", "exec", "--json", "--sandbox", "workspace-write"]
+            cmd = ["codex", "exec", "--json"]
 
         if self.worker_model:
             cmd.extend(["--model", self.worker_model])
+
+        # Codex sandbox defaults to workspace-write, but can be overridden for
+        # hosts where bubblewrap/workspace-write is unavailable. Resume does not
+        # accept --sandbox, but it does accept the bypass flag.
+        if self.codex_sandbox == "danger-full-access":
+            cmd.append("--dangerously-bypass-approvals-and-sandbox")
+        elif self.codex_sandbox and not should_resume:
+            cmd.extend(["--sandbox", self.codex_sandbox])
 
         # Codex extra flags from CODEX_EXTRA_FLAGS env var
         for flag in self.codex_extra_flags:
@@ -1936,9 +2053,15 @@ Output a single concise narrative under 200 words. No JSON, no labels—just pro
         is_plan_review = phase == "plan_review"
         is_execution = phase == "execution"
         if is_plan_review:
-            system_content = get_agent_system_prompt() + "\n\n" + get_agent_plan_review_instructions()
+            system_content = (
+                get_agent_system_prompt()
+                + "\n\n"
+                + get_agent_plan_review_instructions()
+                + "\n\n"
+                + _DIRECTOR_JSON_RESPONSE_INSTRUCTIONS
+            )
         else:
-            system_content = get_agent_system_prompt()
+            system_content = get_agent_system_prompt() + "\n\n" + _DIRECTOR_JSON_RESPONSE_INSTRUCTIONS
         memory_block = f"{memories}\n\n" if memories else ""
         plan_block = ""
         if is_execution and approved_plan_text:
@@ -1981,13 +2104,14 @@ Output a single concise narrative under 200 words. No JSON, no labels—just pro
 {memory_block}Conversation for plan review:
 {convo_for_review}
 
-Judge the plan. Respond in JSON only with:
-- plan_approved (true/false)
-- feedback (2-4 sentences max: what is good or what is wrong — be specific, no fluff)
+Judge the plan.
 
-If false, also include next_prompt with the actionable fixes to send the worker (bullet points ok, no code fences, no preamble)."""
+{_director_json_user_instructions("plan_review")}"""
             else:
-                assess_first = "Assess: Is the ticket complete? Respond in JSON only."
+                assess_first = (
+                    "Assess: Is the ticket complete?\n\n"
+                    + _director_json_user_instructions(phase)
+                )
                 user_msg_content = f"""{setup_hint}{plan_block}Context:
 {json.dumps(context, indent=2)}
 
@@ -2008,16 +2132,16 @@ If false, also include next_prompt with the actionable fixes to send the worker 
 ### Turn {n} - Worker response:
 {response}
 
-Judge the plan. Respond in JSON only with:
-- plan_approved (true/false)
-- feedback (2-4 sentences max: what is good or what is wrong — be specific, no fluff)
+Judge the plan.
 
-If false, also include next_prompt with the actionable fixes to send the worker (bullet points ok, no code fences, no preamble)."""
+{_director_json_user_instructions("plan_review")}"""
             else:
                 ticket_info = context.get("current_ticket") or {}
                 anchor = ""
                 assess_instruction = (
-                    "Assess: Is the ticket complete? Respond in JSON only.\n"
+                    "Assess: Is the ticket complete?\n"
+                    + _director_json_user_instructions(phase)
+                    + "\n"
                     "If the worker has been stuck on the same sub-step for 3+ turns, escalate: either simplify the ask, skip it, or call it done if it is a minor nit."
                 )
                 user_msg_content = f"""{setup_hint}{plan_block}{memory_block}{anchor}New worker turn (turn {n} of this session):
@@ -2057,7 +2181,13 @@ If false, also include next_prompt with the actionable fixes to send the worker 
             )
 
         try:
-            content = self._director_request(messages_for_api, timeout=300, json_mode=True, max_tokens=8192)
+            content = self._director_request(
+                messages_for_api,
+                timeout=300,
+                json_mode=True,
+                max_tokens=_director_assessment_max_tokens(phase),
+                phase=phase,
+            )
         except AgentAPIError:
             raise
 
@@ -2115,6 +2245,7 @@ If false, also include next_prompt with the actionable fixes to send the worker 
         if is_plan_review:
             raw_approved = parsed.get("plan_approved", False)
             response_dict["plan_approved"] = raw_approved is True or (isinstance(raw_approved, str) and raw_approved.strip().lower() == "true")
+            response_dict["feedback"] = parsed.get("feedback", "") or ""
             response_dict["approved_plan_text"] = parsed.get("approved_plan_text", "") or ""
         assistant_msg = {"role": "assistant", "content": content.strip()}
         updated_director = compacted + [new_user_msg, assistant_msg]

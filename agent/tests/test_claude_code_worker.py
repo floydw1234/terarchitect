@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import unittest
+import uuid
 from io import StringIO
 from unittest.mock import MagicMock, patch, PropertyMock
 
@@ -221,6 +222,20 @@ class TestClaudeCodeWorkerDispatch(unittest.TestCase):
         agent = _make_agent({"WORKER_MODE": "claude-code", "WORKER_API_KEY": "sk-ant-test"})
         self.assertEqual(agent.worker_extra_tools, [])
 
+    def test_cleanup_logs_use_project_id_not_project_path(self):
+        agent = self._make_claude_agent()
+        project_id = uuid.uuid4()
+        ticket_id = uuid.uuid4()
+
+        with patch.object(agent, "_send_to_worker", return_value={"output": "cleanup done"}):
+            agent._cleanup_after_completion(project_id, "sess1", "/tmp/terarchitect_runner_123", ticket_id)
+
+        first_call = agent._backend.log.call_args_list[0]
+        second_call = agent._backend.log.call_args_list[1]
+        self.assertEqual(first_call.args[0], project_id)
+        self.assertEqual(second_call.args[0], project_id)
+        self.assertNotEqual(first_call.args[0], "/tmp/terarchitect_runner_123")
+
 
 class TestDirectorProviderAutoUrl(unittest.TestCase):
     """DIRECTOR_LLM_URL should be auto-inferred from DIRECTOR_PROVIDER for known providers."""
@@ -331,7 +346,37 @@ class TestDirectorRequestJsonMode(unittest.TestCase):
         with patch("requests.post", return_value=self._mock_chat_completions('{"ok": true}')) as mock_post:
             agent._director_request([{"role": "user", "content": "test"}], json_mode=True)
             payload = mock_post.call_args[1]["json"]
-            self.assertEqual(payload["response_format"], {"type": "json_object"})
+            response_format = payload["response_format"]
+            self.assertEqual(response_format["type"], "json_schema")
+            json_schema = response_format["json_schema"]
+            self.assertEqual(json_schema["name"], "director_response")
+            self.assertIs(json_schema["strict"], True)
+            schema = json_schema["schema"]
+            self.assertEqual(schema["type"], "object")
+            self.assertEqual(set(schema["required"]), {"complete", "summary", "next_prompt"})
+            self.assertIs(schema["additionalProperties"], False)
+
+    def test_chat_completions_plan_review_json_mode_sets_phase_response_format(self):
+        agent = self._make_gpt4o_agent()
+        with patch("requests.post", return_value=self._mock_chat_completions('{"ok": true}')) as mock_post:
+            agent._director_request(
+                [{"role": "user", "content": "test"}],
+                json_mode=True,
+                phase="plan_review",
+            )
+            payload = mock_post.call_args[1]["json"]
+            response_format = payload["response_format"]
+            self.assertEqual(response_format["type"], "json_schema")
+            json_schema = response_format["json_schema"]
+            self.assertEqual(json_schema["name"], "director_plan_review_response")
+            self.assertIs(json_schema["strict"], True)
+            schema = json_schema["schema"]
+            self.assertEqual(schema["type"], "object")
+            self.assertEqual(
+                set(schema["required"]),
+                {"plan_approved", "feedback", "next_prompt", "approved_plan_text"},
+            )
+            self.assertIs(schema["additionalProperties"], False)
 
     def test_chat_completions_no_json_mode_omits_response_format(self):
         agent = self._make_gpt4o_agent()
