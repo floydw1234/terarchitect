@@ -1,3 +1,8 @@
-from coordinator.coordinator import main
+try:
+    from coordinator.coordinator import _max_concurrent, main
+except ModuleNotFoundError:
+    from coordinator import _max_concurrent, main
 
-main()
+
+if __name__ == "__main__":
+    main()
