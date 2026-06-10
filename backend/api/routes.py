@@ -111,6 +111,8 @@ from .services.evidence_service import (
     run_replay_evidence as _run_replay_evidence,
     run_test_adequacy_evidence as _run_test_adequacy_evidence,
 )
+from .services.ledger_service import project_ticket_ledger as _project_ticket_ledger
+from .services.context_service import build_ticket_context as _build_ticket_context
 
 api_bp = Blueprint("api", __name__)
 
@@ -1613,6 +1615,21 @@ def ticket_attempts_list(project_id, ticket_id):
         _attempt_to_json(a, include_test_output=include_output, shipped_frontier=frontier)
         for a in attempts
     ])
+
+
+@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/ledger", methods=["GET"])
+def ticket_ledger(project_id, ticket_id):
+    project = _get_project_or_404(project_id)
+    ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
+    return jsonify(_project_ticket_ledger(project, ticket))
+
+
+@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/context", methods=["GET"])
+def ticket_context(project_id, ticket_id):
+    project = _get_project_or_404(project_id)
+    ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
+    agent = (request.args.get("agent") or "").strip().lower() in {"1", "true", "yes"}
+    return jsonify(_build_ticket_context(project, ticket, agent=agent, fetch_posts=_fetch_channel_posts))
 
 
 @api_bp.route("/projects/<uuid:project_id>/attempts", methods=["GET"])

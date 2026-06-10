@@ -83,6 +83,13 @@ Current shared helpers live in `cli._output`:
 
 This keeps later product-hardening lanes on one format without forcing deep refactors in every command up front.
 
+## Evidence surfaces
+
+Operator-facing status and context commands should treat `EvidenceBundle`, `EvidenceRun`, and `EvidenceCheck` as the canonical test-evidence records.
+
+- Prefer summarizing or linking those models in CLI output.
+- Do not introduce a separate CLI-only test record table or alternate evidence store.
+
 ## Adding commands
 
 When adding a command:

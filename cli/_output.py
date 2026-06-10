@@ -12,7 +12,9 @@ def die(error: Any, code: int = 1, *, output: str = "human") -> None:
     sys.exit(code)
 
 
-def print_json(data: Any, *, stream = sys.stdout) -> None:
+def print_json(data: Any, *, stream = None) -> None:
+    if stream is None:
+        stream = sys.stdout
     print(json.dumps(data, indent=2, default=str), file=stream)
 
 

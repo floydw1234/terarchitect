@@ -10,6 +10,9 @@ Commands:
                | attempts | accept-attempt | reject-attempt
                (Intent fields: --rationale, --acceptance-criteria, --constraints, --intent-status)
     attempt    list | show | files | diff
+    status     <project-id> --ticket <ticket-id>
+    context    <project-id> --ticket <ticket-id> [--agent]
+    chain      alias for status
     ship       candidates | candidate | compose-candidate | run | ship-run | ship-candidate | feedback
     workspace  leaves | list | create | show | compose | analyze | bless | promote | discard
     graph      get | set
@@ -31,7 +34,7 @@ import argparse
 from cli._api import API, APIError
 from cli._config import get_api_url
 from cli._output import die
-from cli.commands import attempt, graph, plan, project, ship, ticket, workspace
+from cli.commands import attempt, context, graph, plan, project, ship, status, ticket, workspace
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -65,6 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
     project.register(subparsers)
     ticket.register(subparsers)
     attempt.register(subparsers)
+    status.register(subparsers)
+    status.register_alias(subparsers)
+    context.register(subparsers)
     ship.register(subparsers)
     workspace.register(subparsers)
     graph.register(subparsers)
