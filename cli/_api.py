@@ -1,7 +1,6 @@
 """Low-level HTTP client for the Terarchitect API. No external dependencies."""
 
 import json
-import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -112,9 +111,12 @@ class API:
                 msg = text or e.reason
             raise APIError(e.code, msg)
         except urllib.error.URLError as e:
-            print(f"Cannot reach {self.base_url}: {e.reason}", file=sys.stderr)
-            print("Is the backend running? Set TERARCHITECT_API_URL if needed.", file=sys.stderr)
-            sys.exit(1)
+            raise APIError(
+                0,
+                f"Cannot reach {self.base_url}",
+                detail=str(e.reason),
+                hint="Is the backend running? Set TERARCHITECT_API_URL if needed.",
+            )
 
     def get(self, path: str) -> Any:
         return self._request("GET", path)

@@ -75,7 +75,7 @@ def _cmd_list(args, api: API) -> None:
     try:
         projects = api.get("/api/projects")
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     if args.output == "json":
         print_json(projects)
         return

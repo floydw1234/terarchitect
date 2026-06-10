@@ -1,4 +1,5 @@
 import json
+import urllib.error
 
 import pytest
 
@@ -73,6 +74,34 @@ def test_die_renders_json_error_to_stderr_without_polluting_stdout(capsys):
     assert payload["error"]["detail"] == "Validation blockers remain."
     assert payload["error"]["request_id"] == "req-456"
     assert payload["error"]["next_commands"] == ["ta ship candidate proj cand-1"]
+
+
+def test_main_renders_connection_failure_as_json_error_envelope(capsys, monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        ["ta", "--json", "--api-url", "http://127.0.0.1:9", "project", "list"],
+    )
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        __main__.main()
+
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    payload = json.loads(captured.err)
+    assert payload["error"]["status"] == 0
+    assert payload["error"]["message"] == "Cannot reach http://127.0.0.1:9"
+    assert "Connection refused" in payload["error"]["detail"]
+    assert (
+        payload["error"]["hint"]
+        == "Is the backend running? Set TERARCHITECT_API_URL if needed."
+    )
 
 
 def test_print_receipt_renders_fields_and_next_commands(capsys):
