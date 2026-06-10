@@ -61,6 +61,30 @@ class TestPromptStack(unittest.TestCase):
         self.assertIn("Do not directly freehand implementation code", prompt)
         self.assertIn("research -> planning -> plan review -> execution", prompt)
 
+    def test_agent_system_prompt_requires_dynamic_ports_for_integration_services(self):
+        from middle_agent.agent import get_agent_system_prompt
+
+        prompt = get_agent_system_prompt()
+        self.assertIn("prefer OS-assigned/free dynamic localhost ports".lower(), prompt.lower())
+        self.assertIn("inject BASE_URL/PORT", prompt)
+        self.assertIn("unique compose project name", prompt)
+
+    def test_worker_first_prompt_requires_dynamic_ports_for_integration_services(self):
+        from middle_agent.agent import _load_prompts
+
+        prompt = _load_prompts()["worker_first_prompt_prefix"]
+        self.assertIn("prefer OS-assigned/free dynamic localhost ports".lower(), prompt.lower())
+        self.assertIn("inject BASE_URL/PORT", prompt)
+        self.assertIn("unique compose project name", prompt)
+
+    def test_worker_plan_prompt_requires_dynamic_ports_for_integration_services(self):
+        from middle_agent.agent import get_worker_plan_prompt_prefix
+
+        prompt = get_worker_plan_prompt_prefix(task_plan_path="/tmp/task-plan.md")
+        self.assertIn("prefer OS-assigned/free dynamic localhost ports".lower(), prompt.lower())
+        self.assertIn("inject BASE_URL/PORT", prompt)
+        self.assertIn("unique compose project name", prompt)
+
 
 
 class TestCodexWorkerDispatch(unittest.TestCase):
