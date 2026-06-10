@@ -258,6 +258,26 @@ def _director_response_schema(phase: Optional[str] = None) -> Dict[str, Any]:
     return _DIRECTOR_DEFAULT_RESPONSE_JSON_SCHEMA
 
 
+def _director_relaxed_json_retry_messages(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Append a final strict JSON reminder for fallback chat-completions retries."""
+    if not messages:
+        return messages
+    relaxed_messages = [dict(message) for message in messages]
+    reminder = (
+        "Retry requirement: your previous reply was empty. "
+        "Return exactly one compact JSON object only, with no markdown fences, comments, or prose."
+    )
+    last_message = relaxed_messages[-1]
+    if last_message.get("role") == "user":
+        relaxed_messages[-1] = {
+            **last_message,
+            "content": f"{last_message.get('content', '')}\n\n{reminder}",
+        }
+    else:
+        relaxed_messages.append({"role": "user", "content": reminder})
+    return relaxed_messages
+
+
 def _director_response_format_json_schema(phase: Optional[str] = None) -> Dict[str, Any]:
     schema_name = "director_plan_review_response" if phase == "plan_review" else "director_response"
     return {
@@ -477,17 +497,19 @@ class MiddleAgent:
                 if "openrouter.ai" in url:
                     payload["provider"] = {"require_parameters": True}
 
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            raise AgentAPIError(
-                f"Director API request failed: {url} - {e}",
-                cause=e,
-            ) from e
+        def _post_json(request_url: str, request_payload: dict) -> dict:
+            try:
+                resp = requests.post(request_url, json=request_payload, headers=headers, timeout=timeout)
+                resp.raise_for_status()
+            except requests.RequestException as e:
+                raise AgentAPIError(
+                    f"Director API request failed: {request_url} - {e}",
+                    cause=e,
+                ) from e
+            return resp.json()
 
         try:
-            data = resp.json()
+            data = _post_json(url, payload)
             if use_responses_api:
                 # /v1/responses: output is a list of content blocks.
                 # Structure: { output: [ { type: "message", content: [ { type: "output_text", text: "..." } ] } ] }
@@ -529,6 +551,17 @@ class MiddleAgent:
                 )
             else:
                 content = data.get("choices", [{}])[0].get("message", {}).get("content") or ""
+                if not content and json_mode:
+                    retry_payload = dict(payload)
+                    retry_payload["messages"] = _director_relaxed_json_retry_messages(messages)
+                    retry_payload["response_format"] = {"type": "json_object"}
+                    data = _post_json(url, retry_payload)
+                    content = data.get("choices", [{}])[0].get("message", {}).get("content") or ""
+                    if not content:
+                        raise AgentAPIError(
+                            "Director API returned empty chat content twice while requesting JSON output",
+                            cause=None,
+                        )
                 return content if isinstance(content, str) else str(content)
         except AgentAPIError:
             raise
