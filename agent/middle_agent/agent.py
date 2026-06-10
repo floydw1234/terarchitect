@@ -167,6 +167,11 @@ def _director_prompt_is_stuck(prompt_history: list, next_prompt: str, threshold:
     core_next = _core(next_prompt)
     return all(_core(p) == core_next for p in last_n)
 
+
+def _is_empty_json_chat_content_error(error: "AgentAPIError") -> bool:
+    """True only for the specific chat-completions JSON-mode empty-content exhaustion failure."""
+    return "empty chat content three times while requesting JSON output" in str(error)
+
 # Number of Director messages to summarize at once (2 user + 2 assistant = 2 full turns).
 _DIRECTOR_COMPACT_CHUNK_SIZE = 4
 
@@ -840,20 +845,35 @@ class MiddleAgent:
                 if passage not in memory_passages:
                     memory_passages.append(passage)
             memories = self._format_memories(memory_passages)
-            agent_response, director_messages = self._agent_assess(
-                context,
-                prompt_history,
-                conversation_history,
-                memories=memories,
-                director_messages=director_messages,
-                session_id=session_id,
-                project_path=project_path,
-                phase="execution",
-                approved_plan_text=approved_plan_text,
-                setup_ticket=setup_ticket,
-            )
             # Never treat as complete on turn 0: conversation so far is only research/planning. We must send at least one execution prompt so the worker actually implements the plan.
             is_first_execution_turn = turn == 0
+            try:
+                agent_response, director_messages = self._agent_assess(
+                    context,
+                    prompt_history,
+                    conversation_history,
+                    memories=memories,
+                    director_messages=director_messages,
+                    session_id=session_id,
+                    project_path=project_path,
+                    phase="execution",
+                    approved_plan_text=approved_plan_text,
+                    setup_ticket=setup_ticket,
+                )
+            except AgentAPIError as e:
+                if not (is_first_execution_turn and _is_empty_json_chat_content_error(e)):
+                    raise
+                self._debug_log(
+                    f"{prefix}Director returned empty JSON chat content on first execution turn; "
+                    "falling back to the default execution prompt"
+                )
+                self._trace_log(
+                    session_id,
+                    f"{prefix}Director returned empty JSON chat content on first execution turn; "
+                    "using the default execution prompt fallback",
+                    project_path,
+                )
+                agent_response = {"complete": False, "summary": "", "next_prompt": ""}
             if agent_response.get("complete") and not is_first_execution_turn:
                 self._debug_log(f"{prefix}Task complete")
                 completion_summary = agent_response.get("summary", "Task completed")
