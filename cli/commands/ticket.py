@@ -13,6 +13,54 @@ _POLL_INTERVAL = 5   # seconds between status checks for --wait
 _WAIT_TIMEOUT  = 3600  # max seconds to wait
 
 
+def _titleize_status(value: str) -> str:
+    text = (value or "").replace("_", " ").strip()
+    return text[:1].upper() + text[1:] if text else ""
+
+
+def _find_latest_ticket_receipt(logs: list[dict]) -> dict | None:
+    for entry in reversed(logs or []):
+        receipt = entry.get("receipt")
+        if isinstance(receipt, dict):
+            return receipt
+    return None
+
+
+def _render_ticket_receipt(receipt: dict, *, default_title: str) -> None:
+    status = (receipt.get("status") or "").strip().lower()
+    title = receipt.get("message") or (f"Ticket run {status}" if status else default_title)
+    print_receipt(
+        title,
+        fields=[
+            ("Status", status or "unknown"),
+            ("Attempt", receipt.get("attempt_hash") or "unknown"),
+            ("Commit", (receipt.get("agenthub_commit_hash") or "unknown")[:12] if receipt.get("agenthub_commit_hash") else "unknown"),
+            ("Base", (receipt.get("base_hash") or "unknown")[:12] if receipt.get("base_hash") else "unknown"),
+            ("Workdir", receipt.get("runner_workdir") or "unknown"),
+            ("Evidence", receipt.get("evidence_summary") or "unknown"),
+        ],
+        next_commands=receipt.get("next_actions") or None,
+    )
+
+
+def _render_structured_ticket_event(entry: dict) -> bool:
+    event = entry.get("event")
+    if not isinstance(event, dict):
+        return False
+    title = f"{_titleize_status(event.get('phase', 'ticket'))} {(event.get('status') or 'update').replace('_', ' ').lower()}".strip()
+    fields = [("When", event.get("timestamp") or entry.get("created_at") or "unknown")]
+    if event.get("detail"):
+        fields.append(("Detail", event.get("detail")))
+    if event.get("hint"):
+        fields.append(("Hint", event.get("hint")))
+    print_receipt(
+        title,
+        fields=fields,
+        next_commands=event.get("next_commands") or None,
+    )
+    return True
+
+
 def register(subparsers) -> None:
     p = subparsers.add_parser("ticket", help="Manage tickets")
     sub = p.add_subparsers(dest="ticket_cmd", metavar="SUBCOMMAND")
@@ -369,10 +417,13 @@ def _cmd_run(args, api: API) -> None:
     except APIError as e:
         die(e, output=args.output)
 
-    print(f"Ticket {args.ticket_id} enqueued (column: in_progress)")
+    print_receipt(
+        f"Ticket {short_id(args.ticket_id)} enqueued.",
+        fields=[("Column", "in_progress")],
+        next_commands=None if args.wait else [f"ta ticket logs {args.project_id} {args.ticket_id}"],
+    )
 
     if not args.wait:
-        print("The coordinator will pick it up shortly. Use --wait to poll.")
         return
 
     # Poll until no longer running / no longer in_progress
@@ -390,7 +441,19 @@ def _cmd_run(args, api: API) -> None:
         if not ticket.get("is_running") and ticket.get("column_id") != "in_progress":
             print()
             col = ticket.get("column_id", "?")
-            print(f"Done. Ticket moved to: {col}")
+            try:
+                logs = api.get(f"/api/projects/{args.project_id}/tickets/{args.ticket_id}/logs")
+            except APIError:
+                logs = []
+            receipt = _find_latest_ticket_receipt(logs)
+            if receipt:
+                _render_ticket_receipt(receipt, default_title=f"Ticket moved to: {col}")
+            else:
+                print_receipt(
+                    f"Ticket moved to: {col}",
+                    fields=[("Column", col)],
+                    next_commands=[f"ta ticket logs {args.project_id} {args.ticket_id}"],
+                )
             if args.output == "json":
                 print_json(ticket)
             return
@@ -451,6 +514,15 @@ def _cmd_logs(args, api: API) -> None:
         print("(no logs yet)")
         return
     for entry in logs:
+        if isinstance(entry.get("receipt"), dict):
+            _render_ticket_receipt(entry["receipt"], default_title=entry.get("summary") or "Ticket run receipt")
+            if args.raw and entry.get("raw_output"):
+                print("    " + entry["raw_output"].replace("\n", "\n    "))
+            continue
+        if _render_structured_ticket_event(entry):
+            if args.raw and entry.get("raw_output"):
+                print("    " + entry["raw_output"].replace("\n", "\n    "))
+            continue
         ts = (entry.get("created_at") or "")[:19].replace("T", " ")
         step = (entry.get("step") or "").ljust(28)
         summary = entry.get("summary") or ""

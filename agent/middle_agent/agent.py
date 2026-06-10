@@ -195,6 +195,14 @@ _DIRECTOR_DEFAULT_RESPONSE_JSON_SCHEMA: Dict[str, Any] = {
     "additionalProperties": False,
 }
 
+
+def _utc_timestamp() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _structured_log_json(payload: Dict[str, Any]) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
 _DIRECTOR_PLAN_REVIEW_RESPONSE_JSON_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -394,7 +402,12 @@ class MiddleAgent:
         else:
             self.director_api_url = ""
         self.director_model = (get_setting_or_env("DIRECTOR_MODEL") or "").strip()
-        self.director_api_key = (get_setting_or_env("DIRECTOR_API_KEY") or "").strip() or None
+        director_api_key = (get_setting_or_env("DIRECTOR_API_KEY") or "").strip()
+        openrouter_api_key = (get_setting_or_env("OPENROUTER_API_KEY") or "").strip()
+        director_source_url = (get_setting_or_env("DIRECTOR_LLM_URL") or "").strip()
+        if not director_api_key and openrouter_api_key and "openrouter.ai" in director_source_url:
+            director_api_key = openrouter_api_key
+        self.director_api_key = director_api_key or None
 
         # Worker mode: "codex" (default), "claude-code", or "opencode" (OpenCode HTTP server).
         raw_worker_mode = (get_setting_or_env("WORKER_MODE") or "codex").strip().lower()
@@ -419,6 +432,7 @@ class MiddleAgent:
         # Active ticket context for intra-turn logging (OpenCode streaming). Set per process_ticket call.
         self._active_project_id: Optional[uuid.UUID] = None
         self._active_ticket_id: Optional[uuid.UUID] = None
+        self._current_phase: str = "setup"
 
     def _env_has_container_url(self, key: str) -> bool:
         """True if env has key with host.docker.internal (coordinator set container-safe URL; don't overwrite with backend localhost)."""
@@ -818,6 +832,7 @@ class MiddleAgent:
         completion_summary: Optional[str] = None
         max_turns = 1000
         for turn in range(max_turns):
+            self._current_phase = "execution"
             self._debug_log(f"{prefix}Execution turn {turn + 1}")
             if self._backend.cancel_requested(ticket.project_id, ticket.id):
                 self._log(
@@ -893,6 +908,22 @@ class MiddleAgent:
                     "task_complete",
                     completion_summary,
                 )
+                self._emit_ticket_run_event(
+                    ticket.project_id,
+                    ticket_id,
+                    session_id,
+                    phase="execution",
+                    status="completed",
+                    message="Execution completed",
+                    detail=completion_summary or None,
+                )
+                if completion_summary:
+                    git_backend.post_ticket_event(
+                        str(ticket_id),
+                        "test_result",
+                        "Execution evidence captured",
+                        {"summary": completion_summary[:500]},
+                    )
                 return completion_summary
             next_prompt = agent_response.get("next_prompt")
             if is_first_execution_turn and (not next_prompt or agent_response.get("complete")):
@@ -1029,6 +1060,7 @@ class MiddleAgent:
         self._active_ticket_id = ticket_id
 
         session_id = str(uuid.uuid4())
+        self._current_phase = "context"
         self._log(project_id, ticket_id, session_id, "session_started", f"Started worker session {session_id}")
         self._debug_log("Session started, loading context...")
 
@@ -1036,6 +1068,14 @@ class MiddleAgent:
             sys.exit(1)
 
         self._log(project_id, ticket_id, session_id, "context_loaded", "Loaded project context and graph")
+        self._emit_ticket_run_event(
+            project_id,
+            ticket_id,
+            session_id,
+            phase="context",
+            status="completed",
+            message="Loaded ticket context",
+        )
 
         # Resolve project_path: from arg (standalone) or from context (Flask has project_path in context)
         if project_path is None:
@@ -1102,6 +1142,7 @@ class MiddleAgent:
                 # --- Normal flow: research → plan → plan-review → execution ---
                 self._debug_log("Flow: Normal (research → plan → plan-review → execution)")
                 # --- Phase: Research (one worker turn) ---
+                self._current_phase = "research"
                 self._debug_log("Phase: Research (1 worker turn)")
                 research_instruction = get_worker_research_prompt_prefix() + context_json
                 self._trace_log(session_id, f"[Director -> Worker] Research:\n{research_instruction}", project_path)
@@ -1120,9 +1161,19 @@ class MiddleAgent:
                     ticket.project_id, ticket_id, session_id, "worker_research_done",
                     "Research turn completed", raw_output=response.get("output"),
                 )
+                self._emit_ticket_run_event(
+                    ticket.project_id,
+                    ticket_id,
+                    session_id,
+                    phase="research",
+                    status="completed",
+                    message="Research completed",
+                    detail=(worker_out[:500] or None),
+                )
                 self._debug_log("Phase: Planning (1 worker turn)")
 
                 # --- Phase: Planning (one worker turn) ---
+                self._current_phase = "planning"
                 if self._backend.cancel_requested(ticket.project_id, ticket.id):
                     self._log(ticket.project_id, ticket_id, session_id, "cancelled", "Execution cancelled before planning")
                     return
@@ -1144,9 +1195,19 @@ class MiddleAgent:
                     ticket.project_id, ticket_id, session_id, "worker_plan_done",
                     "Plan turn completed", raw_output=response.get("output"),
                 )
+                self._emit_ticket_run_event(
+                    ticket.project_id,
+                    ticket_id,
+                    session_id,
+                    phase="planning",
+                    status="completed",
+                    message="Planning completed",
+                    detail=(plan_out[:500] or None),
+                )
                 self._debug_log("Phase: Plan-review (agent judges plan; loop until approved)")
 
                 # --- Phase: Plan-review loop ---
+                self._current_phase = "plan_review"
                 director_messages_plan = []
                 approved_plan_text = ""
                 max_plan_review_turns = 50
@@ -1203,10 +1264,21 @@ class MiddleAgent:
                             approved_plan_text = (agent_response.get("approved_plan_text") or "").strip() or latest_output[:8000]
                         self._debug_log("Plan approved, entering execution")
                         self._log(ticket.project_id, ticket_id, session_id, "plan_approved", "Plan approved, entering execution")
+                        self._emit_ticket_run_event(
+                            ticket.project_id,
+                            ticket_id,
+                            session_id,
+                            phase="plan_review",
+                            status="completed",
+                            message="Plan approved",
+                            detail=(approved_plan_text[:500] or None),
+                        )
                         plan_summary = (approved_plan_text or "")[:400].strip()
-                        git_backend._ah_post(
-                            f"/api/channels/{git_backend._ticket_channel(str(ticket_id))}/posts",
-                            {"content": f"agent_plan: {plan_summary}" if plan_summary else "agent_plan: approved"},
+                        git_backend.post_ticket_event(
+                            str(ticket_id),
+                            "plan_review",
+                            "Plan approved",
+                            {"plan_summary": plan_summary} if plan_summary else None,
                         )
                         break
                     else:
@@ -1282,6 +1354,35 @@ class MiddleAgent:
                 project_path=project_path,
                 completion_summary=completion_summary,
             )
+        except Exception as exc:
+            self._emit_ticket_run_event(
+                project_id,
+                ticket_id,
+                session_id,
+                phase=self._current_phase,
+                status="failed",
+                message=f"{self._current_phase.replace('_', ' ').title()} failed",
+                detail=str(exc),
+                hint="Inspect the ticket logs and rerun the targeted failing tests.",
+                next_commands=[
+                    f"ta ticket logs {project_id} {ticket_id} --raw",
+                    f"ta ticket run {project_id} {ticket_id}",
+                ],
+            )
+            self._emit_ticket_run_receipt(
+                project_id,
+                ticket_id,
+                session_id,
+                status="failed",
+                message="Ticket run failed",
+                runner_workdir=project_path,
+                evidence_summary=str(exc),
+                next_actions=[
+                    f"ta ticket logs {project_id} {ticket_id} --raw",
+                    f"ta ticket run {project_id} {ticket_id}",
+                ],
+            )
+            raise
         finally:
             self._active_project_id = None
             self._active_ticket_id = None
@@ -2365,6 +2466,22 @@ Judge the plan.
             agenthub_commit_hash=commit_hash,
             base_hash=(os.environ.get("BASE_HASH") or "").strip() or None,
         )
+        self._emit_ticket_run_receipt(
+            ticket.project_id,
+            ticket.id,
+            session_id,
+            status="succeeded",
+            message="Ticket run succeeded",
+            attempt_hash=(commit_hash or "")[:12] or None,
+            agenthub_commit_hash=commit_hash,
+            base_hash=(os.environ.get("BASE_HASH") or "").strip() or None,
+            runner_workdir=project_path,
+            evidence_summary=completion_summary,
+            next_actions=[
+                f"ta ticket attempts {ticket.project_id} {ticket.id}",
+                f"ta ticket logs {ticket.project_id} {ticket.id} --raw",
+            ],
+        )
 
     def _log(
         self,
@@ -2377,6 +2494,101 @@ Judge the plan.
     ) -> None:
         """Log an execution step (delegates to backend)."""
         self._backend.log(project_id, ticket_id, session_id, step, summary, raw_output)
+
+    def _emit_ticket_run_event(
+        self,
+        project_id: uuid.UUID,
+        ticket_id: uuid.UUID,
+        session_id: str,
+        *,
+        phase: str,
+        status: str,
+        message: str,
+        detail: Optional[str] = None,
+        hint: Optional[str] = None,
+        next_commands: Optional[List[str]] = None,
+    ) -> None:
+        payload: Dict[str, Any] = {
+            "kind": "ticket_run_event",
+            "phase": phase,
+            "status": status,
+            "timestamp": _utc_timestamp(),
+            "message": message,
+            "project_id": str(project_id),
+            "ticket_id": str(ticket_id),
+            "session_id": session_id,
+        }
+        if detail:
+            payload["detail"] = detail
+        if hint:
+            payload["hint"] = hint
+        if next_commands:
+            payload["next_commands"] = list(next_commands)
+        self._log(
+            project_id,
+            ticket_id,
+            session_id,
+            f"{phase}_{status}",
+            message,
+            raw_output=_structured_log_json(payload),
+        )
+        if status == "completed":
+            git_backend.post_ticket_event(
+                str(ticket_id),
+                {
+                    "context": "ticket_context_loaded",
+                    "research": "research_findings",
+                    "plan_review": "plan_review",
+                    "execution": "execution",
+                }.get(phase, phase),
+                message,
+                {"phase": phase, "status": status, "detail": detail} if detail else {"phase": phase, "status": status},
+            )
+
+    def _emit_ticket_run_receipt(
+        self,
+        project_id: uuid.UUID,
+        ticket_id: uuid.UUID,
+        session_id: str,
+        *,
+        status: str,
+        message: str,
+        attempt_hash: Optional[str] = None,
+        agenthub_commit_hash: Optional[str] = None,
+        base_hash: Optional[str] = None,
+        runner_workdir: Optional[str] = None,
+        evidence_summary: Optional[str] = None,
+        next_actions: Optional[List[str]] = None,
+    ) -> None:
+        payload: Dict[str, Any] = {
+            "kind": "ticket_run_receipt",
+            "status": status,
+            "timestamp": _utc_timestamp(),
+            "message": message,
+            "project_id": str(project_id),
+            "ticket_id": str(ticket_id),
+            "session_id": session_id,
+        }
+        if attempt_hash:
+            payload["attempt_hash"] = attempt_hash
+        if agenthub_commit_hash:
+            payload["agenthub_commit_hash"] = agenthub_commit_hash
+        if base_hash:
+            payload["base_hash"] = base_hash
+        if runner_workdir:
+            payload["runner_workdir"] = runner_workdir
+        if evidence_summary:
+            payload["evidence_summary"] = evidence_summary
+        if next_actions:
+            payload["next_actions"] = list(next_actions)
+        self._log(
+            project_id,
+            ticket_id,
+            session_id,
+            "ticket_run_receipt",
+            message,
+            raw_output=_structured_log_json(payload),
+        )
 
 
 def build_worker_context(ticket: Any) -> dict:

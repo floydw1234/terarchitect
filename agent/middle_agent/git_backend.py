@@ -90,6 +90,12 @@ def _event_content(event_type: str, message: str, metadata: dict | None = None) 
     )
 
 
+def post_ticket_event(ticket_id: str, event_type: str, message: str, metadata: dict | None = None) -> None:
+    channel = _ticket_channel(ticket_id)
+    body = _event_content(event_type, message, metadata)
+    _ah_post(f"/api/channels/{channel}/posts", {"content": body})
+
+
 # ---------------------------------------------------------------------------
 # Peer context — injected into Director prompt before work starts (swarm only)
 # ---------------------------------------------------------------------------
@@ -251,12 +257,6 @@ def swarm_publish(
     )
 
     # Post completion notice to ticket channel (auto-created if it doesn't exist)
-    channel = _ticket_channel(ticket_id)
-    body = _event_content(
-        "attempt_published",
-        f"done: {summary[:400]}" if summary else "done",
-        {"ticket_id": ticket_id, "commit_hash": commit_hash, "commit_short": commit_hash[:12]},
-    )
-    _ah_post(f"/api/channels/{channel}/posts", {"content": body})
+    post_ticket_event(ticket_id, "attempt_published", f"done: {summary[:400]}" if summary else "done", {"ticket_id": ticket_id, "commit_hash": commit_hash, "commit_short": commit_hash[:12]})
 
     return commit_hash if push_r.returncode == 0 else None

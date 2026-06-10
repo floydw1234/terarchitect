@@ -43,6 +43,24 @@ def _mock_chat_response(content: str = '{"complete":true,"summary":"ok","next_pr
 
 
 class TestDirectorRequestPayload(unittest.TestCase):
+    def test_openrouter_default_gemini_config_uses_openrouter_key_fallback(self):
+        agent = _make_agent(
+            {
+                "DIRECTOR_PROVIDER": "custom",
+                "DIRECTOR_LLM_URL": "https://openrouter.ai/api",
+                "DIRECTOR_MODEL": "google/gemini-2.5-flash-lite",
+                "DIRECTOR_API_KEY": "",
+                "OPENROUTER_API_KEY": "or-key",
+            }
+        )
+
+        self.assertEqual(
+            agent.director_api_url,
+            "https://openrouter.ai/api/v1/chat/completions",
+        )
+        self.assertEqual(agent.director_model, "google/gemini-2.5-flash-lite")
+        self.assertEqual(agent.director_api_key, "or-key")
+
     def test_chat_completions_json_mode_uses_strict_default_json_schema(self):
         agent = _make_agent()
         messages = [{"role": "user", "content": "Assess this."}]

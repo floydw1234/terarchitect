@@ -43,8 +43,8 @@ def register(subparsers) -> None:
     )
     p.add_argument(
         "--provider",
-        choices=["openai", "anthropic"],
-        help="LLM provider (overrides DIRECTOR_PROVIDER; default: openai)",
+        choices=["openai", "anthropic", "custom"],
+        help="LLM provider (overrides DIRECTOR_PROVIDER; default env is custom/OpenRouter)",
     )
     p.set_defaults(func=_dispatch)
 
@@ -79,7 +79,7 @@ def _dispatch(args, api: API) -> None:
         die(
             "DIRECTOR_LLM_URL is not set.\n"
             "Set it via env or pass --llm-url.\n"
-            "Example: export DIRECTOR_LLM_URL=https://api.openai.com/v1/chat/completions"
+            "Example: export DIRECTOR_LLM_URL=https://openrouter.ai/api"
         )
 
     result = subprocess.run(

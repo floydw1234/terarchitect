@@ -1428,14 +1428,29 @@ def ticket_logs(project_id, ticket_id):
         project_id=project_id,
         ticket_id=ticket_id,
     ).order_by(ExecutionLog.created_at.asc()).all()
-    return jsonify([{
-        "id": str(log.id),
-        "step": log.step,
-        "summary": log.summary,
-        "raw_output": log.raw_output,
-        "success": log.success,
-        "created_at": log.created_at.isoformat() if log.created_at else None,
-    } for log in logs])
+    payload = []
+    for log in logs:
+        entry = {
+            "id": str(log.id),
+            "step": log.step,
+            "summary": log.summary,
+            "raw_output": log.raw_output,
+            "success": log.success,
+            "session_id": log.session_id,
+            "created_at": log.created_at.isoformat() if log.created_at else None,
+        }
+        if log.raw_output:
+            try:
+                parsed = json.loads(log.raw_output)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                if parsed.get("kind") == "ticket_run_event":
+                    entry["event"] = parsed
+                elif parsed.get("kind") == "ticket_run_receipt":
+                    entry["receipt"] = parsed
+        payload.append(entry)
+    return jsonify(payload)
 
 
 @api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/worker-context", methods=["GET"])

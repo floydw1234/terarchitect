@@ -128,6 +128,17 @@ The image includes the Director, standalone runner, OpenCode (HTTP server starte
 
 Set `AGENT_DOCKER_MODE=dood` on the coordinator to revert to the old socket-mount behaviour.
 
+Director env is also set in the **coordinator** environment and forwarded into the agent runtime. The default Director configuration is:
+
+```bash
+DIRECTOR_PROVIDER=custom
+DIRECTOR_LLM_URL=https://openrouter.ai/api
+DIRECTOR_MODEL=google/gemini-2.5-flash-lite
+OPENROUTER_API_KEY=...
+```
+
+If you keep that default OpenRouter setup, `DIRECTOR_API_KEY` can stay blank; the agent resolves it from `OPENROUTER_API_KEY`. Do not put real secrets in tracked files.
+
 OpenCode worker env (`WORKER_LLM_URL`, `WORKER_MODEL`, `WORKER_API_KEY`) must be set in the **coordinator** environment; the coordinator forwards them into the container.
 
 ---
