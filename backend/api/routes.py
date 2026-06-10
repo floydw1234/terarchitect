@@ -2403,23 +2403,23 @@ def _wave_next_actions(*, wave_num: int, blockers: list[str], all_done: bool, sh
         if any("cycle" in b.lower() for b in blockers):
             actions.append("Break the dependency cycle so tickets can be ordered into earlier waves.")
         if any("no accepted attempt" in b.lower() for b in blockers):
-            actions.append("Wait for every ticket in this wave to reach an accepted attempt.")
+            actions.append("Wait for every ticket in this candidate set to reach an accepted attempt.")
         if any("not shipped" in b.lower() for b in blockers):
-            actions.append("Ship prerequisite waves first, then re-run review or compose.")
+            actions.append("Ship prerequisite promotion work first, then re-run candidate review or compose.")
         if any("not the current frontier" in b.lower() or "base " in b.lower() for b in blockers):
             actions.append("Refresh stale tickets from the current frontier before composing or shipping.")
     if not all_done:
-        actions.append("Finish the remaining tickets in this wave before composing.")
+        actions.append("Finish the remaining tickets in this candidate set before composing.")
     if can_compose:
-        actions.append(f"Compose wave {wave_num} when you want a release-branch preview.")
+        actions.append("Compose this promotion candidate when you want a release-branch preview.")
     elif ship_run and ship_run.status in ("queued", "composing", "running"):
         actions.append("Wait for the active ship run to finish composing.")
     elif ship_run and ship_run.status == "ready_to_ship":
         actions.append("Review the composed ship run and diff before shipping.")
     elif ship_run and ship_run.status == "shipped":
-        actions.append("Wave already shipped; inspect the shipped frontier or later waves.")
+        actions.append("Candidate already shipped; inspect the shipped frontier or later candidates.")
     if can_ship:
-        actions.append(f"Ship wave {wave_num} to advance the shipped frontier.")
+        actions.append("Ship the ready ShipRun to advance the shipped frontier.")
 
     deduped: list[str] = []
     for action in actions:
@@ -2774,12 +2774,12 @@ def ship_wave_diff(project_id, wave_num):
     run = detail.get("ship_run") or {}
     if not run:
         return jsonify({
-            "error": "No ship run exists for this wave. Review or compose the wave first.",
+            "error": "No ship run exists for this candidate set. Review or compose the candidate first.",
             "next_actions": detail["next_actions"],
         }), 409
     if not run.get("composed_commit_hash"):
         return jsonify({
-            "error": "Wave is not composed yet. Compose or dry-compose the wave first.",
+            "error": "Ship run is not composed yet. Compose the candidate first.",
             "next_actions": detail["next_actions"],
         }), 409
 
@@ -2867,14 +2867,14 @@ def ship_wave_compose(project_id, wave_num):
         return jsonify({
             "error": "Wave composition validation failed.",
             "details": validation_errors,
-            "hint": "Ship prerequisite waves first, then recompose this wave from the current frontier.",
+            "hint": "Ship prerequisite promotion work first, then recompose this candidate from the current frontier.",
         }), 409
 
     if snapshot and snapshot["status"] == "blocked":
         return jsonify({
             "error": "Wave composition validation failed.",
             "details": snapshot["validation_summary"].get("blockers", []),
-            "hint": "Ship prerequisite waves first, then recompose this wave from the current frontier.",
+            "hint": "Ship prerequisite promotion work first, then recompose this candidate from the current frontier.",
         }), 409
 
     run = ShipRun(

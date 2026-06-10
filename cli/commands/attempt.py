@@ -93,7 +93,7 @@ def _render_attempt_row(attempt: dict) -> dict[str, str]:
         "ticket": short_id(attempt.get("ticket_id", "")),
         "status": attempt.get("status", ""),
         "commit": attempt.get("short_commit_hash") or short_id(attempt.get("agenthub_commit_hash", ""), 12),
-        "wave": str(attempt.get("wave_num", "")),
+        "base": (attempt.get("base_hash") or "")[:12],
         "files": changed,
     }
 
@@ -103,7 +103,7 @@ def _print_attempt_summary(attempt: dict, project_id: str) -> None:
     print(f"  Ticket:      {attempt.get('ticket_id') or 'unknown'}")
     print(f"  Status:      {attempt.get('status') or 'unknown'}")
     print(f"  Commit:      {attempt.get('short_commit_hash') or attempt.get('agenthub_commit_hash') or 'unavailable'}")
-    print(f"  Wave:        {attempt.get('wave_num') if attempt.get('wave_num') is not None else 'unavailable'}")
+    print(f"  Base:        {(attempt.get('base_hash') or 'unavailable')[:40]}")
     if attempt.get("attempt_num") is not None:
         print(f"  Attempt #:   {attempt.get('attempt_num')}")
     if attempt.get("test_status"):
@@ -130,6 +130,8 @@ def _print_attempt_summary(attempt: dict, project_id: str) -> None:
             print(f"  ta ticket accept-attempt {project_id} {ticket_id} {attempt.get('id')}")
         if attempt.get("status") not in {"rejected", "shipped", "superseded", "failed"}:
             print(f"  ta ticket reject-attempt {project_id} {ticket_id} {attempt.get('id')} --reason \"needs revision\"")
+        if attempt.get("status") in {"accepted", "composed", "release_pr_open"}:
+            print(f"  ta ship candidates {project_id}")
 
 
 def _cmd_list(args, api: API) -> None:
@@ -156,7 +158,7 @@ def _cmd_list(args, api: API) -> None:
         ("ticket", "TICKET"),
         ("status", "STATUS"),
         ("commit", "COMMIT"),
-        ("wave", "WAVE"),
+        ("base", "BASE"),
         ("files", "FILES"),
     ])
     print("")

@@ -6,12 +6,14 @@ import { ThemeProvider, createTheme } from '@mui/material';
 
 jest.mock('../utils/api', () => ({
   getProject: jest.fn(),
+  getShipCandidates: jest.fn(),
+  getShipCandidateDetail: jest.fn(),
   getShipWaves: jest.fn(),
   getShipWaveDetail: jest.fn(),
   getTicketAttempts: jest.fn(),
-  composeWave: jest.fn(),
-  shipWave: jest.fn(),
-  sendWaveFeedback: jest.fn(),
+  composeShipCandidate: jest.fn(),
+  shipCandidate: jest.fn(),
+  sendCandidateFeedback: jest.fn(),
   acceptAttempt: jest.fn(),
   rejectAttempt: jest.fn(),
 }));
@@ -45,10 +47,11 @@ const mockProject = {
 const mockReadyToShipRun = {
   id: 'run-1',
   project_id: 'proj-1',
+  promotion_candidate_id: 'candidate-1',
   wave_num: 0,
   status: 'ready_to_ship',
   error: null,
-  release_branch: 'terarchitect/release/wave-0-abc',
+  release_branch: 'terarchitect/release/candidate-abc',
   base_main_hash: 'base123',
   composed_commit_hash: 'composed123',
   changed_files: ['src/app.py', 'tests/test_app.py'],
@@ -61,48 +64,39 @@ const mockReadyToShipRun = {
   shipped_commit_hash: null,
   created_at: null,
   updated_at: null,
+  candidate: null,
+  membership: null,
+  validation_errors: [],
+  wave_tickets: [],
+  commit_hashes: [],
 };
 
 const mockComposeFailedRun = {
+  ...mockReadyToShipRun,
   id: 'run-2',
-  project_id: 'proj-1',
-  wave_num: 1,
+  promotion_candidate_id: 'candidate-2',
   status: 'compose_failed',
   error: 'Merge conflict in src/models.py',
   release_branch: null,
   base_main_hash: null,
   composed_commit_hash: null,
-  changed_files: [],
-  summary: null,
-  test_status: null,
-  test_output: null,
   release_pr_url: null,
   release_pr_number: null,
-  shipped_at: null,
-  shipped_commit_hash: null,
-  created_at: null,
-  updated_at: null,
 };
 
 const mockShippedRun = {
+  ...mockReadyToShipRun,
   id: 'run-3',
-  project_id: 'proj-1',
-  wave_num: 2,
+  promotion_candidate_id: 'candidate-3',
   status: 'shipped',
-  error: null,
-  release_branch: 'terarchitect/release/wave-2-def',
+  release_branch: 'terarchitect/release/candidate-def',
   base_main_hash: 'base456',
   composed_commit_hash: 'composed456',
   changed_files: ['src/lib.py'],
-  summary: null,
-  test_status: 'passed',
-  test_output: null,
   release_pr_url: 'https://github.com/o/r/pull/43',
   release_pr_number: 43,
   shipped_at: '2026-06-08T12:00:00Z',
   shipped_commit_hash: 'shipped456',
-  created_at: null,
-  updated_at: null,
 };
 
 const mockAcceptedAttempt = {
@@ -145,49 +139,44 @@ const mockProposedAttempt = {
   updated_at: null,
 };
 
-const mockTicket = {
-  id: 'ticket-1',
+const baseCandidate = {
+  id: 'candidate-1',
   project_id: 'proj-1',
-  column_id: 'done',
-  title: 'Ticket Alpha',
-  priority: 'medium',
+  selected_attempt_ids: ['attempt-1'],
+  selected_leaf_hashes: ['a'.repeat(40)],
+  base_root_hash: mockProject.shipped_frontier,
   status: 'ready',
-  intent_status: 'ready',
-  display_state: 'accepted',
-  latest_attempt: {
-    id: 'attempt-1',
-    short_commit_hash: 'aaaaaaaaaaaa',
-    status: 'accepted',
-    wave_num: 0,
-    attempt_num: 1,
-    summary: 'attempt summary',
-    test_status: 'passed',
-    stale: false,
-  },
-  accepted_attempt: null,
+  validation_summary: {},
+  conflict_summary: null,
+  composed_commit_hash: null,
+  created_at: null,
+  updated_at: null,
 };
 
-const mockReviewTicket = {
-  ...mockTicket,
-  latest_attempt: {
-    ...mockTicket.latest_attempt,
-    id: mockProposedAttempt.id,
-    short_commit_hash: mockProposedAttempt.short_commit_hash,
-    status: mockProposedAttempt.status,
-    attempt_num: mockProposedAttempt.attempt_num,
-    summary: mockProposedAttempt.summary,
-    test_status: mockProposedAttempt.test_status,
-  },
-};
+function makeCandidateDetail(overrides: Partial<any> = {}) {
+  return {
+    ...baseCandidate,
+    membership: {
+      attempts: [mockAcceptedAttempt],
+      tickets: [{ id: 'ticket-1', title: 'Ticket Alpha', column_id: 'done', depends_on_ticket_ids: [] }],
+      commit_hashes: ['a'.repeat(40)],
+      legacy_wave_num: 0,
+    },
+    validation_errors: [],
+    latest_ship_run: null,
+    ...overrides,
+  };
+}
 
 beforeEach(() => {
   jest.clearAllMocks();
   (api.getProject as jest.Mock).mockResolvedValue(mockProject);
+  (api.getShipWaves as jest.Mock).mockResolvedValue([]);
   (api.getTicketAttempts as jest.Mock).mockResolvedValue([]);
 });
 
 test('Ship Room header shows the frontier hash', async () => {
-  (api.getShipWaves as jest.Mock).mockResolvedValue([]);
+  (api.getShipCandidates as jest.Mock).mockResolvedValue([]);
 
   renderShipRoom();
 
@@ -199,33 +188,19 @@ test('Ship Room header shows the frontier hash', async () => {
 });
 
 test('ready_to_ship run shows the release PR at ShipRun level', async () => {
-  (api.getShipWaves as jest.Mock).mockResolvedValue([{
-    wave_num: 0,
-    ticket_count: 1,
-    accepted_count: 1,
-    all_done: true,
-    ship_run: mockReadyToShipRun,
-  }]);
-  (api.getShipWaveDetail as jest.Mock).mockResolvedValue({
-    wave_num: 0,
-    tickets: [],
-    accepted_attempts: [],
-    ship_run: mockReadyToShipRun,
-    can_compose: false,
-    all_done: true,
-    shipped_frontier: mockProject.shipped_frontier,
-    stale_count: 0,
-  });
+  (api.getShipCandidates as jest.Mock).mockResolvedValue([baseCandidate]);
+  (api.getShipCandidateDetail as jest.Mock).mockResolvedValue(makeCandidateDetail({
+    latest_ship_run: mockReadyToShipRun,
+  }));
 
   renderShipRoom();
 
   await waitFor(() => {
-    expect(screen.getAllByText('Active ship run').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/legacy wave 0/i).length).toBeGreaterThan(0);
     expect(screen.getAllByRole('link', { name: /Release PR #42/i }).length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Wave 0').length).toBeGreaterThan(0);
   });
 
-  fireEvent.click(screen.getAllByText('Wave 0').at(-1)!);
+  fireEvent.click(screen.getAllByText(/legacy wave 0/i).at(-1)!);
 
   await waitFor(() => {
     const prLink = screen.getAllByRole('link', { name: /Release PR #42/i })[0];
@@ -235,32 +210,20 @@ test('ready_to_ship run shows the release PR at ShipRun level', async () => {
 });
 
 test('compose_failed state shows its error text', async () => {
-  (api.getShipWaves as jest.Mock).mockResolvedValue([{
-    wave_num: 1,
-    ticket_count: 1,
-    accepted_count: 1,
-    all_done: true,
-    ship_run: mockComposeFailedRun,
-  }]);
-  (api.getShipWaveDetail as jest.Mock).mockResolvedValue({
-    wave_num: 1,
-    tickets: [],
-    accepted_attempts: [],
-    ship_run: mockComposeFailedRun,
-    can_compose: false,
-    all_done: true,
-    shipped_frontier: mockProject.shipped_frontier,
-    stale_count: 0,
-  });
+  (api.getShipCandidates as jest.Mock).mockResolvedValue([{ ...baseCandidate, id: 'candidate-2' }]);
+  (api.getShipCandidateDetail as jest.Mock).mockResolvedValue(makeCandidateDetail({
+    id: 'candidate-2',
+    latest_ship_run: mockComposeFailedRun,
+  }));
 
   renderShipRoom();
 
   await waitFor(() => {
-    expect(screen.getAllByText('Wave 1').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/legacy wave 0/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText('Merge conflict in src/models.py').length).toBeGreaterThan(0);
   });
 
-  fireEvent.click(screen.getAllByText('Wave 1').at(-1)!);
+  fireEvent.click(screen.getAllByText(/legacy wave 0/i).at(-1)!);
 
   await waitFor(() => {
     expect(screen.getAllByText('Compose Failed').length).toBeGreaterThan(0);
@@ -269,40 +232,31 @@ test('compose_failed state shows its error text', async () => {
 });
 
 test('shipped state is visually distinct from accepted state', async () => {
-  (api.getShipWaves as jest.Mock).mockResolvedValue([
-    {
-      wave_num: 0,
-      ticket_count: 1,
-      accepted_count: 1,
-      all_done: true,
-      ship_run: null,
-    },
-    {
-      wave_num: 2,
-      ticket_count: 1,
-      accepted_count: 1,
-      all_done: true,
-      ship_run: mockShippedRun,
-    },
+  (api.getShipCandidates as jest.Mock).mockResolvedValue([
+    baseCandidate,
+    { ...baseCandidate, id: 'candidate-3', selected_attempt_ids: ['attempt-1'] },
   ]);
-  (api.getShipWaveDetail as jest.Mock).mockResolvedValue({
-    wave_num: 2,
-    tickets: [mockTicket],
-    accepted_attempts: [mockAcceptedAttempt],
-    ship_run: mockShippedRun,
-    can_compose: false,
-    all_done: true,
-    shipped_frontier: mockProject.shipped_frontier,
-    stale_count: 0,
-  });
+  (api.getTicketAttempts as jest.Mock).mockResolvedValue([mockAcceptedAttempt]);
+  (api.getShipCandidateDetail as jest.Mock)
+    .mockResolvedValueOnce(makeCandidateDetail())
+    .mockResolvedValueOnce(makeCandidateDetail({
+      id: 'candidate-3',
+      membership: {
+        attempts: [mockAcceptedAttempt],
+        tickets: [{ id: 'ticket-1', title: 'Ticket Alpha', column_id: 'done', depends_on_ticket_ids: [] }],
+        commit_hashes: ['a'.repeat(40)],
+        legacy_wave_num: 2,
+      },
+      latest_ship_run: mockShippedRun,
+    }));
 
   renderShipRoom();
 
   await waitFor(() => {
-    expect(screen.getAllByText('Wave 2').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/legacy wave/i).length).toBeGreaterThanOrEqual(2);
   });
 
-  fireEvent.click(screen.getAllByText('Wave 2').at(-1)!);
+  fireEvent.click(screen.getAllByText(/legacy wave 2/i).at(-1)!);
 
   await waitFor(() => {
     expect(screen.getByText(/Shipped · shipped456/)).toBeInTheDocument();
@@ -313,33 +267,23 @@ test('shipped state is visually distinct from accepted state', async () => {
 });
 
 test('Ship Room review controls can accept a proposed attempt', async () => {
-  (api.getShipWaves as jest.Mock).mockResolvedValue([{
-    wave_num: 0,
-    ticket_count: 1,
-    accepted_count: 0,
-    all_done: false,
-    ship_run: null,
-  }]);
-  (api.getShipWaveDetail as jest.Mock).mockResolvedValue({
-    wave_num: 0,
-    tickets: [mockReviewTicket],
-    accepted_attempts: [],
-    ship_run: null,
-    can_compose: false,
-    all_done: false,
-    shipped_frontier: mockProject.shipped_frontier,
-    stale_count: 0,
-  });
+  (api.getShipCandidates as jest.Mock).mockResolvedValue([baseCandidate]);
+  (api.getShipCandidateDetail as jest.Mock).mockResolvedValue(makeCandidateDetail({
+    membership: {
+      attempts: [],
+      tickets: [{ id: 'ticket-1', title: 'Ticket Alpha', column_id: 'done', depends_on_ticket_ids: [] }],
+      commit_hashes: [],
+      legacy_wave_num: 0,
+    },
+  }));
   (api.getTicketAttempts as jest.Mock).mockResolvedValue([mockProposedAttempt, mockAcceptedAttempt]);
   (api.acceptAttempt as jest.Mock).mockResolvedValue({ ...mockProposedAttempt, status: 'accepted' });
 
   renderShipRoom();
 
   await waitFor(() => {
-    expect(screen.getAllByText('Wave 0').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/legacy wave 0/i).length).toBeGreaterThan(0);
   });
-
-  fireEvent.click(screen.getAllByText('Wave 0')[0]);
 
   await waitFor(() => {
     expect(screen.getByText('Ticket Alpha')).toBeInTheDocument();
@@ -355,33 +299,25 @@ test('Ship Room review controls can accept a proposed attempt', async () => {
 });
 
 test('Ship Room review controls can reject a proposed attempt', async () => {
-  (api.getShipWaves as jest.Mock).mockResolvedValue([{
-    wave_num: 0,
-    ticket_count: 1,
-    accepted_count: 0,
-    all_done: false,
-    ship_run: null,
-  }]);
-  (api.getShipWaveDetail as jest.Mock).mockResolvedValue({
-    wave_num: 0,
-    tickets: [mockReviewTicket],
-    accepted_attempts: [],
-    ship_run: null,
-    can_compose: false,
-    all_done: false,
-    shipped_frontier: mockProject.shipped_frontier,
-    stale_count: 0,
-  });
+  (api.getShipCandidates as jest.Mock).mockResolvedValue([baseCandidate]);
+  (api.getShipCandidateDetail as jest.Mock).mockResolvedValue(makeCandidateDetail({
+    membership: {
+      attempts: [],
+      tickets: [{ id: 'ticket-1', title: 'Ticket Alpha', column_id: 'done', depends_on_ticket_ids: [] }],
+      commit_hashes: [],
+      legacy_wave_num: 0,
+    },
+  }));
   (api.getTicketAttempts as jest.Mock).mockResolvedValue([mockProposedAttempt]);
   (api.rejectAttempt as jest.Mock).mockResolvedValue({ ...mockProposedAttempt, status: 'rejected' });
 
   renderShipRoom();
 
   await waitFor(() => {
-    expect(screen.getAllByText('Wave 0').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/legacy wave 0/i).length).toBeGreaterThan(0);
   });
 
-  fireEvent.click(screen.getAllByText('Wave 0').at(-1)!);
+  fireEvent.click(screen.getAllByText(/legacy wave 0/i).at(-1)!);
 
   await waitFor(() => {
     expect(screen.getByRole('button', { name: 'Reject attempt #2' })).toBeEnabled();
@@ -395,32 +331,19 @@ test('Ship Room review controls can reject a proposed attempt', async () => {
 });
 
 test('locked attempts disable review actions with a useful explanation', async () => {
-  (api.getShipWaves as jest.Mock).mockResolvedValue([{
-    wave_num: 0,
-    ticket_count: 1,
-    accepted_count: 1,
-    all_done: false,
-    ship_run: null,
-  }]);
-  (api.getShipWaveDetail as jest.Mock).mockResolvedValue({
-    wave_num: 0,
-    tickets: [mockTicket],
-    accepted_attempts: [],
-    ship_run: mockReadyToShipRun,
-    can_compose: false,
-    all_done: false,
-    shipped_frontier: mockProject.shipped_frontier,
-    stale_count: 0,
-  });
+  (api.getShipCandidates as jest.Mock).mockResolvedValue([baseCandidate]);
+  (api.getShipCandidateDetail as jest.Mock).mockResolvedValue(makeCandidateDetail({
+    latest_ship_run: mockReadyToShipRun,
+  }));
   (api.getTicketAttempts as jest.Mock).mockResolvedValue([mockAcceptedAttempt]);
 
   renderShipRoom();
 
   await waitFor(() => {
-    expect(screen.getAllByText('Wave 0').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/legacy wave 0/i).length).toBeGreaterThan(0);
   });
 
-  fireEvent.click(screen.getAllByText('Wave 0').at(-1)!);
+  fireEvent.click(screen.getAllByText(/legacy wave 0/i).at(-1)!);
 
   await waitFor(() => {
     const acceptButton = screen.getByRole('button', { name: 'Accept attempt #1' });
@@ -432,31 +355,19 @@ test('locked attempts disable review actions with a useful explanation', async (
 });
 
 test('ticket rows do not show PR language', async () => {
-  (api.getShipWaves as jest.Mock).mockResolvedValue([{
-    wave_num: 0,
-    ticket_count: 1,
-    accepted_count: 1,
-    all_done: true,
-    ship_run: mockReadyToShipRun,
-  }]);
-  (api.getShipWaveDetail as jest.Mock).mockResolvedValue({
-    wave_num: 0,
-    tickets: [mockTicket],
-    accepted_attempts: [mockAcceptedAttempt],
-    ship_run: mockReadyToShipRun,
-    can_compose: false,
-    all_done: true,
-    shipped_frontier: mockProject.shipped_frontier,
-    stale_count: 0,
-  });
+  (api.getShipCandidates as jest.Mock).mockResolvedValue([baseCandidate]);
+  (api.getShipCandidateDetail as jest.Mock).mockResolvedValue(makeCandidateDetail({
+    latest_ship_run: mockReadyToShipRun,
+  }));
+  (api.getTicketAttempts as jest.Mock).mockResolvedValue([mockAcceptedAttempt]);
 
   renderShipRoom();
 
   await waitFor(() => {
-    expect(screen.getAllByText('Wave 0').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/legacy wave 0/i).length).toBeGreaterThan(0);
   });
 
-  fireEvent.click(screen.getAllByText('Wave 0').at(-1)!);
+  fireEvent.click(screen.getAllByText(/legacy wave 0/i).at(-1)!);
 
   await waitFor(() => {
     const ticketCard = screen.getByTestId('ticket-card-ticket-1');
@@ -465,12 +376,12 @@ test('ticket rows do not show PR language', async () => {
   });
 });
 
-test('empty state shown when no waves exist', async () => {
-  (api.getShipWaves as jest.Mock).mockResolvedValue([]);
+test('empty state shown when no candidates exist', async () => {
+  (api.getShipCandidates as jest.Mock).mockResolvedValue([]);
 
   renderShipRoom();
 
   await waitFor(() => {
-    expect(screen.getByText(/No waves yet/)).toBeInTheDocument();
+    expect(screen.getByText(/No promotion candidates yet/)).toBeInTheDocument();
   });
 });

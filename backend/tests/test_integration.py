@@ -325,7 +325,7 @@ def test_dry_compose_reports_blockers_and_commit_hashes(client, project):
     data = resp.get_json()
     assert data["safe_to_compose"] is True
     assert data["commit_hashes"] == ["e" * 40]
-    assert any("Compose wave 0" in action for action in data["next_actions"])
+    assert any("Compose this promotion candidate" in action for action in data["next_actions"])
 
 
 def test_diff_requires_existing_composed_wave(client, project):

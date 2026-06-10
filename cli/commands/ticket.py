@@ -232,7 +232,7 @@ def _render_attempt_row(attempt: dict) -> dict[str, str]:
         "id": short_id(attempt.get("id", "")),
         "status": attempt.get("status", ""),
         "commit": attempt.get("short_commit_hash") or "",
-        "wave": str(attempt.get("wave_num", "")),
+        "base": (attempt.get("base_hash") or "")[:12],
         "attempt": str(attempt.get("attempt_num", "")),
         "tests": attempt.get("test_status") or "",
     }
@@ -254,7 +254,7 @@ def _cmd_attempts(args, api: API) -> None:
         ("id", "ID"),
         ("status", "STATUS"),
         ("commit", "COMMIT"),
-        ("wave", "WAVE"),
+        ("base", "BASE"),
         ("attempt", "ATTEMPT"),
         ("tests", "TESTS"),
     ])
@@ -323,9 +323,7 @@ def _cmd_accept_attempt(args, api: API) -> None:
     print("")
     print("Next:")
     print(f"  ta attempt show {args.project_id} {attempt.get('id', args.attempt_id)}")
-    wave_num = attempt.get("wave_num")
-    if wave_num is not None:
-        print(f"  ta ship show {args.project_id} {wave_num}")
+    print(f"  ta ship candidates {args.project_id}")
 
 
 def _cmd_reject_attempt(args, api: API) -> None:

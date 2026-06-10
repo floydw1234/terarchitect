@@ -138,6 +138,12 @@ const AttemptDetailPage: React.FC = () => {
             </Box>
           )}
 
+          {attempt.status === 'accepted' && (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              This accepted attempt is eligible for promotion-candidate review in Ship Room.
+            </Alert>
+          )}
+
           <Box>
             <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
               <Typography variant="overline" color="text.secondary" sx={{ display: 'block', lineHeight: 1.2 }}>

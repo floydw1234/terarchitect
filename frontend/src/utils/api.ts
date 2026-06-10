@@ -140,6 +140,7 @@ export interface TicketAttempt {
 export interface ShipRun {
   id: string;
   project_id: string;
+  promotion_candidate_id: string | null;
   wave_num: number;
   status: string;
   error: string | null;
@@ -156,6 +157,56 @@ export interface ShipRun {
   shipped_commit_hash: string | null;
   created_at: string | null;
   updated_at: string | null;
+}
+
+export interface CandidateMembershipTicket {
+  id: string;
+  title: string;
+  column_id: string;
+  depends_on_ticket_ids: string[];
+}
+
+export interface CandidateMembership {
+  attempts: TicketAttempt[];
+  tickets: CandidateMembershipTicket[];
+  commit_hashes: string[];
+  legacy_wave_num: number | null;
+}
+
+export interface PromotionCandidate {
+  id: string;
+  project_id: string;
+  selected_attempt_ids: string[];
+  selected_leaf_hashes: string[];
+  base_root_hash: string | null;
+  status: string;
+  validation_summary: Record<string, unknown>;
+  conflict_summary: string | null;
+  composed_commit_hash: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  attempts?: Array<{
+    id: string;
+    ticket_id: string;
+    status: string;
+    agenthub_commit_hash: string;
+    base_hash: string | null;
+    attempt_num: number;
+  }>;
+}
+
+export interface ShipRunDetail extends ShipRun {
+  candidate: PromotionCandidate | null;
+  membership: CandidateMembership | null;
+  validation_errors: string[];
+  wave_tickets: CandidateMembershipTicket[];
+  commit_hashes: string[];
+}
+
+export interface PromotionCandidateDetail extends PromotionCandidate {
+  latest_ship_run: ShipRunDetail | null;
+  membership: CandidateMembership;
+  validation_errors: string[];
 }
 
 export interface WaveSummary {
@@ -586,6 +637,48 @@ export async function deleteNote(projectId: string, noteId: string): Promise<voi
 // Ship Room API
 // ---------------------------------------------------------------------------
 
+export async function getShipCandidates(projectId: string): Promise<PromotionCandidate[]> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/candidates`);
+  return checkResponse<PromotionCandidate[]>(response);
+}
+
+export async function getShipCandidateDetail(projectId: string, candidateId: string): Promise<PromotionCandidateDetail> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/candidates/${candidateId}`);
+  return checkResponse<PromotionCandidateDetail>(response);
+}
+
+export async function composeShipCandidate(projectId: string, candidateId: string): Promise<ShipRunDetail> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/candidates/${candidateId}/compose`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  return checkResponse<ShipRunDetail>(response);
+}
+
+export async function getShipRun(projectId: string, runId: string): Promise<ShipRunDetail> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/runs/${runId}`);
+  return checkResponse<ShipRunDetail>(response);
+}
+
+export async function shipRun(projectId: string, runId: string): Promise<ShipRunDetail> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/runs/${runId}/ship`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  return checkResponse<ShipRunDetail>(response);
+}
+
+export async function shipCandidate(projectId: string, candidateId: string): Promise<ShipRunDetail> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/candidates/${candidateId}/ship`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  return checkResponse<ShipRunDetail>(response);
+}
+
 export async function getShipWaves(projectId: string): Promise<WaveSummary[]> {
   const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/waves`);
   return checkResponse<WaveSummary[]>(response);
@@ -614,7 +707,7 @@ export async function shipWave(projectId: string, waveNum: number): Promise<Ship
   return checkResponse<ShipRun>(response);
 }
 
-export async function sendWaveFeedback(
+async function sendWaveFeedback(
   projectId: string,
   waveNum: number,
   message: string,
@@ -626,6 +719,20 @@ export async function sendWaveFeedback(
     body: JSON.stringify({ message, target_ticket_id: targetTicketId }),
   });
   await checkResponse(response);
+}
+
+export async function sendCandidateFeedback(
+  projectId: string,
+  candidateId: string,
+  message: string,
+  targetTicketId?: string,
+): Promise<void> {
+  const detail = await getShipCandidateDetail(projectId, candidateId);
+  const legacyWaveNum = detail.membership?.legacy_wave_num;
+  if (legacyWaveNum === null || legacyWaveNum === undefined) {
+    throw new Error('Candidate feedback is not supported by this backend yet.');
+  }
+  await sendWaveFeedback(projectId, legacyWaveNum, message, targetTicketId);
 }
 
 export async function getTicketAttempts(

@@ -104,7 +104,7 @@ def _cmd_leaves(args, api: API) -> None:
         rows.append({
             "attempt_id": aa.get("id", "")[:18],
             "commit": aa.get("short_commit_hash") or "?",
-            "wave": str(aa.get("wave_num", "?")),
+            "base": (aa.get("base_hash") or "?")[:12],
             "status": aa.get("status", ""),
             "stale": "yes" if aa.get("stale") else "",
             "ticket": t.get("title", "")[:40],
@@ -118,7 +118,7 @@ def _cmd_leaves(args, api: API) -> None:
     print_table(rows, [
         ("attempt_id", "ATTEMPT ID"),
         ("commit", "COMMIT"),
-        ("wave", "WAVE"),
+        ("base", "BASE"),
         ("status", "STATUS"),
         ("stale", "STALE"),
         ("ticket", "TICKET"),
@@ -265,9 +265,9 @@ def _cmd_promote(args, api: API) -> None:
         return
     run = result.get("ship_run") or {}
     print(f"Workspace promoted for export.")
-    print(f"  ShipRun: {run.get('id', '?')}  wave={run.get('wave_num')}  status={run.get('status')}")
+    print(f"  ShipRun: {run.get('id', '?')}  candidate={short_id(run.get('promotion_candidate_id') or '')}  status={run.get('status')}")
     print("Coordinator will compose a release branch and open a PR.")
-    print("Use 'ta ship waves' to track progress.")
+    print(f"Use 'ta ship run {args.project_id} {run.get('id', '?')}' to track progress.")
 
 
 def _cmd_discard(args, api: API) -> None:

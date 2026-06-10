@@ -15,16 +15,21 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import {
   acceptAttempt,
+  composeShipCandidate,
   composeWave,
   getProject,
+  getShipCandidateDetail,
+  getShipCandidates,
   getShipWaveDetail,
   getShipWaves,
   getTicketAttempts,
   rejectAttempt,
-  sendWaveFeedback,
+  sendCandidateFeedback,
+  shipCandidate,
   shipWave,
   type Project,
   type ProjectFrontier,
+  type PromotionCandidateDetail,
   type ShipRun,
   type TicketAttempt,
   type WaveDetail,
@@ -41,6 +46,9 @@ const STATUS_COLOR: Record<string, 'default' | 'info' | 'warning' | 'success' | 
   shipping: 'warning',
   shipped: 'success',
   done: 'success',
+  blocked: 'error',
+  draft: 'default',
+  composed: 'info',
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -53,6 +61,9 @@ const STATUS_LABEL: Record<string, string> = {
   shipping: 'Shipping',
   shipped: 'Shipped',
   done: 'Done',
+  blocked: 'Blocked',
+  draft: 'Draft',
+  composed: 'Composed',
 };
 
 const ATTEMPT_COLOR: Record<string, 'default' | 'info' | 'warning' | 'success' | 'error'> = {
@@ -77,18 +88,95 @@ const ATTEMPT_LABEL: Record<string, string> = {
 
 const REVIEWABLE_ATTEMPT_STATUSES = new Set(['proposed', 'validating']);
 
+type ShipRoomTicket = {
+  id: string;
+  title: string;
+};
+
+type CandidateViewModel = {
+  id: string;
+  candidateId: string | null;
+  label: string;
+  status: string;
+  baseRootHash: string | null;
+  tickets: ShipRoomTicket[];
+  acceptedAttempts: TicketAttempt[];
+  shipRun: ShipRun | null;
+  validationErrors: string[];
+  canCompose: boolean;
+  canShip: boolean;
+  staleCount: number;
+  feedbackSupported: boolean;
+  legacyWaveNum: number | null;
+  source: 'candidate' | 'wave';
+};
+
 function formatShortHash(value: string | null | undefined, width = 12) {
   return value ? value.slice(0, width) : '(not set)';
 }
 
 function getAttemptReviewLockReason(attempt: TicketAttempt, shipRunStatus: string | null | undefined) {
   if (shipRunStatus && !['compose_failed', 'failed'].includes(shipRunStatus)) {
-    return `This wave is ${STATUS_LABEL[shipRunStatus] ?? shipRunStatus} and attempt review is locked.`;
+    return `This candidate is ${STATUS_LABEL[shipRunStatus] ?? shipRunStatus} and attempt review is locked.`;
   }
   if (!REVIEWABLE_ATTEMPT_STATUSES.has(attempt.status)) {
     return 'Only proposed or validating attempts can be reviewed here.';
   }
   return null;
+}
+
+function formatCandidateLabel(candidateId: string, legacyWaveNum: number | null) {
+  const readableId = candidateId.replace(/^candidate-/, '');
+  const shortId = readableId.slice(0, 8) || candidateId.slice(0, 8);
+  return legacyWaveNum !== null ? `Candidate ${shortId} · legacy wave ${legacyWaveNum}` : `Candidate ${shortId}`;
+}
+
+function normalizeCandidateDetail(detail: PromotionCandidateDetail): CandidateViewModel {
+  const shipRun = detail.latest_ship_run ?? null;
+  const validationErrors = detail.validation_errors ?? [];
+  const tickets = (detail.membership?.tickets ?? []).map(ticket => ({
+    id: ticket.id,
+    title: ticket.title,
+  }));
+  const acceptedAttempts = detail.membership?.attempts ?? [];
+  const legacyWaveNum = detail.membership?.legacy_wave_num ?? null;
+  return {
+    id: detail.id,
+    candidateId: detail.id,
+    label: formatCandidateLabel(detail.id, legacyWaveNum),
+    status: detail.status,
+    baseRootHash: detail.base_root_hash,
+    tickets,
+    acceptedAttempts,
+    shipRun,
+    validationErrors,
+    canCompose: validationErrors.length === 0 && (!shipRun || ['compose_failed', 'failed'].includes(shipRun.status)),
+    canShip: shipRun?.status === 'ready_to_ship',
+    staleCount: acceptedAttempts.filter(attempt => attempt.stale).length,
+    feedbackSupported: legacyWaveNum !== null,
+    legacyWaveNum,
+    source: 'candidate',
+  };
+}
+
+function normalizeLegacyWaveDetail(detail: WaveDetail): CandidateViewModel {
+  return {
+    id: `legacy-wave-${detail.wave_num}`,
+    candidateId: null,
+    label: `Candidate · legacy wave ${detail.wave_num}`,
+    status: detail.ship_run?.status ?? (detail.can_compose ? 'draft' : detail.all_done ? 'blocked' : 'queued'),
+    baseRootHash: detail.shipped_frontier,
+    tickets: detail.tickets.map(ticket => ({ id: ticket.id, title: ticket.title })),
+    acceptedAttempts: detail.accepted_attempts,
+    shipRun: detail.ship_run,
+    validationErrors: detail.validation?.compose ?? [],
+    canCompose: detail.can_compose,
+    canShip: detail.can_ship ?? (detail.ship_run?.status === 'ready_to_ship'),
+    staleCount: detail.stale_count,
+    feedbackSupported: true,
+    legacyWaveNum: detail.wave_num,
+    source: 'wave',
+  };
 }
 
 function ShipRunPanel({ run, title }: { run: ShipRun; title: string }) {
@@ -327,17 +415,17 @@ function AttemptReviewCard({
   );
 }
 
-function WaveDetailPanel({
+function CandidateDetailPanel({
   projectId,
-  waveNum,
+  candidate,
   onClose,
+  onRefresh,
 }: {
   projectId: string;
-  waveNum: number;
+  candidate: CandidateViewModel;
   onClose: () => void;
+  onRefresh: () => Promise<void>;
 }) {
-  const [detail, setDetail] = useState<WaveDetail | null>(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [composing, setComposing] = useState(false);
   const [shipping, setShipping] = useState(false);
@@ -345,41 +433,45 @@ function WaveDetailPanel({
   const [feedbackSending, setFeedbackSending] = useState(false);
   const [feedbackSent, setFeedbackSent] = useState(false);
   const [ticketAttempts, setTicketAttempts] = useState<Record<string, TicketAttempt[]>>({});
+  const [attemptsLoading, setAttemptsLoading] = useState(true);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  const loadTicketAttempts = useCallback(async () => {
+    setAttemptsLoading(true);
     try {
-      const waveDetail = await getShipWaveDetail(projectId, waveNum);
-      setDetail(waveDetail);
       const attemptsByTicket = await Promise.all(
-        waveDetail.tickets.map(async ticket => {
+        candidate.tickets.map(async ticket => {
           const attempts = await getTicketAttempts(projectId, ticket.id, true).catch(() => []);
           return [ticket.id, attempts] as const;
         }),
       );
       setTicketAttempts(Object.fromEntries(attemptsByTicket));
-    } catch (e: any) {
-      setError(e.message);
     } finally {
-      setLoading(false);
+      setAttemptsLoading(false);
     }
-  }, [projectId, waveNum]);
+  }, [candidate.tickets, projectId]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    loadTicketAttempts();
+  }, [loadTicketAttempts]);
 
-  const shipRun = detail?.ship_run ?? null;
-  const canShip = shipRun?.status === 'ready_to_ship' && !!shipRun.release_pr_number;
+  const handleRefresh = async () => {
+    setError(null);
+    await onRefresh();
+  };
+
   const composeLabel =
-    shipRun && ['compose_failed', 'failed'].includes(shipRun.status) ? 'Retry compose' : 'Compose wave';
+    candidate.shipRun && ['compose_failed', 'failed'].includes(candidate.shipRun.status) ? 'Retry compose' : 'Compose candidate';
 
   const handleCompose = async () => {
     setComposing(true);
+    setError(null);
     try {
-      await composeWave(projectId, waveNum);
-      await load();
+      if (candidate.source === 'candidate' && candidate.candidateId) {
+        await composeShipCandidate(projectId, candidate.candidateId);
+      } else if (candidate.legacyWaveNum !== null) {
+        await composeWave(projectId, candidate.legacyWaveNum);
+      }
+      await onRefresh();
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -389,9 +481,14 @@ function WaveDetailPanel({
 
   const handleShip = async () => {
     setShipping(true);
+    setError(null);
     try {
-      await shipWave(projectId, waveNum);
-      await load();
+      if (candidate.source === 'candidate' && candidate.candidateId) {
+        await shipCandidate(projectId, candidate.candidateId);
+      } else if (candidate.legacyWaveNum !== null) {
+        await shipWave(projectId, candidate.legacyWaveNum);
+      }
+      await onRefresh();
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -402,8 +499,13 @@ function WaveDetailPanel({
   const handleFeedback = async () => {
     if (!feedback.trim()) return;
     setFeedbackSending(true);
+    setError(null);
     try {
-      await sendWaveFeedback(projectId, waveNum, feedback.trim());
+      if (candidate.source === 'candidate' && candidate.candidateId) {
+        await sendCandidateFeedback(projectId, candidate.candidateId, feedback.trim());
+      } else {
+        throw new Error('Feedback is not supported for this candidate on the current frontend path.');
+      }
       setFeedback('');
       setFeedbackSent(true);
       setTimeout(() => setFeedbackSent(false), 3000);
@@ -414,35 +516,19 @@ function WaveDetailPanel({
     }
   };
 
-  if (loading) {
-    return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
-        <CircularProgress size={24} />
-      </Box>
-    );
-  }
-
-  if (error) {
-    return <Alert severity="error">{error}</Alert>;
-  }
-
-  if (!detail) {
-    return null;
-  }
-
   return (
     <Box>
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" sx={{ mb: 2 }}>
         <Box>
-          <Typography variant="h6">Wave {waveNum}</Typography>
+          <Typography variant="h6">{candidate.label}</Typography>
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mt: 1 }}>
-            <Chip label={`${detail.accepted_attempts.length} accepted`} size="small" color="success" variant="outlined" />
-            <Chip label={`${detail.tickets.length} tickets`} size="small" variant="outlined" />
-            <Chip label={`Frontier ${formatShortHash(detail.shipped_frontier)}`} size="small" variant="outlined" />
+            <Chip label={`${candidate.acceptedAttempts.length} accepted`} size="small" color="success" variant="outlined" />
+            <Chip label={`${candidate.tickets.length} tickets`} size="small" variant="outlined" />
+            <Chip label={`Frontier ${formatShortHash(candidate.baseRootHash)}`} size="small" variant="outlined" />
           </Stack>
         </Box>
         <Stack direction="row" spacing={1} flexWrap="wrap">
-          <Button size="small" onClick={load} startIcon={<RefreshIcon fontSize="small" />}>
+          <Button size="small" onClick={handleRefresh} startIcon={<RefreshIcon fontSize="small" />}>
             Refresh
           </Button>
           <Button size="small" onClick={onClose}>
@@ -451,14 +537,22 @@ function WaveDetailPanel({
         </Stack>
       </Stack>
 
-      {detail.stale_count > 0 && (
+      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+
+      {candidate.staleCount > 0 && (
         <Alert severity="warning" sx={{ mb: 2 }}>
-          {detail.stale_count} attempt{detail.stale_count !== 1 ? 's were' : ' was'} built before the current frontier.
+          {candidate.staleCount} attempt{candidate.staleCount !== 1 ? 's were' : ' was'} built before the current frontier.
+        </Alert>
+      )}
+
+      {candidate.validationErrors.length > 0 && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          {candidate.validationErrors[0]}
         </Alert>
       )}
 
       <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 2 }}>
-        {detail.can_compose && (
+        {candidate.canCompose && (
           <Button
             variant="contained"
             size="small"
@@ -469,7 +563,7 @@ function WaveDetailPanel({
             {composing ? 'Composing…' : composeLabel}
           </Button>
         )}
-        {canShip && (
+        {candidate.canShip && (
           <Button
             variant="contained"
             color="success"
@@ -478,28 +572,28 @@ function WaveDetailPanel({
             disabled={shipping}
             startIcon={shipping ? <CircularProgress size={12} color="inherit" /> : undefined}
           >
-            {shipping ? 'Shipping…' : 'Ship wave'}
+            {shipping ? 'Shipping…' : 'Ship candidate'}
           </Button>
         )}
       </Stack>
 
-      {shipRun && (
+      {candidate.shipRun && (
         <Box sx={{ mb: 2 }}>
-          <ShipRunPanel run={shipRun} title="Ship run" />
+          <ShipRunPanel run={candidate.shipRun} title="Ship run" />
         </Box>
       )}
 
       <Box sx={{ mb: 2 }}>
         <Typography variant="subtitle2" sx={{ mb: 1 }}>
-          Accepted attempts ({detail.accepted_attempts.length})
+          Accepted attempts ({candidate.acceptedAttempts.length})
         </Typography>
-        {detail.accepted_attempts.length === 0 ? (
+        {candidate.acceptedAttempts.length === 0 ? (
           <Typography variant="body2" color="text.secondary">
             No accepted attempts yet.
           </Typography>
         ) : (
           <Stack spacing={1}>
-            {detail.accepted_attempts.map(attempt => (
+            {candidate.acceptedAttempts.map(attempt => (
               <Paper key={attempt.id} sx={{ p: 1.5, bgcolor: 'background.default' }}>
                 <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
                   <Chip
@@ -523,9 +617,9 @@ function WaveDetailPanel({
                     Inspect
                   </Button>
                 </Stack>
-                {shipRun?.status === 'shipped' && (
+                {candidate.shipRun?.status === 'shipped' && (
                   <Typography variant="caption" color="success.main" sx={{ display: 'block', mt: 0.75 }}>
-                    Selected attempt from the shipped wave.
+                    Selected attempt from the shipped candidate.
                   </Typography>
                 )}
                 {attempt.summary && (
@@ -543,57 +637,69 @@ function WaveDetailPanel({
         <Typography variant="subtitle2" sx={{ mb: 1 }}>
           Review attempts by ticket
         </Typography>
-        <Stack spacing={1.25}>
-          {detail.tickets.map(ticket => (
-            <Paper key={ticket.id} data-testid={`ticket-card-${ticket.id}`} sx={{ p: 1.5, bgcolor: 'background.default' }}>
-              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mb: 1 }}>
-                <Typography variant="body2" fontWeight={600}>
-                  {ticket.title}
-                </Typography>
-                {ticket.latest_attempt && (
-                  <Chip
-                    label={`${ATTEMPT_LABEL[ticket.latest_attempt.status] ?? ticket.latest_attempt.status}${ticket.latest_attempt.short_commit_hash ? ` · ${ticket.latest_attempt.short_commit_hash}` : ''}`}
-                    size="small"
-                    color={ATTEMPT_COLOR[ticket.latest_attempt.status] ?? 'default'}
+        {attemptsLoading ? (
+          <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+            <CircularProgress size={20} />
+          </Box>
+        ) : (
+          <Stack spacing={1.25}>
+            {candidate.tickets.map(ticket => {
+              const attempts = ticketAttempts[ticket.id] ?? [];
+              const latestAttempt = attempts[0] ?? null;
+              return (
+                <Paper key={ticket.id} data-testid={`ticket-card-${ticket.id}`} sx={{ p: 1.5, bgcolor: 'background.default' }}>
+                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mb: 1 }}>
+                    <Typography variant="body2" fontWeight={600}>
+                      {ticket.title}
+                    </Typography>
+                    {latestAttempt && (
+                      <Chip
+                        label={`${ATTEMPT_LABEL[latestAttempt.status] ?? latestAttempt.status}${latestAttempt.short_commit_hash ? ` · ${latestAttempt.short_commit_hash}` : ''}`}
+                        size="small"
+                        color={ATTEMPT_COLOR[latestAttempt.status] ?? 'default'}
+                      />
+                    )}
+                  </Stack>
+                  <AttemptReviewCard
+                    projectId={projectId}
+                    attempts={attempts}
+                    shipRunStatus={candidate.shipRun?.status}
+                    onActionComplete={onRefresh}
                   />
-                )}
-              </Stack>
-              <AttemptReviewCard
-                projectId={projectId}
-                attempts={ticketAttempts[ticket.id] ?? []}
-                shipRunStatus={shipRun?.status}
-                onActionComplete={load}
-              />
-            </Paper>
-          ))}
-        </Stack>
+                </Paper>
+              );
+            })}
+          </Stack>
+        )}
       </Box>
 
-      <Box>
-        <Typography variant="subtitle2" sx={{ mb: 1 }}>
-          Send feedback
-        </Typography>
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems="flex-start">
-          <TextField
-            size="small"
-            multiline
-            minRows={2}
-            fullWidth
-            placeholder="Describe what needs to change…"
-            value={feedback}
-            onChange={event => setFeedback(event.target.value)}
-          />
-          <Button
-            variant="outlined"
-            size="small"
-            onClick={handleFeedback}
-            disabled={feedbackSending || !feedback.trim()}
-            sx={{ minWidth: 96, alignSelf: 'stretch' }}
-          >
-            {feedbackSending ? <CircularProgress size={14} /> : feedbackSent ? 'Sent!' : 'Send'}
-          </Button>
-        </Stack>
-      </Box>
+      {candidate.feedbackSupported ? (
+        <Box>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            Send feedback
+          </Typography>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems="flex-start">
+            <TextField
+              size="small"
+              multiline
+              minRows={2}
+              fullWidth
+              placeholder="Describe what needs to change…"
+              value={feedback}
+              onChange={event => setFeedback(event.target.value)}
+            />
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={handleFeedback}
+              disabled={feedbackSending || !feedback.trim() || candidate.source !== 'candidate'}
+              sx={{ minWidth: 96, alignSelf: 'stretch' }}
+            >
+              {feedbackSending ? <CircularProgress size={14} /> : feedbackSent ? 'Sent!' : 'Send'}
+            </Button>
+          </Stack>
+        </Box>
+      ) : null}
     </Box>
   );
 }
@@ -624,20 +730,20 @@ function SummaryCard({
   );
 }
 
-function WaveCard({
-  wave,
+function CandidateCard({
+  candidate,
   selected,
   onSelect,
 }: {
-  wave: WaveSummary;
+  candidate: CandidateViewModel;
   selected: boolean;
-  onSelect: (waveNum: number) => void;
+  onSelect: (candidateId: string) => void;
 }) {
-  const run = wave.ship_run;
+  const run = candidate.shipRun;
 
   return (
     <Paper
-      onClick={() => onSelect(wave.wave_num)}
+      onClick={() => onSelect(candidate.id)}
       sx={{
         p: 2,
         cursor: 'pointer',
@@ -649,10 +755,10 @@ function WaveCard({
       <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="flex-start">
         <Box>
           <Typography variant="subtitle2" fontWeight={600}>
-            Wave {wave.wave_num}
+            {candidate.label}
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            {wave.accepted_count} accepted of {wave.ticket_count} ticket{wave.ticket_count !== 1 ? 's' : ''}
+            {candidate.acceptedAttempts.length} accepted across {candidate.tickets.length} ticket{candidate.tickets.length !== 1 ? 's' : ''}
           </Typography>
         </Box>
         {run ? (
@@ -662,7 +768,11 @@ function WaveCard({
             color={STATUS_COLOR[run.status] ?? 'default'}
           />
         ) : (
-          <Chip label={wave.all_done ? 'Ready for review' : 'Waiting on attempts'} size="small" variant="outlined" />
+          <Chip
+            label={candidate.canCompose ? 'Ready for compose' : candidate.validationErrors.length ? 'Blocked' : 'Waiting on attempts'}
+            size="small"
+            variant="outlined"
+          />
         )}
       </Stack>
       {run?.release_pr_url && (
@@ -688,26 +798,55 @@ const ShipRoomPage: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
   const [project, setProject] = useState<Project | null>(null);
   const [frontier, setFrontier] = useState<ProjectFrontier | null>(null);
-  const [waves, setWaves] = useState<WaveSummary[]>([]);
+  const [candidates, setCandidates] = useState<CandidateViewModel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedWave, setSelectedWave] = useState<number | null>(null);
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!projectId) return;
     setLoading(true);
     setError(null);
     try {
-      const [projectData, waveData] = await Promise.all([getProject(projectId), getShipWaves(projectId)]);
+      const projectData = await getProject(projectId);
       setProject(projectData);
-      setWaves(waveData.sort((a, b) => b.wave_num - a.wave_num));
       setFrontier({
         shipped_frontier: projectData.shipped_frontier ?? null,
         shipped_frontier_updated_at: projectData.shipped_frontier_updated_at ?? null,
         frontier_warning: projectData.frontier_warning ?? null,
       });
+
+      let normalizedCandidates: CandidateViewModel[] = [];
+      try {
+        const candidateList = await getShipCandidates(projectId);
+        if (candidateList.length > 0) {
+          const candidateDetails = await Promise.all(candidateList.map(candidate => getShipCandidateDetail(projectId, candidate.id)));
+          normalizedCandidates = candidateDetails.map(normalizeCandidateDetail);
+        }
+      } catch (candidateError: any) {
+        if (!String(candidateError?.message || '').includes('404')) {
+          throw candidateError;
+        }
+      }
+
+      if (normalizedCandidates.length === 0) {
+        const waveData = await getShipWaves(projectId);
+        const waveDetails = await Promise.all(
+          waveData.map(async (wave: WaveSummary) => getShipWaveDetail(projectId, wave.wave_num)),
+        );
+        normalizedCandidates = waveDetails.map(normalizeLegacyWaveDetail);
+      }
+
+      setCandidates(normalizedCandidates);
+      setSelectedCandidateId(current => (
+        current && normalizedCandidates.some(candidate => candidate.id === current)
+          ? current
+          : normalizedCandidates[0]?.id ?? null
+      ));
     } catch (e: any) {
       setError(e.message);
+      setCandidates([]);
+      setSelectedCandidateId(null);
     } finally {
       setLoading(false);
     }
@@ -717,27 +856,27 @@ const ShipRoomPage: React.FC = () => {
     load();
   }, [load]);
 
+  const selectedCandidate = useMemo(
+    () => candidates.find(candidate => candidate.id === selectedCandidateId) ?? null,
+    [candidates, selectedCandidateId],
+  );
+
   const acceptedCount = useMemo(
-    () => waves.reduce((sum, wave) => sum + wave.accepted_count, 0),
-    [waves],
+    () => candidates.reduce((sum, candidate) => sum + candidate.acceptedAttempts.length, 0),
+    [candidates],
   );
 
   const activeShipRun = useMemo(
     () =>
-      waves
-        .map(wave => wave.ship_run)
-        .filter((run): run is ShipRun => !!run && !['shipped', 'done'].includes(run.status))
-        .sort((a, b) => b.wave_num - a.wave_num)[0] ?? null,
-    [waves],
+      candidates
+        .map(candidate => candidate.shipRun)
+        .filter((run): run is ShipRun => !!run && !['shipped', 'done'].includes(run.status))[0] ?? null,
+    [candidates],
   );
 
   const latestShipRun = useMemo(
-    () =>
-      waves
-        .map(wave => wave.ship_run)
-        .filter((run): run is ShipRun => !!run)
-        .sort((a, b) => b.wave_num - a.wave_num)[0] ?? null,
-    [waves],
+    () => candidates.map(candidate => candidate.shipRun).find((run): run is ShipRun => !!run) ?? null,
+    [candidates],
   );
 
   if (loading) {
@@ -760,7 +899,7 @@ const ShipRoomPage: React.FC = () => {
               </Typography>
             )}
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-              Review attempts, accept or reject, compose the wave, inspect failures, ship the release boundary, or send feedback.
+              Review promotion candidates, accept or reject attempts, compose candidate-backed ship runs, inspect failures, ship the ready run, or send feedback when the backend supports it.
             </Typography>
           </Box>
           <Button size="small" onClick={load} startIcon={<RefreshIcon fontSize="small" />} sx={{ alignSelf: 'flex-start' }}>
@@ -778,13 +917,13 @@ const ShipRoomPage: React.FC = () => {
           detail={frontier?.frontier_warning ?? undefined}
         />
         <SummaryCard
-          label="Waves"
-          value={`${waves.length}`}
-          detail={`${acceptedCount} accepted attempt${acceptedCount !== 1 ? 's' : ''} across all waves`}
+          label="Promotion candidates"
+          value={`${candidates.length}`}
+          detail={`${acceptedCount} accepted attempt${acceptedCount !== 1 ? 's' : ''} across visible candidates`}
         />
         <SummaryCard
           label={activeShipRun ? 'Active ship run' : 'Latest ship run'}
-          value={activeShipRun ? `Wave ${activeShipRun.wave_num}` : latestShipRun ? `Wave ${latestShipRun.wave_num}` : 'None'}
+          value={activeShipRun ? activeShipRun.id.slice(0, 8) : latestShipRun ? latestShipRun.id.slice(0, 8) : 'None'}
           detail={
             activeShipRun
               ? STATUS_LABEL[activeShipRun.status] ?? activeShipRun.status
@@ -804,36 +943,37 @@ const ShipRoomPage: React.FC = () => {
         </Box>
       )}
 
-      {waves.length === 0 && !error ? (
+      {candidates.length === 0 && !error ? (
         <Paper sx={{ p: 4, textAlign: 'center', border: '1px solid rgba(148,163,184,0.45)', boxShadow: 'none' }}>
           <Typography color="text.secondary">
-            No waves yet. Complete some tickets to see waves here.
+            No promotion candidates yet. Accept some ticket attempts to build a candidate set.
           </Typography>
         </Paper>
       ) : (
-        <Box sx={{ display: 'grid', gap: 3, gridTemplateColumns: { xs: '1fr', lg: selectedWave !== null ? '360px minmax(0, 1fr)' : '1fr' } }}>
+        <Box sx={{ display: 'grid', gap: 3, gridTemplateColumns: { xs: '1fr', lg: selectedCandidate ? '360px minmax(0, 1fr)' : '1fr' } }}>
           <Box>
             <Typography variant="subtitle2" sx={{ mb: 1 }}>
-              Waves
+              Promotion candidates
             </Typography>
             <Stack spacing={1}>
-              {waves.map(wave => (
-                <WaveCard
-                  key={wave.wave_num}
-                  wave={wave}
-                  selected={selectedWave === wave.wave_num}
-                  onSelect={waveNum => setSelectedWave(current => (current === waveNum ? null : waveNum))}
+              {candidates.map(candidate => (
+                <CandidateCard
+                  key={candidate.id}
+                  candidate={candidate}
+                  selected={selectedCandidateId === candidate.id}
+                  onSelect={candidateId => setSelectedCandidateId(current => (current === candidateId ? null : candidateId))}
                 />
               ))}
             </Stack>
           </Box>
 
-          {selectedWave !== null && projectId && (
+          {selectedCandidate && projectId && (
             <Paper sx={{ p: 3, border: '1px solid rgba(148,163,184,0.45)', boxShadow: 'none' }}>
-              <WaveDetailPanel
+              <CandidateDetailPanel
                 projectId={projectId}
-                waveNum={selectedWave}
-                onClose={() => setSelectedWave(null)}
+                candidate={selectedCandidate}
+                onClose={() => setSelectedCandidateId(null)}
+                onRefresh={load}
               />
             </Paper>
           )}
