@@ -2,7 +2,6 @@
 
 from flask import current_app
 
-from agenthub_preflight import read_git_head
 from models.db import db, Project, Ticket, AgentJob, TicketAttempt
 from .attempt_service import SATISFIED_STATUSES as _SATISFIED_STATUSES
 
@@ -181,7 +180,7 @@ def _attempt_hashes(attempts: list[TicketAttempt]) -> list[str]:
 
 
 def job_to_response(job):
-    """Build JSON payload for a claimed job. Includes base_hash for AgentHub base selection."""
+    """Build JSON payload for a claimed job. Includes the explicit AgentHub base leaf."""
     project = db.session.get(Project, job.project_id)
     ticket = db.session.get(Ticket, job.ticket_id)
     repo_url = (project.github_url or "") if project else ""
@@ -190,25 +189,22 @@ def job_to_response(job):
     shipped_frontier = (getattr(project, "shipped_frontier", None) or None) if project else None
 
     base_context = {}
+    base_leaf_id = None
     base_hash = None
     if ticket and project and git_mode == "swarm":
-        base_context = mvp_dependency_base_context(ticket, project)
-        base_hash = base_context.get("base_hash")
-        if not base_hash and execution_mode == "local" and not base_context.get("blocked"):
-            local_head = read_git_head((project.project_path or "").strip() or None)
-            if local_head:
-                base_hash = local_head
-                base_context = {
-                    **base_context,
-                    "base_hash": local_head,
-                    "base_source": "project_head",
-                    "blocked": False,
-                    "blocked_reason": None,
-                }
+        base_leaf_id = (getattr(ticket, "base_leaf_id", None) or "").strip() or None
+        base_hash = base_leaf_id
+        base_context = {
+            "base_hash": base_hash,
+            "base_leaf_id": base_leaf_id,
+            "base_source": "ticket_base_leaf",
+            "blocked": False,
+            "blocked_reason": None,
+        }
         current_app.logger.info(
-            "base_selection project=%s ticket=%s base=%s source=%s frontier=%s deps=%s",
+            "base_selection project=%s ticket=%s base_leaf=%s source=%s frontier=%s deps=%s",
             job.project_id, job.ticket_id,
-            (base_hash or "")[:12] or "none",
+            (base_leaf_id or "")[:12] or "none",
             base_context.get("base_source"),
             (shipped_frontier or "")[:12] or "none",
             ticket.depends_on_ticket_ids or [],
@@ -223,9 +219,10 @@ def job_to_response(job):
         "execution_mode": execution_mode,
         "git_mode": git_mode,
         "project_path": (project.project_path or "").strip() or None if project else None,
+        "base_leaf_id": base_leaf_id,
         "base_hash": base_hash,
         "shipped_frontier": shipped_frontier,
-        "agenthub_root_hash": shipped_frontier or base_hash,
+        "agenthub_root_hash": base_hash or shipped_frontier,
         "base_selection": base_context,
     }
     return out

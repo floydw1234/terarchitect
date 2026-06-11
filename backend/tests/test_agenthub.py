@@ -409,6 +409,50 @@ def test_coordinator_job_to_env_forwards_base_hashes():
     assert env["AGENTHUB_ROOT_HASH"] == "f" * 40
 
 
+def test_coordinator_job_to_env_forwards_base_leaf_id():
+    from coordinator.coordinator import job_to_env
+
+    env = job_to_env(
+        {
+            "project_id": "p1",
+            "ticket_id": "t1",
+            "repo_url": "https://github.com/org/repo",
+            "job_id": "j1",
+            "kind": "ticket",
+            "base_leaf_id": "leaf_01HZX3BASE0123456789ABCDEFG",
+            "base_hash": "b" * 40,
+            "agenthub_root_hash": "f" * 40,
+        },
+        for_docker=False,
+    )
+
+    assert env["BASE_LEAF_ID"] == "leaf_01HZX3BASE0123456789ABCDEFG"
+    assert env["BASE_HASH"] == "b" * 40
+    assert env["AGENTHUB_ROOT_HASH"] == "f" * 40
+
+
+def test_coordinator_job_to_env_does_not_use_project_path_for_local_swarm_jobs():
+    from coordinator.coordinator import job_to_env
+
+    env = job_to_env(
+        {
+            "project_id": "p1",
+            "ticket_id": "t1",
+            "repo_url": "https://github.com/org/repo",
+            "job_id": "j1",
+            "kind": "ticket",
+            "execution_mode": "local",
+            "git_mode": "swarm",
+            "project_path": "/repo/local-checkout",
+            "base_leaf_id": "leaf_01HZX3BASE0123456789ABCDEFG",
+        },
+        for_docker=False,
+    )
+
+    assert env["BASE_LEAF_ID"] == "leaf_01HZX3BASE0123456789ABCDEFG"
+    assert "AGENT_WORKSPACE" not in env
+
+
 def test_coordinator_job_to_env_uses_base_hash_as_root_fallback():
     from coordinator.coordinator import job_to_env
 
@@ -428,7 +472,7 @@ def test_coordinator_job_to_env_uses_base_hash_as_root_fallback():
     assert env["AGENTHUB_ROOT_HASH"] == "b" * 40
 
 
-def test_job_to_response_uses_local_repo_head_when_frontier_missing(app, tmp_path):
+def test_job_to_response_uses_ticket_base_leaf_for_swarm_jobs(app, tmp_path):
     from api.services.job_service import job_to_response
     from models.db import AgentJob, Project, Ticket, db
 
@@ -462,6 +506,7 @@ def test_job_to_response_uses_local_repo_head_when_frontier_missing(app, tmp_pat
             column_id="queued",
             title="Local job",
             intent_status="ready",
+            base_leaf_id="leaf_01HZX3TICKETBASE0123456789ABC",
         )
         db.session.add(ticket)
         db.session.flush()
@@ -476,12 +521,14 @@ def test_job_to_response_uses_local_repo_head_when_frontier_missing(app, tmp_pat
 
         payload = job_to_response(job)
 
-    assert payload["base_hash"] == head_hash
-    assert payload["agenthub_root_hash"] == head_hash
-    assert payload["base_selection"]["base_source"] == "project_head"
+    assert payload["base_leaf_id"] == "leaf_01HZX3TICKETBASE0123456789ABC"
+    assert payload["base_hash"] == "leaf_01HZX3TICKETBASE0123456789ABC"
+    assert payload["agenthub_root_hash"] == "leaf_01HZX3TICKETBASE0123456789ABC"
+    assert payload["base_selection"]["base_source"] == "ticket_base_leaf"
+    assert payload["project_path"] == str(repo)
 
 
-def test_prepare_local_job_raises_when_agenthub_base_missing_and_no_repo_path():
+def test_prepare_local_job_raises_when_agenthub_base_is_unfetchable():
     from agenthub_preflight import AgenthubPreflightError, prepare_local_job
 
     missing = MagicMock()
@@ -490,12 +537,12 @@ def test_prepare_local_job_raises_when_agenthub_base_missing_and_no_repo_path():
     missing.json.return_value = {"exists": False, "bundle_fetchable": False}
 
     with patch("agenthub_preflight.requests.get", return_value=missing):
-        with pytest.raises(AgenthubPreflightError, match="missing base commit"):
+        with pytest.raises(AgenthubPreflightError, match="missing or not fetchable"):
             prepare_local_job(
                 {
                     "execution_mode": "local",
                     "git_mode": "swarm",
-                    "base_hash": "a" * 40,
+                    "base_leaf_id": "leaf_01HZX3BASE0123456789ABCDEFG",
                 },
                 env={"AGENTHUB_URL": "http://agenthub:8088", "AGENTHUB_API_KEY": "secret"},
             )

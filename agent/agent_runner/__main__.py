@@ -13,6 +13,11 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from middle_agent.git_backend import (
+    AgentHubMaterializationError,
+    materialize_workspace_from_agenthub,
+)
+
 
 def _env(key: str, required: bool = True) -> str:
     val = (os.environ.get(key) or "").strip()
@@ -80,10 +85,18 @@ def run_ticket() -> None:
         print(f"Error: invalid TICKET_ID or PROJECT_ID: {e}", file=sys.stderr)
         sys.exit(1)
 
+    base_leaf_id = (os.environ.get("BASE_LEAF_ID") or "").strip()
+    base_hash = (os.environ.get("BASE_HASH") or "").strip()
     work_dir = (os.environ.get("AGENT_WORKSPACE") or "").strip()
-    if work_dir and os.path.isdir(work_dir):
-        # Local execution mode: use existing workspace as-is.
-        # prepare_work() will checkout BASE_HASH if set.
+    if base_leaf_id or base_hash:
+        base_ref = base_leaf_id or base_hash
+        try:
+            work_dir = materialize_workspace_from_agenthub(base_ref)
+        except AgentHubMaterializationError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+    elif work_dir and os.path.isdir(work_dir):
+        # Explicit local/debug execution mode: use the provided workspace as-is.
         pass
     else:
         # Docker or default: clone from REPO_URL.

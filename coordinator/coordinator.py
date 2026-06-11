@@ -113,7 +113,7 @@ _COORDINATOR_AGENT_ENV_KEYS = (
     "TERARCHITECT_WORKER_API_KEY",
     "OPENCODE_SERVER_URL", "OPENCODE_SERVER_USERNAME", "OPENCODE_SERVER_PASSWORD",
     "AGENTHUB_URL", "AGENTHUB_API_KEY", "AGENTHUB_AGENT_ID",
-    "BASE_HASH", "AGENTHUB_ROOT_HASH",
+    "BASE_LEAF_ID", "BASE_HASH", "AGENTHUB_ROOT_HASH",
 )
 
 def _headers() -> dict:
@@ -386,6 +386,8 @@ def job_to_env(job: dict, for_docker: bool = False) -> dict:
     env["JOB_ID"] = str(job.get("job_id", ""))
     env["JOB_KIND"] = str(job.get("kind", "ticket"))
     env["TERARCHITECT_MODE"] = "swarm"
+    if job.get("base_leaf_id"):
+        env["BASE_LEAF_ID"] = str(job["base_leaf_id"])
     # AgentHub DAG selection: ticket jobs always receive an explicit base commit
     # and the current shipped root without any wave-derived meaning.
     if job.get("base_hash"):
@@ -393,8 +395,15 @@ def job_to_env(job: dict, for_docker: bool = False) -> dict:
     root_hash = job.get("agenthub_root_hash") or job.get("shipped_frontier") or job.get("base_hash")
     if root_hash:
         env["AGENTHUB_ROOT_HASH"] = str(root_hash)
-    # When execution_mode=local, agent runs on host and uses this path instead of cloning
-    if job.get("execution_mode") == "local" and job.get("project_path"):
+    # Explicit workspace paths are only for local debug/import paths, not DAG-backed swarm jobs.
+    workspace_path = (job.get("workspace_path") or "").strip()
+    if workspace_path:
+        env["AGENT_WORKSPACE"] = workspace_path
+    elif (
+        job.get("execution_mode") == "local"
+        and (job.get("git_mode") or "swarm") != "swarm"
+        and job.get("project_path")
+    ):
         env["AGENT_WORKSPACE"] = str(job["project_path"]).strip()
     # App URL: coordinator uses it to claim jobs; container needs to reach host
     if "TERARCHITECT_API_URL" not in env or not env["TERARCHITECT_API_URL"]:

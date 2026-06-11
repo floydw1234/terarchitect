@@ -43,19 +43,21 @@ def seed_commit_from_repo(repo_path: str, commit_hash: str, base_url: str, api_k
 
 
 def prepare_local_job(job: Mapping[str, Any], *, env: Mapping[str, str] | None = None) -> dict[str, Any]:
-    """Return a local swarm job with an explicit base and verified AgentHub lineage."""
+    """Return a local swarm job with a verified AgentHub base leaf."""
     prepared = dict(job)
     run_env = env or os.environ
+    base_leaf_id = (prepared.get("base_leaf_id") or "").strip() or None
     explicit_base = (prepared.get("base_hash") or "").strip() or None
     shipped_frontier = (prepared.get("shipped_frontier") or "").strip() or None
-    project_path = (prepared.get("project_path") or "").strip() or None
-    base_hash = explicit_base or shipped_frontier or read_git_head(project_path)
+    base_hash = base_leaf_id or explicit_base or shipped_frontier
+    if base_leaf_id:
+        prepared["base_leaf_id"] = base_leaf_id
     if base_hash:
         prepared["base_hash"] = base_hash
     root_hash = (
         (prepared.get("agenthub_root_hash") or "").strip()
-        or shipped_frontier
         or base_hash
+        or shipped_frontier
     )
     if root_hash:
         prepared["agenthub_root_hash"] = root_hash
@@ -65,10 +67,9 @@ def prepare_local_job(job: Mapping[str, Any], *, env: Mapping[str, str] | None =
     if (prepared.get("git_mode") or "swarm").strip().lower() != "swarm":
         return prepared
 
-    if not base_hash:
+    if not base_leaf_id:
         raise AgenthubPreflightError(
-            "Local swarm run requires an explicit base commit. "
-            "Set the project's shipped frontier or point project_path at a git checkout with a readable HEAD."
+            "Local swarm run requires ticket.base_leaf_id so the workspace can be materialized from AgentHub."
         )
 
     agenthub_url = (run_env.get("AGENTHUB_URL") or "").strip()
@@ -82,26 +83,11 @@ def prepare_local_job(job: Mapping[str, Any], *, env: Mapping[str, str] | None =
         receipt = _agenthub_receipt(agenthub_url, agenthub_api_key, base_hash)
     except requests.RequestException as exc:
         raise AgenthubPreflightError(
-            f"Could not verify whether AgentHub already has base commit {base_hash[:12]}: {exc}"
+            f"Could not verify whether AgentHub already has base leaf {base_hash[:12]}: {exc}"
         ) from exc
     if receipt.get("exists") and receipt.get("bundle_fetchable", True):
         return prepared
 
-    if not project_path:
-        raise AgenthubPreflightError(
-            f"AgentHub is missing base commit {base_hash[:12]} and no project_path is available for seeding."
-        )
-
-    seed_commit_from_repo(project_path, base_hash, agenthub_url, agenthub_api_key)
-
-    try:
-        receipt = _agenthub_receipt(agenthub_url, agenthub_api_key, base_hash)
-    except requests.RequestException as exc:
-        raise AgenthubPreflightError(
-            f"Seeded base commit {base_hash[:12]} but could not verify it in AgentHub: {exc}"
-        ) from exc
-    if not (receipt.get("exists") and receipt.get("bundle_fetchable", True)):
-        raise AgenthubPreflightError(
-            f"AgentHub still does not expose base commit {base_hash[:12]} after the seed attempt."
-        )
-    return prepared
+    raise AgenthubPreflightError(
+        f"AgentHub base leaf {base_hash[:12]} is missing or not fetchable."
+    )

@@ -18,12 +18,17 @@ Env vars consumed:
 """
 
 import os
+import shutil
 import subprocess
 import tempfile
 import json
 from typing import Any, Optional
 
 import requests
+
+
+class AgentHubMaterializationError(RuntimeError):
+    """Raised when a clean worker workspace cannot be materialized from AgentHub."""
 
 
 def _ticket_channel(ticket_id: str) -> str:
@@ -49,6 +54,35 @@ def _ah_key() -> str:
 
 def _ah_headers() -> dict:
     return {"Authorization": f"Bearer {_ah_key()}"}
+
+
+def _fetch_bundle_to_dir(commit_hash: str, dest_dir: str) -> str:
+    url = _ah_url()
+    if not url:
+        raise AgentHubMaterializationError(
+            "AGENTHUB_URL is required to materialize a worker workspace from AgentHub."
+        )
+    try:
+        resp = requests.get(
+            f"{url}/api/git/fetch/{commit_hash}",
+            headers=_ah_headers(),
+            timeout=120,
+            stream=True,
+        )
+    except Exception as exc:
+        raise AgentHubMaterializationError(
+            f"AgentHub fetch failed for base leaf {commit_hash[:12]}: {exc}"
+        ) from exc
+    if not resp.ok:
+        raise AgentHubMaterializationError(
+            f"AgentHub fetch failed for base leaf {commit_hash[:12]} with status {resp.status_code}."
+        )
+
+    bundle_path = os.path.join(dest_dir, f"{commit_hash[:12]}.bundle")
+    with open(bundle_path, "wb") as handle:
+        for chunk in resp.iter_content(chunk_size=8192):
+            handle.write(chunk)
+    return bundle_path
 
 
 def _ah_get(path: str) -> Optional[Any]:
@@ -154,12 +188,14 @@ def _retry_ah_push_with_full_bundle(project_path: str, env: dict[str, str]) -> s
             env=env,
         )
         if remote_r.returncode != 0:
-            print(
-                f"[git_backend] Full-bundle retry could not remove origin from temp clone: "
-                f"{_format_subprocess_output(remote_r)[:300]}",
-                flush=True,
-            )
-            return remote_r
+            remote_error = _format_subprocess_output(remote_r).lower()
+            if "no such remote" not in remote_error:
+                print(
+                    f"[git_backend] Full-bundle retry could not remove origin from temp clone: "
+                    f"{_format_subprocess_output(remote_r)[:300]}",
+                    flush=True,
+                )
+                return remote_r
 
         retry_r = _run_ah_push(clone_path, env)
         if retry_r.returncode == 0:
@@ -206,6 +242,74 @@ def get_peer_context(ticket_id: str) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
+def materialize_workspace_from_agenthub(
+    base_leaf_id: str,
+    *,
+    parent_dir: str | None = None,
+    branch_name: str | None = None,
+) -> str:
+    """Create a clean disposable workspace from an AgentHub base leaf."""
+    base_ref = (base_leaf_id or "").strip()
+    if not base_ref:
+        raise AgentHubMaterializationError("base_leaf_id is required to materialize a worker workspace.")
+
+    workspace_root = tempfile.mkdtemp(prefix="terarchitect_worker_", dir=parent_dir)
+    workspace_path = os.path.join(workspace_root, "repo")
+    os.makedirs(workspace_path, exist_ok=True)
+    bundle_path = None
+    try:
+        init_r = subprocess.run(
+            ["git", "init"],
+            cwd=workspace_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if init_r.returncode != 0:
+            raise AgentHubMaterializationError(
+                f"Could not initialize workspace for base leaf {base_ref[:12]}: "
+                f"{_format_subprocess_output(init_r)[:300]}"
+            )
+
+        bundle_path = _fetch_bundle_to_dir(base_ref, workspace_root)
+        unbundle_r = subprocess.run(
+            ["git", "bundle", "unbundle", bundle_path],
+            cwd=workspace_path,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if unbundle_r.returncode != 0:
+            raise AgentHubMaterializationError(
+                f"Could not unbundle AgentHub base leaf {base_ref[:12]}: "
+                f"{_format_subprocess_output(unbundle_r)[:300]}"
+            )
+
+        branch = branch_name or (f"ticket-{(os.environ.get('TICKET_ID') or '').strip()}" if os.environ.get("TICKET_ID") else "swarm-work")
+        checkout_r = subprocess.run(
+            ["git", "checkout", "-B", branch, base_ref],
+            cwd=workspace_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if checkout_r.returncode != 0:
+            raise AgentHubMaterializationError(
+                f"Could not checkout AgentHub base leaf {base_ref[:12]}: "
+                f"{_format_subprocess_output(checkout_r)[:300]}"
+            )
+        return workspace_path
+    except Exception:
+        shutil.rmtree(workspace_root, ignore_errors=True)
+        raise
+    finally:
+        if bundle_path:
+            try:
+                os.unlink(bundle_path)
+            except OSError:
+                pass
+
+
 # ---------------------------------------------------------------------------
 # prepare_work — called before the worker starts (swarm only)
 # ---------------------------------------------------------------------------
@@ -223,7 +327,7 @@ def prepare_work(project_path: str) -> None:
     if not is_swarm():
         return
 
-    base_hash = (os.environ.get("BASE_HASH") or "").strip()
+    base_hash = (os.environ.get("BASE_LEAF_ID") or "").strip() or (os.environ.get("BASE_HASH") or "").strip()
     ticket_id = (os.environ.get("TICKET_ID") or "").strip()
     project_id = (os.environ.get("PROJECT_ID") or "").strip()
     root_hash = (os.environ.get("AGENTHUB_ROOT_HASH") or "").strip()
