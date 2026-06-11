@@ -94,6 +94,7 @@ export interface Ticket {
   id: string;
   project_id: string;
   column_id: string;
+  base_leaf_id?: string | null;
   title: string;
   description?: string;
   associated_node_ids?: string[];
@@ -514,6 +515,7 @@ export async function getTickets(projectId: string): Promise<Ticket[]> {
 export async function createTicket(projectId: string, data: {
   column_id: string;
   title: string;
+  base_leaf_id?: string;
   description?: string;
   associated_node_ids?: string[];
   associated_edge_ids?: string[];

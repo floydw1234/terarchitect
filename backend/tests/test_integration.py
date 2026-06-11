@@ -828,6 +828,7 @@ def test_independent_ticket_dispatches_from_frontier_base(client, project):
             column_id="queued",
             title="Independent",
             intent_status="ready",
+            base_leaf_id=project["accepted_frontier_id"],
         )
         db.session.add(ticket)
         db.session.commit()
@@ -856,7 +857,13 @@ def test_single_dependency_ticket_dispatches_from_parent_attempt_base(client, pr
         from models.db import Project
         proj = db.session.get(Project, pid)
         proj.shipped_frontier = frontier
-        parent = Ticket(project_id=pid, column_id="done", title="Parent", intent_status="active")
+        parent = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Parent",
+            intent_status="active",
+            base_leaf_id=project["accepted_frontier_id"],
+        )
         db.session.add(parent)
         db.session.flush()
         parent_id = str(parent.id)
@@ -866,6 +873,7 @@ def test_single_dependency_ticket_dispatches_from_parent_attempt_base(client, pr
             title="Child",
             intent_status="ready",
             depends_on_ticket_ids=[parent_id],
+            base_leaf_id=project["accepted_frontier_id"],
         )
         db.session.add(child)
         db.session.flush()
@@ -907,7 +915,13 @@ def test_shipped_dependency_ticket_dispatches_from_current_frontier(client, proj
     with client.application.app_context():
         proj = db.session.get(Project, pid)
         proj.shipped_frontier = frontier
-        parent = Ticket(project_id=pid, column_id="done", title="Parent", intent_status="active")
+        parent = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Parent",
+            intent_status="active",
+            base_leaf_id=project["accepted_frontier_id"],
+        )
         db.session.add(parent)
         db.session.flush()
         parent_id = str(parent.id)
@@ -917,6 +931,7 @@ def test_shipped_dependency_ticket_dispatches_from_current_frontier(client, proj
             title="Child",
             intent_status="ready",
             depends_on_ticket_ids=[parent_id],
+            base_leaf_id=project["accepted_frontier_id"],
         )
         db.session.add(child)
         db.session.flush()

@@ -100,6 +100,8 @@ class Ticket(db.Model):
     status = db.Column(db.String(50), default="todo")
     failed_count = db.Column(db.Integer, default=0, nullable=False)
     depends_on_ticket_ids = db.Column(JSON_TYPE, default=list)
+    # Canonical AgentHub base leaf for this ticket's execution lineage.
+    base_leaf_id = db.Column(db.String(255))
     # Intent fields (Phase 2 — tickets as first-class intent objects)
     # intent_status: draft | ready | active | blocked | archived
     intent_status = db.Column(db.String(50), nullable=False, default="ready")

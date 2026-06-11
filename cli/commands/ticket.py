@@ -91,6 +91,8 @@ def register(subparsers) -> None:
                     choices=["draft", "ready", "active", "blocked", "archived"],
                     default="ready",
                     help="Intent status (default: ready)")
+    cr.add_argument("--base-leaf-id", dest="base_leaf_id",
+                    help="Explicit AgentHub base leaf for this ticket")
 
     # show
     sh = sub.add_parser("show", help="Show ticket details")
@@ -225,6 +227,7 @@ def _cmd_create(args, api: API) -> None:
             "rationale": getattr(args, "rationale", None),
             "acceptance_criteria": getattr(args, "acceptance_criteria", None),
             "constraints": getattr(args, "constraints", None),
+            "base_leaf_id": getattr(args, "base_leaf_id", None),
             "column_id": args.column,
             "priority": args.priority,
             "intent_status": getattr(args, "intent_status", "ready"),
@@ -249,6 +252,7 @@ def _cmd_create(args, api: API) -> None:
             "rationale": td.get("rationale"),
             "acceptance_criteria": td.get("acceptance_criteria"),
             "constraints": td.get("constraints"),
+            "base_leaf_id": td.get("base_leaf_id"),
         }
         try:
             ticket = api.post(f"/api/projects/{args.project_id}/tickets", payload)

@@ -36,7 +36,12 @@ def project(client):
     """Swarm project."""
     resp = client.post(
         "/api/projects",
-        json={"name": "test-proj", "git_mode": "swarm", "is_existing_repo": True},
+        json={
+            "name": "test-proj",
+            "git_mode": "swarm",
+            "accepted_frontier_id": "leaf_01HZX3FIXTURE0123456789ABCDE",
+            "is_existing_repo": True,
+        },
     )
     assert resp.status_code == 201
     return resp.get_json()

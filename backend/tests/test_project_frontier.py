@@ -204,3 +204,126 @@ def test_import_agenthub_root_requires_project_path(client):
 
     assert response.status_code == 400
     assert "project_path" in response.get_json()["error"]
+
+
+def test_create_ticket_defaults_base_leaf_id_from_project_frontier(client):
+    frontier_id = "leaf_01HZX3ABCD9EF0123456789XYZ"
+    create_project = client.post(
+        "/api/projects",
+        json={
+            "name": "ticket-frontier-default",
+            "git_mode": "swarm",
+            "accepted_frontier_id": frontier_id,
+            "is_existing_repo": True,
+        },
+    )
+    assert create_project.status_code == 201
+    project_id = create_project.get_json()["id"]
+
+    response = client.post(
+        f"/api/projects/{project_id}/tickets",
+        json={
+            "title": "Default base leaf",
+            "column_id": "backlog",
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload["base_leaf_id"] == frontier_id
+
+    detail = client.get(f"/api/projects/{project_id}/tickets/{payload['id']}")
+    assert detail.status_code == 200
+    assert detail.get_json()["base_leaf_id"] == frontier_id
+
+
+def test_create_ticket_accepts_explicit_base_leaf_id(client):
+    project_response = client.post(
+        "/api/projects",
+        json={
+            "name": "ticket-explicit-base",
+            "git_mode": "swarm",
+            "accepted_frontier_id": "leaf_01HZX3PROJECTDEFAULT01234567",
+            "is_existing_repo": True,
+        },
+    )
+    assert project_response.status_code == 201
+    project_id = project_response.get_json()["id"]
+    explicit_base_leaf_id = "leaf_01HZX3TICKETBASE0123456789ABC"
+
+    response = client.post(
+        f"/api/projects/{project_id}/tickets",
+        json={
+            "title": "Explicit base leaf",
+            "column_id": "backlog",
+            "base_leaf_id": explicit_base_leaf_id,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.get_json()["base_leaf_id"] == explicit_base_leaf_id
+
+
+def test_create_ticket_requires_explicit_base_leaf_when_project_has_no_frontier(client):
+    project_response = client.post(
+        "/api/projects",
+        json={
+            "name": "ticket-missing-base",
+            "git_mode": "swarm",
+            "is_existing_repo": True,
+        },
+    )
+    assert project_response.status_code == 201
+    project_id = project_response.get_json()["id"]
+
+    response = client.post(
+        f"/api/projects/{project_id}/tickets",
+        json={
+            "title": "Missing base leaf",
+            "column_id": "backlog",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "base_leaf_id is required for swarm projects" in response.get_json()["error"]
+
+
+def test_run_ticket_fails_clearly_when_swarm_ticket_has_no_base_leaf_id(client):
+    create_project = client.post(
+        "/api/projects",
+        json={
+            "name": "ticket-run-missing-base",
+            "git_mode": "swarm",
+            "github_url": "https://github.com/example/repo",
+            "is_existing_repo": True,
+        },
+    )
+    assert create_project.status_code == 201
+    project_id = create_project.get_json()["id"]
+
+    client.put(
+        f"/api/projects/{project_id}/graph",
+        json={"nodes": [{"id": "node-1", "label": "Node 1"}], "edges": []},
+    )
+
+    from models.db import Ticket, db
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=project_id,
+            column_id="backlog",
+            title="Legacy ticket without base",
+            intent_status="ready",
+            base_leaf_id=None,
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+
+    with patch("api.routes.check_execution_readiness", return_value=(True, [])):
+        response = client.patch(
+            f"/api/projects/{project_id}/tickets/{ticket_id}",
+            json={"column_id": "in_progress"},
+        )
+
+    assert response.status_code == 400
+    assert "base_leaf_id is required for swarm projects" in response.get_json()["error"]

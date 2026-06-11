@@ -62,7 +62,9 @@ from .services.agenthub_import_service import (
 from .services.ticket_service import (
     dispatch_unblocked_queued as _dispatch_unblocked_queued,
     enqueue_ticket_job as _enqueue_ticket_job,
+    resolve_ticket_base_leaf_id as _resolve_ticket_base_leaf_id,
     ticket_to_json as _ticket_to_json,
+    validate_ticket_base_leaf as _validate_ticket_base_leaf,
 )
 from .services.attempt_service import (
     SATISFIED_STATUSES as _SATISFIED_STATUSES,
@@ -1552,6 +1554,17 @@ def tickets(project_id):
         data = request.json or {}
         if not data.get("title") or not data.get("column_id"):
             return jsonify({"error": "title and column_id are required"}), 400
+        project = db.session.get(Project, project_id)
+        if not project:
+            return jsonify({"error": "Project not found"}), 404
+        base_leaf_id = _resolve_ticket_base_leaf_id(
+            project,
+            data.get("base_leaf_id"),
+            explicit_provided="base_leaf_id" in data,
+        )
+        valid, error = _validate_ticket_base_leaf(project, base_leaf_id)
+        if not valid:
+            return jsonify({"error": error}), 400
         ticket = Ticket(
             project_id=project_id,
             column_id=data["column_id"],
@@ -1569,6 +1582,7 @@ def tickets(project_id):
             value_score=data.get("value_score"),
             risk_level=data.get("risk_level"),
             created_source=data.get("created_source", "manual"),
+            base_leaf_id=base_leaf_id,
         )
         db.session.add(ticket)
         db.session.commit()
@@ -1595,6 +1609,9 @@ def ticket_detail(project_id, ticket_id):
             project = db.session.get(Project, project_id)
             if not project:
                 return jsonify({"error": "Project not found"}), 404
+            valid, error = _validate_ticket_base_leaf(project, getattr(ticket, "base_leaf_id", None))
+            if not valid:
+                return jsonify({"error": error}), 400
             execution_mode = getattr(project, "execution_mode", None) or "docker"
             if execution_mode == "local":
                 if not (project.project_path or "").strip():

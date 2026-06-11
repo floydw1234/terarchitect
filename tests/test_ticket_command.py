@@ -5,9 +5,11 @@ from cli.commands import ticket as ticket_cmd
 
 
 class StubAPI:
-    def __init__(self, *, patch_response=None, get_responses=None):
+    def __init__(self, *, patch_response=None, get_responses=None, post_response=None):
         self.patch_response = patch_response or {}
         self.get_responses = list(get_responses or [])
+        self.post_response = post_response or {}
+        self.posts = []
 
     def patch(self, path, body):
         return self.patch_response
@@ -16,6 +18,10 @@ class StubAPI:
         if not self.get_responses:
             raise AssertionError(f"Unexpected GET {path}")
         return self.get_responses.pop(0)
+
+    def post(self, path, body):
+        self.posts.append((path, body))
+        return self.post_response or {"id": "ticket-1", **body}
 
 
 def test_ticket_run_wait_prints_structured_final_receipt(capsys, monkeypatch):
@@ -60,6 +66,53 @@ def test_ticket_run_wait_prints_structured_final_receipt(capsys, monkeypatch):
     assert "abc123def456" in stdout
     assert "pytest -q passed" in stdout
     assert "ta ticket attempts proj-1 ticket-1" in stdout
+
+
+def test_ticket_create_passes_explicit_base_leaf_id(capsys):
+    api = StubAPI(post_response={
+        "id": "ticket-1",
+        "title": "CLI ticket",
+        "column_id": "backlog",
+        "base_leaf_id": "leaf_01HZX3CLI0123456789ABCDEFG",
+    })
+    args = SimpleNamespace(
+        file=None,
+        title="CLI ticket",
+        description=None,
+        rationale=None,
+        acceptance_criteria=None,
+        constraints=None,
+        column="backlog",
+        priority="medium",
+        intent_status="ready",
+        base_leaf_id="leaf_01HZX3CLI0123456789ABCDEFG",
+        project_id="proj-1",
+        output="human",
+    )
+
+    ticket_cmd._cmd_create(args, api)
+
+    assert api.posts == [
+        (
+            "/api/projects/proj-1/tickets",
+            {
+                "title": "CLI ticket",
+                "column_id": "backlog",
+                "description": None,
+                "priority": "medium",
+                "status": "todo",
+                "associated_node_ids": [],
+                "associated_edge_ids": [],
+                "depends_on_ticket_ids": [],
+                "intent_status": "ready",
+                "rationale": None,
+                "acceptance_criteria": None,
+                "constraints": None,
+                "base_leaf_id": "leaf_01HZX3CLI0123456789ABCDEFG",
+            },
+        )
+    ]
+    assert "Created ticket ticket-1" in capsys.readouterr().out
 
 
 def test_ticket_logs_renders_structured_failure_event_and_next_commands(capsys):

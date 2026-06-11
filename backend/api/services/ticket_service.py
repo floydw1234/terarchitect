@@ -4,6 +4,11 @@ from typing import Optional
 from flask import current_app
 
 from models.db import db, Project, Ticket, AgentJob, TicketAttempt
+from .project_service import (
+    get_project_frontier_id as _get_project_frontier_id,
+    normalize_frontier_id as _normalize_frontier_id,
+    validate_project_frontier_candidate as _validate_project_frontier_candidate,
+)
 from .attempt_service import SATISFIED_STATUSES as _SATISFIED_STATUSES
 from .channel_service import (
     ticket_channel as _ticket_channel,
@@ -18,6 +23,34 @@ def _has_accepted_attempt(ticket_id) -> bool:
     return TicketAttempt.query.filter_by(ticket_id=ticket_id).filter(
         TicketAttempt.status.in_(_SATISFIED_STATUSES)
     ).first() is not None
+
+
+def resolve_ticket_base_leaf_id(project: Project | None, explicit_value, *, explicit_provided: bool) -> str | None:
+    """Resolve ticket base leaf from explicit input or the project's accepted frontier."""
+    if explicit_provided:
+        return _normalize_frontier_id(explicit_value)
+    return _get_project_frontier_id(project) if project else None
+
+
+def validate_ticket_base_leaf(project: Project | None, base_leaf_id) -> tuple[bool, str | None]:
+    normalized = _normalize_frontier_id(base_leaf_id)
+    git_mode = (getattr(project, "git_mode", None) or "swarm").strip().lower() if project else "swarm"
+
+    if git_mode != "swarm":
+        if normalized is None:
+            return True, None
+        return False, "base_leaf_id is only valid for swarm projects"
+
+    if normalized is None:
+        return (
+            False,
+            "base_leaf_id is required for swarm projects; set project.accepted_frontier_id or provide base_leaf_id explicitly",
+        )
+
+    valid, error = _validate_project_frontier_candidate(project, normalized)
+    if valid:
+        return True, None
+    return False, (error or "base_leaf_id is invalid").replace("accepted_frontier_id", "base_leaf_id")
 
 
 def compute_ticket_display_state(
@@ -109,6 +142,7 @@ def ticket_to_json(t: Ticket) -> dict:
         "status": t.status,
         "failed_count": t.failed_count or 0,
         "depends_on_ticket_ids": t.depends_on_ticket_ids or [],
+        "base_leaf_id": getattr(t, "base_leaf_id", None),
         # Intent fields
         "intent_status": getattr(t, "intent_status", None) or "ready",
         "rationale": getattr(t, "rationale", None),
@@ -235,6 +269,11 @@ def enqueue_ticket_job(ticket_id):
 
     is_swarm = (getattr(project, "git_mode", None) or "swarm") == "swarm"
     if is_swarm:
+        valid, error = validate_ticket_base_leaf(project, getattr(ticket, "base_leaf_id", None))
+        if not valid:
+            current_app.logger.info("Skipping enqueue: ticket %s invalid base leaf: %s", ticket_id, error)
+            return
+    if is_swarm:
         base_context = _mvp_dependency_base_context(ticket, project)
         if base_context.get("blocked") and not base_context.get("base_hash"):
             current_app.logger.info(
@@ -294,6 +333,14 @@ def dispatch_unblocked_queued(project_id):
         if dep_ids and not all(_has_accepted_attempt(d) for d in dep_ids):
             continue
         if is_swarm:
+            valid, error = validate_ticket_base_leaf(project, getattr(t, "base_leaf_id", None))
+            if not valid:
+                current_app.logger.info(
+                    "dispatch waiting ticket=%s invalid_base_leaf=%s",
+                    t.id,
+                    error,
+                )
+                continue
             base_context = _mvp_dependency_base_context(t, project)
             if base_context.get("blocked") and not base_context.get("base_hash"):
                 current_app.logger.info(
