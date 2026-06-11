@@ -24,6 +24,7 @@ import {
   getShipWaves,
   getTicketAttempts,
   rejectAttempt,
+  rerunTicketFromCurrentFrontier,
   sendCandidateFeedback,
   shipCandidate,
   shipWave,
@@ -35,6 +36,7 @@ import {
   type WaveDetail,
   type WaveSummary,
 } from '../utils/api';
+import { LineageField, formatLineageId } from '../components/LineageField';
 
 const STATUS_COLOR: Record<string, 'default' | 'info' | 'warning' | 'success' | 'error'> = {
   queued: 'info',
@@ -288,7 +290,22 @@ function AttemptReviewCard({
   const [busyAttemptId, setBusyAttemptId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
-  const handleAttemptAction = async (attempt: TicketAttempt, action: 'accept' | 'reject') => {
+  const handleAttemptAction = async (attempt: TicketAttempt, action: 'accept' | 'reject' | 'rerun') => {
+    if (action === 'rerun') {
+      setBusyAttemptId(attempt.id);
+      setMessage(null);
+      try {
+        await rerunTicketFromCurrentFrontier(projectId, attempt.ticket_id);
+        setMessage(`Requeued ticket from current frontier for attempt #${attempt.attempt_num}.`);
+        await onActionComplete();
+      } catch (e: any) {
+        setMessage(e.message);
+      } finally {
+        setBusyAttemptId(null);
+      }
+      return;
+    }
+
     const lockReason = getAttemptReviewLockReason(attempt, shipRunStatus);
     if (lockReason) {
       setMessage(lockReason);
@@ -352,11 +369,7 @@ function AttemptReviewCard({
                   <Typography variant="caption" color="text.secondary">
                     attempt #{attempt.attempt_num}
                   </Typography>
-                  {attempt.base_hash && (
-                    <Typography variant="caption" color="text.secondary">
-                      base <code>{formatShortHash(attempt.base_hash)}</code>
-                    </Typography>
-                  )}
+                  {attempt.stale && <Chip label="stale" size="small" color="warning" variant="outlined" />}
                   {attempt.test_status && (
                     <Chip
                       label={`tests: ${attempt.test_status}`}
@@ -374,9 +387,20 @@ function AttemptReviewCard({
                   </Button>
                 </Stack>
 
+                <Stack spacing={0.25} sx={{ mt: 0.75 }}>
+                  <LineageField label="leaf" value={attempt.agenthub_commit_hash} stopPropagation />
+                  <LineageField label="base" value={attempt.base_leaf_id ?? attempt.base_hash} stopPropagation />
+                  <LineageField label="parent" value={attempt.parent_leaf_id ?? attempt.base_hash} stopPropagation />
+                </Stack>
+
                 {attempt.summary && (
                   <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75 }}>
                     {attempt.summary.slice(0, 180)}{attempt.summary.length > 180 ? '…' : ''}
+                  </Typography>
+                )}
+                {attempt.stale_reason && (
+                  <Typography variant="caption" color="warning.main" sx={{ display: 'block', mt: 0.75 }}>
+                    {attempt.stale_reason}
                   </Typography>
                 )}
 
@@ -400,6 +424,17 @@ function AttemptReviewCard({
                   >
                     Reject
                   </Button>
+                  {attempt.stale && (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="warning"
+                      onClick={() => handleAttemptAction(attempt, 'rerun')}
+                      disabled={busy}
+                    >
+                      Rerun from frontier
+                    </Button>
+                  )}
                   {lockReason && (
                     <Typography variant="caption" color="text.secondary">
                       {lockReason}
@@ -609,6 +644,7 @@ function CandidateDetailPanel({
                   <Typography variant="caption" color="text.secondary">
                     attempt #{attempt.attempt_num}
                   </Typography>
+                  {attempt.stale && <Chip label="stale" size="small" color="warning" variant="outlined" />}
                   <Button
                     component={Link}
                     to={`/projects/${projectId}/tickets/${attempt.ticket_id}/attempts/${attempt.id}`}
@@ -617,9 +653,19 @@ function CandidateDetailPanel({
                     Inspect
                   </Button>
                 </Stack>
+                <Stack spacing={0.25} sx={{ mt: 0.75 }}>
+                  <LineageField label="leaf" value={attempt.agenthub_commit_hash} stopPropagation />
+                  <LineageField label="base" value={attempt.base_leaf_id ?? attempt.base_hash} stopPropagation />
+                  <LineageField label="parent" value={attempt.parent_leaf_id ?? attempt.base_hash} stopPropagation />
+                </Stack>
                 {candidate.shipRun?.status === 'shipped' && (
                   <Typography variant="caption" color="success.main" sx={{ display: 'block', mt: 0.75 }}>
                     Selected attempt from the shipped candidate.
+                  </Typography>
+                )}
+                {attempt.stale_reason && (
+                  <Typography variant="caption" color="warning.main" sx={{ display: 'block', mt: 0.75 }}>
+                    {attempt.stale_reason}
                   </Typography>
                 )}
                 {attempt.summary && (
@@ -912,9 +958,13 @@ const ShipRoomPage: React.FC = () => {
 
       <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: '1fr', md: 'repeat(3, minmax(0, 1fr))' }, mb: 3 }}>
         <SummaryCard
-          label="Current shipped frontier"
-          value={formatShortHash(frontier?.shipped_frontier)}
-          detail={frontier?.frontier_warning ?? undefined}
+          label="Accepted AgentHub frontier"
+          value={formatLineageId(project?.accepted_frontier_id ?? frontier?.shipped_frontier)}
+          detail={
+            project?.shipped_frontier && project?.accepted_frontier_id && project.shipped_frontier !== project.accepted_frontier_id
+              ? `Shipped ${formatLineageId(project.shipped_frontier)}`
+              : frontier?.frontier_warning ?? undefined
+          }
         />
         <SummaryCard
           label="Promotion candidates"

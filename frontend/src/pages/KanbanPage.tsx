@@ -51,14 +51,17 @@ import {
   cancelTicketExecution,
   getExecutionReady,
   startProject,
+  rerunTicketFromCurrentFrontier,
   AGENTHUB_URL,
   ticketChannelName,
+  type Project,
   type Ticket,
   type KanbanColumn,
   type Note,
   type ExecutionLogEntry,
   type ReadyMissing,
 } from '../utils/api';
+import { LineageField } from '../components/LineageField';
 
 interface GraphNodeOption { id: string; label: string; }
 interface GraphEdgeOption { id: string; label: string; }
@@ -387,6 +390,7 @@ const KanbanPage: React.FC = () => {
   const [goLoading, setGoLoading] = useState(false);
   const [goResult, setGoResult] = useState<string | null>(null);
   const [gitMode, setGitMode] = useState<string>('swarm');
+  const [project, setProject] = useState<Project | null>(null);
 
   useEffect(() => {
     if (projectId) fetchKanban();
@@ -431,6 +435,7 @@ const KanbanPage: React.FC = () => {
         getProject(projectId),
       ]);
 
+      setProject(projectRes);
       setGitMode(projectRes.git_mode ?? 'swarm');
 
       const apiColumns =
@@ -867,6 +872,7 @@ const KanbanPage: React.FC = () => {
                       isBlocked={isTicketBlocked(ticket)}
                       allTickets={tickets}
                       onEdit={openEditTicket}
+                      onTicketUpdated={(updatedTicket) => setTickets((prev) => prev.map((t) => (t.id === updatedTicket.id ? updatedTicket : t)))}
                       onRun={handleRunTicket}
                       onDelete={handleDeleteTicket}
                     />
@@ -1039,6 +1045,17 @@ const KanbanPage: React.FC = () => {
             <DialogTitle>Edit ticket</DialogTitle>
             <DialogContent>
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
+                <Paper variant="outlined" sx={{ p: 1.5, bgcolor: 'background.default' }}>
+                  <Stack spacing={0.5}>
+                    <LineageField label="Ticket base" value={editTicket.base_leaf_id} />
+                    <LineageField label="Accepted frontier" value={editTicket.accepted_frontier_id ?? project?.accepted_frontier_id ?? project?.shipped_frontier} />
+                    {editTicket.stale !== null && editTicket.stale !== undefined && (
+                      <Typography variant="caption" color={editTicket.stale ? 'warning.main' : 'text.secondary'}>
+                        {editTicket.stale ? (editTicket.stale_reason || 'Ticket base differs from the current frontier.') : 'Ticket base matches the current frontier.'}
+                      </Typography>
+                    )}
+                  </Stack>
+                </Paper>
                 <TextField
                   label="Title"
                   value={editTitle}
@@ -1440,6 +1457,7 @@ interface TicketCardProps {
   isBlocked: boolean;
   allTickets: Ticket[];
   onEdit: (ticket: Ticket) => void;
+  onTicketUpdated: (ticket: Ticket) => void;
   onRun: (ticket: Ticket) => void;
   onDelete: (ticketId: string) => void;
 }
@@ -1453,10 +1471,13 @@ const TicketCard: React.FC<TicketCardProps> = ({
   isBlocked,
   allTickets,
   onEdit,
+  onTicketUpdated,
   onRun,
   onDelete,
 }) => {
   const [running, setRunning] = useState(false);
+  const [rerunning, setRerunning] = useState(false);
+  const [rerunError, setRerunError] = useState<string | null>(null);
 
   const handleRun = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1465,6 +1486,20 @@ const TicketCard: React.FC<TicketCardProps> = ({
       await onRun(ticket);
     } finally {
       setRunning(false);
+    }
+  };
+
+  const handleRerun = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRerunning(true);
+    setRerunError(null);
+    try {
+      const updated = await rerunTicketFromCurrentFrontier(projectId, ticket.id);
+      onTicketUpdated(updated);
+    } catch (error: any) {
+      setRerunError(error.message);
+    } finally {
+      setRerunning(false);
     }
   };
 
@@ -1583,6 +1618,19 @@ const TicketCard: React.FC<TicketCardProps> = ({
             </Tooltip>
           )}
         </Box>
+        <Stack spacing={0.25} sx={{ mt: 1 }}>
+          <LineageField label="base" value={ticket.base_leaf_id} stopPropagation />
+          {ticket.stale_reason && (
+            <Typography variant="caption" color="warning.main">
+              {ticket.stale_reason}
+            </Typography>
+          )}
+          {rerunError && (
+            <Typography variant="caption" color="error.main">
+              {rerunError}
+            </Typography>
+          )}
+        </Stack>
       </CardContent>
       <CardActions sx={{ justifyContent: 'space-between', pt: 0, px: 1.5, pb: 1 }}>
         <Box>
@@ -1619,6 +1667,16 @@ const TicketCard: React.FC<TicketCardProps> = ({
             );
           })()}
         </Box>
+        {(ticket.stale || ticket.latest_attempt?.stale) && (
+          <Button
+            size="small"
+            color="warning"
+            onClick={handleRerun}
+            disabled={rerunning}
+          >
+            {rerunning ? 'Starting…' : 'Rerun from frontier'}
+          </Button>
+        )}
       </CardActions>
     </Card>
   );

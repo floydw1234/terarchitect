@@ -16,6 +16,7 @@ jest.mock('../utils/api', () => ({
   sendCandidateFeedback: jest.fn(),
   acceptAttempt: jest.fn(),
   rejectAttempt: jest.fn(),
+  rerunTicketFromCurrentFrontier: jest.fn(),
 }));
 
 import * as api from '../utils/api';
@@ -40,6 +41,7 @@ const mockProject = {
   id: 'proj-1',
   name: 'Test Project',
   git_mode: 'swarm' as const,
+  accepted_frontier_id: 'leaf_current_frontier_0123456789abcdef',
   shipped_frontier: 'abc123def4567890',
   shipped_frontier_updated_at: null,
 };
@@ -115,6 +117,10 @@ const mockAcceptedAttempt = {
   test_status: 'passed',
   test_output: null,
   stale: false,
+  accepted_frontier_id: mockProject.accepted_frontier_id,
+  base_leaf_id: 'b'.repeat(40),
+  parent_leaf_id: 'b'.repeat(40),
+  stale_reason: null,
   created_at: null,
   updated_at: null,
 };
@@ -135,6 +141,10 @@ const mockProposedAttempt = {
   test_status: 'failed',
   test_output: null,
   stale: false,
+  accepted_frontier_id: mockProject.accepted_frontier_id,
+  base_leaf_id: 'c'.repeat(40),
+  parent_leaf_id: 'c'.repeat(40),
+  stale_reason: null,
   created_at: null,
   updated_at: null,
 };
@@ -175,15 +185,39 @@ beforeEach(() => {
   (api.getTicketAttempts as jest.Mock).mockResolvedValue([]);
 });
 
-test('Ship Room header shows the frontier hash', async () => {
+test('Ship Room header shows the accepted frontier hash', async () => {
   (api.getShipCandidates as jest.Mock).mockResolvedValue([]);
 
   renderShipRoom();
 
   await waitFor(() => {
     expect(screen.getByText('Ship Room')).toBeInTheDocument();
-    expect(screen.getByText('Current shipped frontier')).toBeInTheDocument();
-    expect(screen.getByText('abc123def456')).toBeInTheDocument();
+    expect(screen.getByText('Accepted AgentHub frontier')).toBeInTheDocument();
+    expect(screen.getByText('leaf_current')).toBeInTheDocument();
+  });
+});
+
+test('stale attempts show lineage and rerun affordance', async () => {
+  (api.getShipCandidates as jest.Mock).mockResolvedValue([baseCandidate]);
+  (api.getShipCandidateDetail as jest.Mock).mockResolvedValue(makeCandidateDetail({
+    membership: {
+      attempts: [{ ...mockAcceptedAttempt, stale: true, stale_reason: 'attempt.base_hash differs from project.accepted_frontier_id.' }],
+      tickets: [{ id: 'ticket-1', title: 'Ticket Alpha', column_id: 'done', depends_on_ticket_ids: [] }],
+      commit_hashes: ['a'.repeat(40)],
+      legacy_wave_num: 0,
+    },
+  }));
+  (api.getTicketAttempts as jest.Mock).mockResolvedValue([
+    { ...mockAcceptedAttempt, stale: true, stale_reason: 'attempt.base_hash differs from project.accepted_frontier_id.' },
+  ]);
+
+  renderShipRoom();
+
+  await waitFor(() => {
+    expect(screen.getAllByText(/attempt.base_hash differs from project.accepted_frontier_id/i).length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Rerun from frontier' })).toBeInTheDocument();
+    expect(screen.getAllByText('base').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('parent').length).toBeGreaterThan(0);
   });
 });
 

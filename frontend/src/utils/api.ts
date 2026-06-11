@@ -77,7 +77,9 @@ export interface LatestAttempt {
   attempt_num: number;
   summary: string | null;
   test_status: string | null;
+  accepted_frontier_id?: string | null;
   stale: boolean | null;
+  stale_reason?: string | null;
 }
 
 export type IntentStatus = 'draft' | 'ready' | 'active' | 'blocked' | 'archived';
@@ -95,6 +97,7 @@ export interface Ticket {
   project_id: string;
   column_id: string;
   base_leaf_id?: string | null;
+  accepted_frontier_id?: string | null;
   title: string;
   description?: string;
   associated_node_ids?: string[];
@@ -104,6 +107,8 @@ export interface Ticket {
   failed_count?: number;
   depends_on_ticket_ids?: string[];
   is_running?: boolean;
+  stale?: boolean | null;
+  stale_reason?: string | null;
   created_at?: string;
   updated_at?: string;
   latest_attempt?: LatestAttempt | null;
@@ -127,6 +132,8 @@ export interface TicketAttempt {
   agenthub_commit_hash: string;
   short_commit_hash: string | null;
   base_hash: string | null;
+  base_leaf_id?: string | null;
+  parent_leaf_id?: string | null;
   wave_num: number;
   attempt_num: number;
   agent_id: string | null;
@@ -135,7 +142,9 @@ export interface TicketAttempt {
   validation_error: string | null;
   test_status: string | null;
   test_output?: string | null;
+  accepted_frontier_id?: string | null;
   stale: boolean | null;
+  stale_reason?: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -226,9 +235,13 @@ export interface WaveDetail {
   accepted_attempts: TicketAttempt[];
   ship_run: ShipRun | null;
   can_compose: boolean;
+  can_ship?: boolean;
   all_done: boolean;
   shipped_frontier: string | null;
   stale_count: number;
+  validation?: {
+    compose?: string[];
+  };
 }
 
 export type EvidenceTargetType = 'attempt' | 'ship_run' | 'composite_workspace' | 'snapshot';
@@ -566,6 +579,15 @@ export async function deleteTicket(projectId: string, ticketId: string) {
     method: 'DELETE',
   });
   return checkResponse(response);
+}
+
+export async function rerunTicketFromCurrentFrontier(projectId: string, ticketId: string): Promise<Ticket> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/tickets/${ticketId}/rerun-from-current-frontier`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  return checkResponse<Ticket>(response);
 }
 
 export interface ExecutionLogEntry {

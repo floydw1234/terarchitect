@@ -14,9 +14,11 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import {
   getProject,
   getTicketAttempt,
+  rerunTicketFromCurrentFrontier,
   type Project,
   type TicketAttempt,
 } from '../utils/api';
+import { LineageField } from '../components/LineageField';
 
 const ATTEMPT_COLOR: Record<string, 'default' | 'info' | 'warning' | 'success' | 'error'> = {
   proposed: 'default',
@@ -46,6 +48,8 @@ const AttemptDetailPage: React.FC = () => {
   const [attempt, setAttempt] = useState<TicketAttempt | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [rerunning, setRerunning] = useState(false);
+  const [rerunMessage, setRerunMessage] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!projectId || !ticketId || !attemptId) return;
@@ -67,6 +71,20 @@ const AttemptDetailPage: React.FC = () => {
   }, [projectId, ticketId, attemptId]);
 
   useEffect(() => { load(); }, [load]);
+
+  const handleRerun = async () => {
+    if (!projectId || !ticketId) return;
+    setRerunning(true);
+    setRerunMessage(null);
+    try {
+      await rerunTicketFromCurrentFrontier(projectId, ticketId);
+      setRerunMessage('Ticket rerun enqueued from the current frontier.');
+    } catch (e: any) {
+      setRerunMessage(e.message);
+    } finally {
+      setRerunning(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -96,6 +114,7 @@ const AttemptDetailPage: React.FC = () => {
       </Paper>
 
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+      {rerunMessage && <Alert severity={rerunMessage.startsWith('API') ? 'error' : 'success'} sx={{ mb: 2 }}>{rerunMessage}</Alert>}
 
       {attempt && projectId && (
         <Paper sx={{ p: 2.5, border: '1px solid rgba(148,163,184,0.45)', boxShadow: 'none' }}>
@@ -108,23 +127,25 @@ const AttemptDetailPage: React.FC = () => {
             />
           </Stack>
 
+          {attempt.stale && (
+            <Alert
+              severity="warning"
+              sx={{ mb: 2 }}
+              action={(
+                <Button color="inherit" size="small" onClick={handleRerun} disabled={rerunning}>
+                  {rerunning ? 'Starting…' : 'Rerun from frontier'}
+                </Button>
+              )}
+            >
+              {attempt.stale_reason || 'This attempt was built before the current accepted frontier.'}
+            </Alert>
+          )}
+
           <Stack spacing={1.25} sx={{ mb: 2 }}>
-            <Box>
-              <Typography variant="overline" color="text.secondary" sx={{ display: 'block', lineHeight: 1.2 }}>
-                Commit hash
-              </Typography>
-              <Typography variant="body2" component="code" sx={{ fontFamily: 'monospace' }}>
-                {attempt.agenthub_commit_hash}
-              </Typography>
-            </Box>
-            <Box>
-              <Typography variant="overline" color="text.secondary" sx={{ display: 'block', lineHeight: 1.2 }}>
-                Base hash
-              </Typography>
-              <Typography variant="body2" component="code" sx={{ fontFamily: 'monospace' }}>
-                {attempt.base_hash || '(not set)'}
-              </Typography>
-            </Box>
+            <LineageField label="Attempt leaf" value={attempt.agenthub_commit_hash} width={16} />
+            <LineageField label="Attempt base" value={attempt.base_leaf_id ?? attempt.base_hash} width={16} />
+            <LineageField label="Attempt parent" value={attempt.parent_leaf_id ?? attempt.base_hash} width={16} />
+            <LineageField label="Accepted frontier" value={attempt.accepted_frontier_id ?? project?.accepted_frontier_id ?? project?.shipped_frontier} width={16} />
           </Stack>
 
           {attempt.summary && (

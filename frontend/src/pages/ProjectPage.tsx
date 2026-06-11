@@ -18,6 +18,7 @@ import {
   MenuItem,
 } from '@mui/material';
 import { getProject, updateProject, deleteProject, type Project, type ProjectExecutionMode, type ProjectGitMode } from '../utils/api';
+import { LineageField } from '../components/LineageField';
 
 const ProjectPage: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
@@ -198,6 +199,18 @@ const ProjectPage: React.FC = () => {
           {project.github_url && (
             <Typography sx={infoTextSx}>
               GitHub URL: {project.github_url}
+            </Typography>
+          )}
+          <LineageField
+            label="Accepted frontier"
+            value={project.accepted_frontier_id ?? project.shipped_frontier}
+          />
+          {project.shipped_frontier && project.accepted_frontier_id && project.shipped_frontier !== project.accepted_frontier_id && (
+            <LineageField label="Shipped frontier" value={project.shipped_frontier} />
+          )}
+          {project.frontier_warning && (
+            <Typography sx={{ ...infoTextSx, color: 'warning.main' }}>
+              {project.frontier_warning}
             </Typography>
           )}
         </Stack>

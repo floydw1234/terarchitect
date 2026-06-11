@@ -19,6 +19,7 @@ import {
 } from '@mui/material';
 import { Link } from 'react-router-dom';
 import { getProjects, createProject, deleteProject, getExecutionReady, type Project, type ProjectExecutionMode, type ProjectGitMode } from '../utils/api';
+import { LineageField } from '../components/LineageField';
 
 const ProjectsPage: React.FC = () => {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -197,7 +198,18 @@ const ProjectsPage: React.FC = () => {
                     GitHub: {project.github_url}
                   </Typography>
                 )}
-                {!project.shipped_frontier && (
+                <Box sx={{ mt: 1 }}>
+                  <LineageField
+                    label="Accepted frontier"
+                    value={project.accepted_frontier_id ?? project.shipped_frontier}
+                  />
+                </Box>
+                {project.shipped_frontier && project.accepted_frontier_id && project.shipped_frontier !== project.accepted_frontier_id && (
+                  <Box sx={{ mt: 0.5 }}>
+                    <LineageField label="Shipped frontier" value={project.shipped_frontier} />
+                  </Box>
+                )}
+                {!project.accepted_frontier_id && !project.shipped_frontier && (
                   <Typography variant="caption" color="warning.main" sx={{ display: 'block', mt: 0.5 }}>
                     ⚠ Frontier not set — set via Ship Room before running agents
                   </Typography>
