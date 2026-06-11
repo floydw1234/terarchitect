@@ -1808,16 +1808,25 @@ def ticket_complete(project_id, ticket_id):
     data = request.json or {}
     summary = (data.get("summary") or "").strip() or ""
     commit_hash = (data.get("commit_hash") or "").strip() or None
-    base_hash = (data.get("base_hash") or "").strip() or None
+    requested_base_hash = (data.get("base_hash") or "").strip() or None
     agent_id_val = (data.get("agent_id") or "").strip() or None
+
+    # Record AgentHub attempt for all completions
+    project = db.session.get(Project, project_id)
+    is_swarm = project and (getattr(project, "git_mode", None) or "swarm") == "swarm"
+    ticket_base_leaf_id = (getattr(ticket, "base_leaf_id", None) or "").strip() or None
+    base_hash = requested_base_hash
+    if is_swarm:
+        if not ticket_base_leaf_id:
+            return jsonify({"error": "ticket.base_leaf_id is required for swarm publish"}), 409
+        if requested_base_hash and requested_base_hash != ticket_base_leaf_id:
+            return jsonify({"error": "publish base_hash does not match ticket.base_leaf_id"}), 409
+        base_hash = ticket_base_leaf_id
 
     ticket.status = "completed"
     ticket.column_id = "done"
     ticket.intent_status = "active"
 
-    # Record AgentHub attempt for all completions
-    project = db.session.get(Project, project_id)
-    is_swarm = project and (getattr(project, "git_mode", None) or "swarm") == "swarm"
     attempt = None
     if is_swarm:
         attempt = _create_attempt(

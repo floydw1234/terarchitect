@@ -31,6 +31,7 @@ class AgentBackend(Protocol):
         summary: str = "",
         agenthub_commit_hash: Optional[str] = None,
         base_hash: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> None:
         """Mark ticket complete (update column, PR record). Git/PR creation is done by the agent before calling this."""
         ...
@@ -103,6 +104,7 @@ class HttpAgentBackend:
         summary: str = "",
         agenthub_commit_hash: Optional[str] = None,
         base_hash: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> None:
         url = f"{self.base_url}/api/projects/{project_id}/tickets/{ticket_id}/complete"
         payload = {"summary": summary}
@@ -110,6 +112,8 @@ class HttpAgentBackend:
             payload["commit_hash"] = agenthub_commit_hash
         if base_hash is not None:
             payload["base_hash"] = base_hash
+        if agent_id is not None:
+            payload["agent_id"] = agent_id
         try:
             import requests
             requests.post(url, json=payload, headers=self._headers, timeout=30)

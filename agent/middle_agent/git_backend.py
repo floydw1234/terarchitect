@@ -157,6 +157,37 @@ def _run_ah_push(project_path: str, env: dict[str, str]) -> subprocess.Completed
     )
 
 
+def _explicit_publish_base_leaf() -> str | None:
+    return (os.environ.get("BASE_LEAF_ID") or "").strip() or (os.environ.get("BASE_HASH") or "").strip() or None
+
+
+def _head_parent_matches_base(project_path: str, expected_base_leaf_id: str, env: dict[str, str]) -> bool:
+    parent_r = subprocess.run(
+        ["git", "rev-parse", "HEAD^"],
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        env=env,
+    )
+    if parent_r.returncode != 0:
+        print(
+            f"[git_backend] publish aborted: could not resolve HEAD parent for expected base {expected_base_leaf_id[:12]}: "
+            f"{_format_subprocess_output(parent_r)[:300]}",
+            flush=True,
+        )
+        return False
+    head_parent = (parent_r.stdout or "").strip()
+    if head_parent != expected_base_leaf_id:
+        print(
+            f"[git_backend] publish aborted: HEAD parent {head_parent[:12] or 'none'} does not match "
+            f"ticket base leaf {expected_base_leaf_id[:12]}",
+            flush=True,
+        )
+        return False
+    return True
+
+
 def _retry_ah_push_with_full_bundle(project_path: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     print(
         "[git_backend] AgentHub rejected incremental bundle due to missing prerequisite commits; "
@@ -404,6 +435,10 @@ def swarm_publish(
     """Stage, commit, push to agenthub DAG, and post to ticket channel.
     Returns the commit hash on success, None on failure."""
     env = os.environ.copy()
+    base_leaf_id = _explicit_publish_base_leaf()
+    if not base_leaf_id:
+        print("[git_backend] publish aborted: BASE_LEAF_ID is required for swarm publish", flush=True)
+        return None
 
     # Stage all changes
     subprocess.run(["git", "add", "-A"], cwd=project_path, capture_output=True, timeout=10, env=env)
@@ -429,6 +464,8 @@ def swarm_publish(
     commit_hash = (head_r.stdout or "").strip()
     if not commit_hash:
         return None
+    if not _head_parent_matches_base(project_path, base_leaf_id, env):
+        return None
 
     # Push to agenthub via ah CLI (reads AGENTHUB_URL + AGENTHUB_API_KEY from env)
     push_r = _run_ah_push(project_path, env)
@@ -438,6 +475,18 @@ def swarm_publish(
         print(f"[git_backend] ah push failed: {_format_subprocess_output(push_r)[:300]}", flush=True)
 
     # Post completion notice to ticket channel (auto-created if it doesn't exist)
-    post_ticket_event(ticket_id, "attempt_published", f"done: {summary[:400]}" if summary else "done", {"ticket_id": ticket_id, "commit_hash": commit_hash, "commit_short": commit_hash[:12]})
+    post_ticket_event(
+        ticket_id,
+        "attempt_published",
+        f"done: {summary[:400]}" if summary else "done",
+        {
+            "ticket_id": ticket_id,
+            "commit_hash": commit_hash,
+            "commit_short": commit_hash[:12],
+            "base_hash": base_leaf_id,
+            "base_leaf_id": base_leaf_id,
+            "parent_leaf_id": base_leaf_id,
+        },
+    )
 
     return commit_hash if push_r.returncode == 0 else None

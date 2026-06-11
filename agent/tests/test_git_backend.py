@@ -17,9 +17,32 @@ def _cp(args, returncode=0, stdout="", stderr=""):
 
 
 class TestSwarmPublishFallback(unittest.TestCase):
-    def test_swarm_publish_retries_with_full_bundle_on_missing_prerequisites(self):
+    def test_swarm_publish_requires_explicit_base_leaf_before_push(self):
+        project_path = "/tmp/project"
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append({"args": list(args), "cwd": kwargs.get("cwd")})
+            raise AssertionError(f"swarm_publish should fail before subprocess work: {args}")
+
+        with patch.dict(os.environ, {}, clear=False), \
+             patch("middle_agent.git_backend.subprocess.run", side_effect=fake_run), \
+             patch("middle_agent.git_backend.post_ticket_event") as post_event:
+            result = git_backend.swarm_publish(
+                project_path=project_path,
+                commit_message="test commit",
+                ticket_id="ticket-123",
+                summary="publish summary",
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(calls, [])
+        post_event.assert_not_called()
+
+    def test_swarm_publish_records_ticket_base_leaf_in_event_metadata(self):
         project_path = "/tmp/project"
         head_hash = "a" * 40
+        base_leaf_id = "leaf_01HZX3BASE0123456789ABCDEFG"
         calls = []
 
         def fake_run(args, **kwargs):
@@ -30,6 +53,53 @@ class TestSwarmPublishFallback(unittest.TestCase):
                 return _cp(args, stdout="")
             if args[:3] == ["git", "rev-parse", "HEAD"]:
                 return _cp(args, stdout=f"{head_hash}\n")
+            if args[:3] == ["git", "rev-parse", "HEAD^"]:
+                return _cp(args, stdout=f"{base_leaf_id}\n")
+            if args[:2] == ["ah", "push"]:
+                return _cp(args, stdout=f"pushed {head_hash[:12]}\n")
+            raise AssertionError(f"Unexpected subprocess call: args={args} kwargs={kwargs}")
+
+        with patch.dict(os.environ, {"BASE_LEAF_ID": base_leaf_id}, clear=False), \
+             patch("middle_agent.git_backend.subprocess.run", side_effect=fake_run), \
+             patch("middle_agent.git_backend.post_ticket_event") as post_event:
+            result = git_backend.swarm_publish(
+                project_path=project_path,
+                commit_message="test commit",
+                ticket_id="ticket-123",
+                summary="publish summary",
+            )
+
+        self.assertEqual(result, head_hash)
+        post_event.assert_called_once_with(
+            "ticket-123",
+            "attempt_published",
+            "done: publish summary",
+            {
+                "ticket_id": "ticket-123",
+                "commit_hash": head_hash,
+                "commit_short": head_hash[:12],
+                "base_hash": base_leaf_id,
+                "base_leaf_id": base_leaf_id,
+                "parent_leaf_id": base_leaf_id,
+            },
+        )
+
+    def test_swarm_publish_retries_with_full_bundle_on_missing_prerequisites(self):
+        project_path = "/tmp/project"
+        head_hash = "a" * 40
+        base_leaf_id = "leaf_01HZX3BASE0123456789ABCDEFG"
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append({"args": list(args), "cwd": kwargs.get("cwd")})
+            if args[:3] == ["git", "add", "-A"]:
+                return _cp(args)
+            if args[:3] == ["git", "status", "--porcelain"]:
+                return _cp(args, stdout="")
+            if args[:3] == ["git", "rev-parse", "HEAD"]:
+                return _cp(args, stdout=f"{head_hash}\n")
+            if args[:3] == ["git", "rev-parse", "HEAD^"]:
+                return _cp(args, stdout=f"{base_leaf_id}\n")
             if args[:2] == ["ah", "push"] and kwargs.get("cwd") == project_path:
                 return _cp(
                     args,
@@ -44,7 +114,8 @@ class TestSwarmPublishFallback(unittest.TestCase):
                 return _cp(args, stdout="pushed aaaaaaaaaaaa\n")
             raise AssertionError(f"Unexpected subprocess call: args={args} kwargs={kwargs}")
 
-        with patch("middle_agent.git_backend.subprocess.run", side_effect=fake_run), \
+        with patch.dict(os.environ, {"BASE_LEAF_ID": base_leaf_id}, clear=False), \
+             patch("middle_agent.git_backend.subprocess.run", side_effect=fake_run), \
              patch("middle_agent.git_backend.post_ticket_event") as post_event:
             result = git_backend.swarm_publish(
                 project_path=project_path,
@@ -67,6 +138,7 @@ class TestSwarmPublishFallback(unittest.TestCase):
 
     def test_swarm_publish_does_not_retry_non_lineage_push_errors(self):
         project_path = "/tmp/project"
+        base_leaf_id = "leaf_01HZX3BASE0123456789ABCDEFG"
         calls = []
 
         def fake_run(args, **kwargs):
@@ -77,11 +149,14 @@ class TestSwarmPublishFallback(unittest.TestCase):
                 return _cp(args, stdout="")
             if args[:3] == ["git", "rev-parse", "HEAD"]:
                 return _cp(args, stdout=f"{'b' * 40}\n")
+            if args[:3] == ["git", "rev-parse", "HEAD^"]:
+                return _cp(args, stdout=f"{base_leaf_id}\n")
             if args[:2] == ["ah", "push"]:
                 return _cp(args, returncode=1, stderr="push failed: unauthorized")
             raise AssertionError(f"Unexpected subprocess call: args={args} kwargs={kwargs}")
 
-        with patch("middle_agent.git_backend.subprocess.run", side_effect=fake_run), \
+        with patch.dict(os.environ, {"BASE_LEAF_ID": base_leaf_id}, clear=False), \
+             patch("middle_agent.git_backend.subprocess.run", side_effect=fake_run), \
              patch("middle_agent.git_backend.post_ticket_event") as post_event:
             result = git_backend.swarm_publish(
                 project_path=project_path,

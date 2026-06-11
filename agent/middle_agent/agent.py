@@ -2530,7 +2530,8 @@ Judge the plan.
             ticket.project_id,
             summary=(completion_summary or ticket.title or "Implementation").strip()[:500],
             agenthub_commit_hash=commit_hash,
-            base_hash=(os.environ.get("BASE_HASH") or "").strip() or None,
+            base_hash=(os.environ.get("BASE_LEAF_ID") or "").strip() or (os.environ.get("BASE_HASH") or "").strip() or None,
+            agent_id=(os.environ.get("JOB_ID") or "").strip() or None,
         )
         self._emit_ticket_run_receipt(
             ticket.project_id,
@@ -2540,7 +2541,7 @@ Judge the plan.
             message="Ticket run succeeded",
             attempt_hash=(commit_hash or "")[:12] or None,
             agenthub_commit_hash=commit_hash,
-            base_hash=(os.environ.get("BASE_HASH") or "").strip() or None,
+            base_hash=(os.environ.get("BASE_LEAF_ID") or "").strip() or (os.environ.get("BASE_HASH") or "").strip() or None,
             runner_workdir=project_path,
             evidence_summary=completion_summary,
             next_actions=[

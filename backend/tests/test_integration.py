@@ -41,12 +41,14 @@ def _worker_headers():
 
 def test_ticket_complete_creates_attempt(client, project):
     from models.db import TicketAttempt, Ticket, db
+    base_leaf_id = "leaf_01HZX3TICKETBASE0123456789ABC"
     with client.application.app_context():
         ticket = Ticket(
             project_id=project["id"],
             column_id="in_progress",
             title="T",
             intent_status="active",
+            base_leaf_id=base_leaf_id,
         )
         db.session.add(ticket)
         db.session.commit()
@@ -62,18 +64,76 @@ def test_ticket_complete_creates_attempt(client, project):
         attempts = TicketAttempt.query.filter_by(ticket_id=tid).all()
         assert len(attempts) == 1
         assert attempts[0].agenthub_commit_hash == "a" * 40
+        assert attempts[0].base_hash == base_leaf_id
         assert attempts[0].wave_num == 0
+
+    attempts_resp = client.get(f"/api/projects/{project['id']}/tickets/{tid}/attempts")
+    assert attempts_resp.status_code == 200
+    attempt_payload = attempts_resp.get_json()[0]
+    assert attempt_payload["base_hash"] == base_leaf_id
+    assert attempt_payload["base_leaf_id"] == base_leaf_id
+    assert attempt_payload["parent_leaf_id"] == base_leaf_id
+
+
+def test_ticket_complete_requires_ticket_base_leaf_for_swarm_publish(client, project):
+    from models.db import Ticket, db
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=project["id"],
+            column_id="in_progress",
+            title="Missing base leaf",
+            intent_status="active",
+            base_leaf_id=None,
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        tid = str(ticket.id)
+
+    resp = client.post(
+        f"/api/projects/{project['id']}/tickets/{tid}/complete",
+        json={"commit_hash": "a" * 40, "summary": "done"},
+    )
+    assert resp.status_code == 409
+    assert "base_leaf_id" in resp.get_json()["error"]
+
+
+def test_ticket_complete_rejects_mismatched_publish_base(client, project):
+    from models.db import Ticket, db
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=project["id"],
+            column_id="in_progress",
+            title="Mismatched base leaf",
+            intent_status="active",
+            base_leaf_id="leaf_01HZX3TICKETBASE0123456789ABC",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        tid = str(ticket.id)
+
+    resp = client.post(
+        f"/api/projects/{project['id']}/tickets/{tid}/complete",
+        json={
+            "commit_hash": "a" * 40,
+            "summary": "done",
+            "base_hash": "leaf_01HZX3OTHERBASE0123456789AB",
+        },
+    )
+    assert resp.status_code == 409
+    assert "does not match ticket.base_leaf_id" in resp.get_json()["error"]
 
 
 def test_ticket_complete_creates_no_pr_row(client, project):
     """Swarm completion writes attempts only; no ticket-level PR record is created."""
     from models.db import db, Ticket
+    base_leaf_id = "leaf_01HZX3TICKETBASE0123456789ABC"
     with client.application.app_context():
         ticket = Ticket(
             project_id=project["id"],
             column_id="in_progress",
             title="T",
             intent_status="active",
+            base_leaf_id=base_leaf_id,
         )
         db.session.add(ticket)
         db.session.commit()
@@ -839,8 +899,9 @@ def test_independent_ticket_dispatches_from_frontier_base(client, project):
     resp = client.post("/api/worker/jobs/start", json={"project_id": pid})
     assert resp.status_code == 200
     payload = resp.get_json()
-    assert payload["base_hash"] == frontier
-    assert payload["base_selection"]["base_source"] == "shipped_frontier"
+    assert payload["base_hash"] == project["accepted_frontier_id"]
+    assert payload["base_leaf_id"] == project["accepted_frontier_id"]
+    assert payload["base_selection"]["base_source"] == "ticket_base_leaf"
     assert payload["base_selection"]["blocked"] is False
 
 
@@ -895,11 +956,10 @@ def test_single_dependency_ticket_dispatches_from_parent_attempt_base(client, pr
     resp = client.post("/api/worker/jobs/start", json={"project_id": pid})
     assert resp.status_code == 200
     payload = resp.get_json()
-    assert payload["base_hash"] == parent_hash
-    assert payload["agenthub_root_hash"] == frontier
-    assert payload["base_selection"]["base_source"] == "accepted_dependency"
-    assert payload["base_selection"]["resolved_from_ticket_id"] == parent_id
-    assert payload["base_selection"]["accepted_unshipped_dependency_ticket_ids"] == [parent_id]
+    assert payload["base_hash"] == project["accepted_frontier_id"]
+    assert payload["base_leaf_id"] == project["accepted_frontier_id"]
+    assert payload["agenthub_root_hash"] == project["accepted_frontier_id"]
+    assert payload["base_selection"]["base_source"] == "ticket_base_leaf"
     assert payload["base_selection"]["blocked"] is False
 
 
@@ -953,10 +1013,10 @@ def test_shipped_dependency_ticket_dispatches_from_current_frontier(client, proj
     resp = client.post("/api/worker/jobs/start", json={"project_id": pid})
     assert resp.status_code == 200
     payload = resp.get_json()
-    assert payload["base_hash"] == frontier
-    assert payload["agenthub_root_hash"] == frontier
-    assert payload["base_selection"]["base_source"] == "shipped_frontier"
-    assert payload["base_selection"]["shipped_dependency_ticket_ids"] == [parent_id]
+    assert payload["base_hash"] == project["accepted_frontier_id"]
+    assert payload["base_leaf_id"] == project["accepted_frontier_id"]
+    assert payload["agenthub_root_hash"] == project["accepted_frontier_id"]
+    assert payload["base_selection"]["base_source"] == "ticket_base_leaf"
     assert payload["base_selection"]["blocked"] is False
 
 

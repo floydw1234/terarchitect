@@ -121,6 +121,8 @@ def test_project_attempt_list_and_detail_include_agent_friendly_fields(client, t
     assert item["satisfied"] is True
     assert item["agenthub_commit_hash"] == attempt_hash
     assert item["base_hash"] == base_hash
+    assert item["base_leaf_id"] == base_hash
+    assert item["parent_leaf_id"] == base_hash
     assert item["git_available"] is True
     assert item["commit_available"] is True
     assert sorted(item["changed_files"]) == ["README.md", "src/app.py"]
@@ -137,6 +139,8 @@ def test_project_attempt_list_and_detail_include_agent_friendly_fields(client, t
     assert detail.status_code == 200
     detail_data = detail.get_json()
     assert detail_data["attempt_id"] == attempt_id
+    assert detail_data["base_leaf_id"] == base_hash
+    assert detail_data["parent_leaf_id"] == base_hash
     assert "stale" in detail_data
     assert detail_data["test_status"] == "passed"
 
