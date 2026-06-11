@@ -123,6 +123,10 @@ def register(subparsers) -> None:
     ru.add_argument("--run-local", action="store_true",
                     help="Run agent directly on this host (dev mode, no coordinator needed)")
 
+    rcf = sub.add_parser("rerun-current-frontier", help="Reset ticket base to project.accepted_frontier_id and enqueue")
+    rcf.add_argument("project_id")
+    rcf.add_argument("ticket_id")
+
     # cancel
     ca = sub.add_parser("cancel", help="Request cancellation of a running ticket")
     ca.add_argument("project_id")
@@ -168,6 +172,8 @@ def _dispatch(args, api: API) -> None:
         _cmd_update(args, api)
     elif cmd == "run":
         _cmd_run(args, api)
+    elif cmd == "rerun-current-frontier":
+        _cmd_rerun_current_frontier(args, api)
     elif cmd == "cancel":
         _cmd_cancel(args, api)
     elif cmd == "logs":
@@ -464,6 +470,28 @@ def _cmd_run(args, api: API) -> None:
             return
     print()
     die("Timed out waiting for ticket to complete.", output=args.output)
+
+
+def _cmd_rerun_current_frontier(args, api: API) -> None:
+    try:
+        ticket = api.post(
+            f"/api/projects/{args.project_id}/tickets/{args.ticket_id}/rerun-from-current-frontier",
+            {},
+        )
+    except APIError as e:
+        die(e, output=args.output)
+
+    print_receipt(
+        f"Ticket {short_id(args.ticket_id)} enqueued from current frontier.",
+        fields=[
+            ("Column", ticket.get("column_id") or "unknown"),
+            ("Base", (ticket.get("base_leaf_id") or "unknown")[:12]),
+        ],
+        next_commands=[
+            f"ta ticket attempts {args.project_id} {args.ticket_id}",
+            f"ta ticket logs {args.project_id} {args.ticket_id}",
+        ],
+    )
 
 
 def _run_local(args, api: API) -> None:

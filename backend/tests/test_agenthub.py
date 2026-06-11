@@ -599,6 +599,7 @@ def test_ticket_attempts_list_returns_multiple_attempts_newest_first(client, pro
 
 def test_accept_attempt_supersedes_prior_accepted_attempt(client, project):
     pid = project["id"]
+    initial_frontier = project["accepted_frontier_id"]
     from models.db import db, Ticket, TicketAttempt
 
     with client.application.app_context():
@@ -614,7 +615,7 @@ def test_accept_attempt_supersedes_prior_accepted_attempt(client, project):
             project_id=pid,
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
-            base_hash="f" * 40,
+            base_hash=initial_frontier,
             wave_num=0,
             attempt_num=1,
             status="proposed",
@@ -624,7 +625,7 @@ def test_accept_attempt_supersedes_prior_accepted_attempt(client, project):
             project_id=pid,
             ticket_id=ticket.id,
             agenthub_commit_hash="b" * 40,
-            base_hash="f" * 40,
+            base_hash="a" * 40,
             wave_num=0,
             attempt_num=2,
             status="proposed",
@@ -779,6 +780,135 @@ def test_accept_attempt_does_not_fallback_to_local_git_head(client, project):
     assert resp.status_code == 200
     assert resp.get_json()["accepted_frontier_id"] == "e" * 40
     read_local_tip.assert_not_called()
+
+
+def test_attempt_list_reports_stale_status_against_accepted_frontier(client, project):
+    pid = project["id"]
+    from models.db import db, Ticket, TicketAttempt
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Attempt stale status ticket",
+            intent_status="active",
+            base_leaf_id="leaf_01HZX3TICKETBASE0123456789ABC",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="7" * 40,
+            base_hash="leaf_01HZX3STALEATTEMPTBASE01234567",
+            wave_num=0,
+            attempt_num=1,
+            status="proposed",
+            summary="stale attempt listing",
+        )
+        db.session.add(attempt)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+
+    resp = client.get(f"/api/projects/{pid}/tickets/{ticket_id}/attempts")
+
+    assert resp.status_code == 200
+    payload = resp.get_json()[0]
+    assert payload["stale"] is True
+    assert payload["accepted_frontier_id"] == project["accepted_frontier_id"]
+    assert "differs from project.accepted_frontier_id" in payload["stale_reason"]
+
+
+def test_accept_attempt_rejects_stale_attempt_and_does_not_advance_frontier(client, project):
+    pid = project["id"]
+    original_frontier = project["accepted_frontier_id"]
+    from models.db import db, Project, Ticket, TicketAttempt
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Stale attempt ticket",
+            intent_status="active",
+            base_leaf_id="leaf_01HZX3STALETICKETBASE012345678",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="f" * 40,
+            base_hash="leaf_01HZX3OLDATTEMPTBASE0123456789",
+            wave_num=0,
+            attempt_num=1,
+            status="proposed",
+            summary="stale attempt",
+        )
+        db.session.add(attempt)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+        attempt_id = str(attempt.id)
+
+    resp = client.post(
+        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{attempt_id}/accept"
+    )
+
+    assert resp.status_code == 409
+    payload = resp.get_json()
+    assert "stale" in payload["error"].lower()
+    assert payload["accepted_frontier_id"] == original_frontier
+
+    with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        stored_attempt = db.session.get(TicketAttempt, attempt_id)
+        assert stored_project.accepted_frontier_id == original_frontier
+        assert stored_attempt.status == "proposed"
+
+
+def test_accept_attempt_rejects_when_staleness_cannot_be_determined(client, project):
+    pid = project["id"]
+    from models.db import db, Project, Ticket, TicketAttempt
+
+    with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        stored_project.accepted_frontier_id = None
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Unknown staleness ticket",
+            intent_status="active",
+            base_leaf_id=None,
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="9" * 40,
+            base_hash=None,
+            wave_num=0,
+            attempt_num=1,
+            status="proposed",
+            summary="unknown staleness",
+        )
+        db.session.add(attempt)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+        attempt_id = str(attempt.id)
+
+    resp = client.post(
+        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{attempt_id}/accept"
+    )
+
+    assert resp.status_code == 409
+    payload = resp.get_json()
+    assert "cannot determine attempt staleness" in payload["error"].lower()
+
+    with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        stored_attempt = db.session.get(TicketAttempt, attempt_id)
+        assert stored_project.accepted_frontier_id is None
+        assert stored_attempt.status == "proposed"
 
 
 def test_reject_attempt_returns_rejected_state(client, project):

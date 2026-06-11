@@ -51,6 +51,7 @@ from .services.github_service import (
 )
 from .services.project_service import (
     bootstrap_project_memory as _bootstrap_project_memory,
+    get_project_frontier_id as _get_project_frontier_id,
     normalize_frontier_id as _normalize_frontier_id,
     project_to_json as _project_to_json,
     validate_project_frontier_candidate as _validate_project_frontier_candidate,
@@ -68,6 +69,7 @@ from .services.ticket_service import (
 )
 from .services.attempt_service import (
     SATISFIED_STATUSES as _SATISFIED_STATUSES,
+    attempt_stale_status as _attempt_stale_status,
     attempt_to_json as _attempt_to_json,
     create_attempt as _create_attempt,
     get_accepted_attempt as _get_accepted_attempt,
@@ -1926,9 +1928,9 @@ def ticket_attempts_list(project_id, ticket_id):
     )
     include_output = request.args.get("include_test_output", "false").lower() == "true"
     project = db.session.get(Project, project_id)
-    frontier = getattr(project, "shipped_frontier", None) or None
+    frontier = _get_project_frontier_id(project)
     return jsonify([
-        _attempt_to_json(a, include_test_output=include_output, shipped_frontier=frontier)
+        _attempt_to_json(a, include_test_output=include_output, accepted_frontier_id=frontier)
         for a in attempts
     ])
 
@@ -2020,6 +2022,13 @@ def ticket_attempt_accept(project_id, ticket_id, attempt_id):
         project_id=project_id, ticket_id=ticket_id, id=attempt_id
     ).first_or_404()
     try:
+        stale, stale_reason = _attempt_stale_status(attempt, project)
+        if stale is None:
+            raise ValueError(stale_reason or "Cannot determine attempt staleness.")
+        if stale:
+            raise ValueError(
+                f"Attempt is stale and cannot be accepted without an explicit override. {stale_reason}"
+            )
         commit_hash = (attempt.agenthub_commit_hash or "").strip()
         if not commit_hash:
             raise ValueError(
@@ -2052,8 +2061,11 @@ def ticket_attempt_accept(project_id, ticket_id, attempt_id):
         )
     except ValueError as e:
         db.session.rollback()
-        return jsonify({"error": str(e)}), 409
-    payload = _attempt_to_json(attempt)
+        return jsonify({
+            "error": str(e),
+            "accepted_frontier_id": _get_project_frontier_id(project),
+        }), 409
+    payload = _attempt_to_json(attempt, accepted_frontier_id=_get_project_frontier_id(project))
     payload["accepted_frontier_id"] = project.accepted_frontier_id
     payload["project"] = _project_to_json(project)
     return jsonify(payload)
@@ -2087,6 +2099,40 @@ def ticket_attempt_reject(project_id, ticket_id, attempt_id):
         db.session.rollback()
         return jsonify({"error": str(e)}), 409
     return jsonify(_attempt_to_json(attempt))
+
+
+@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/rerun-from-current-frontier", methods=["POST"])
+def ticket_rerun_from_current_frontier(project_id, ticket_id):
+    """Explicitly update a ticket to the current accepted frontier and enqueue it again."""
+    project = _get_project_or_404(project_id)
+    ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
+
+    current_frontier = _get_project_frontier_id(project)
+    if not current_frontier:
+        return jsonify({"error": "Cannot rerun from current frontier: project.accepted_frontier_id is not set."}), 409
+
+    existing = AgentJob.query.filter(
+        AgentJob.ticket_id == ticket_id,
+        AgentJob.status.in_(["pending", "running"]),
+    ).first()
+    if existing:
+        return jsonify({"error": "Ticket already has a pending or running job."}), 409
+
+    ticket.base_leaf_id = current_frontier
+    valid, error = _validate_ticket_base_leaf(project, ticket.base_leaf_id)
+    if not valid:
+        db.session.rollback()
+        return jsonify({"error": error}), 409
+
+    ticket.column_id = "in_progress"
+    ticket.intent_status = "active"
+    db.session.commit()
+    _enqueue_ticket_job(ticket.id)
+
+    refreshed = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
+    payload = _ticket_to_json(refreshed)
+    payload["message"] = "Ticket rerun enqueued from current frontier."
+    return jsonify(payload), 202
 
 
 @api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/cancel-requested", methods=["GET"])

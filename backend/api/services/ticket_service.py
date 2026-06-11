@@ -5,11 +5,15 @@ from flask import current_app
 
 from models.db import db, Project, Ticket, AgentJob, TicketAttempt
 from .project_service import (
+    compare_base_to_accepted_frontier as _compare_base_to_accepted_frontier,
     get_project_frontier_id as _get_project_frontier_id,
     normalize_frontier_id as _normalize_frontier_id,
     validate_project_frontier_candidate as _validate_project_frontier_candidate,
 )
-from .attempt_service import SATISFIED_STATUSES as _SATISFIED_STATUSES
+from .attempt_service import (
+    SATISFIED_STATUSES as _SATISFIED_STATUSES,
+    attempt_stale_status as _attempt_stale_status,
+)
 from .channel_service import (
     ticket_channel as _ticket_channel,
     post_event as _post_event,
@@ -53,6 +57,16 @@ def validate_ticket_base_leaf(project: Project | None, base_leaf_id) -> tuple[bo
     return False, (error or "base_leaf_id is invalid").replace("accepted_frontier_id", "base_leaf_id")
 
 
+def ticket_stale_status(ticket: Ticket, project: Project | None) -> tuple[Optional[bool], Optional[str]]:
+    accepted_frontier_id = _get_project_frontier_id(project) if project else None
+    return _compare_base_to_accepted_frontier(
+        getattr(ticket, "base_leaf_id", None),
+        accepted_frontier_id,
+        subject_name="ticket",
+        base_field_name="ticket.base_leaf_id",
+    )
+
+
 def compute_ticket_display_state(
     ticket: Ticket,
     *,
@@ -90,8 +104,8 @@ def compute_ticket_display_state(
         if s == "composed":
             return "composed"
         # accepted: may be stale
-        frontier = getattr(project, "shipped_frontier", None) if project else None
-        if frontier and accepted_attempt.base_hash and accepted_attempt.base_hash != frontier:
+        stale, _ = _attempt_stale_status(accepted_attempt, project)
+        if stale is True:
             return "stale"
         return "accepted"
 
@@ -130,6 +144,9 @@ def compute_ticket_display_state(
 # ---------------------------------------------------------------------------
 
 def ticket_to_json(t: Ticket) -> dict:
+    project = db.session.get(Project, t.project_id)
+    accepted_frontier_id = _get_project_frontier_id(project)
+    stale, stale_reason = ticket_stale_status(t, project)
     out = {
         "id": str(t.id),
         "project_id": str(t.project_id),
@@ -143,6 +160,9 @@ def ticket_to_json(t: Ticket) -> dict:
         "failed_count": t.failed_count or 0,
         "depends_on_ticket_ids": t.depends_on_ticket_ids or [],
         "base_leaf_id": getattr(t, "base_leaf_id", None),
+        "accepted_frontier_id": accepted_frontier_id,
+        "stale": stale,
+        "stale_reason": stale_reason,
         # Intent fields
         "intent_status": getattr(t, "intent_status", None) or "ready",
         "rationale": getattr(t, "rationale", None),
@@ -157,8 +177,6 @@ def ticket_to_json(t: Ticket) -> dict:
 
     running_job = AgentJob.query.filter_by(ticket_id=t.id, status="running").first()
     out["is_running"] = running_job is not None
-
-    project = db.session.get(Project, t.project_id)
 
     # Latest and accepted attempts
     latest = (
@@ -197,10 +215,9 @@ def ticket_to_json(t: Ticket) -> dict:
         satisfied_dep_ids=satisfied_dep_ids,
     )
 
-    frontier = getattr(project, "shipped_frontier", None) or None
     if latest:
         commit = latest.agenthub_commit_hash or ""
-        stale = (latest.base_hash != frontier) if (frontier and latest.base_hash) else None
+        latest_stale, latest_stale_reason = _attempt_stale_status(latest, project)
         out["latest_attempt"] = {
             "id": str(latest.id),
             "short_commit_hash": commit[:12] if commit else None,
@@ -209,7 +226,9 @@ def ticket_to_json(t: Ticket) -> dict:
             "attempt_num": latest.attempt_num,
             "summary": latest.summary,
             "test_status": latest.test_status,
-            "stale": stale,
+            "accepted_frontier_id": accepted_frontier_id,
+            "stale": latest_stale,
+            "stale_reason": latest_stale_reason,
         }
     else:
         out["latest_attempt"] = None
@@ -218,14 +237,16 @@ def ticket_to_json(t: Ticket) -> dict:
     # can identify selectable leaves even when the latest attempt is failed/rejected.
     if accepted and accepted is not latest:
         acc_commit = accepted.agenthub_commit_hash or ""
-        acc_stale = (accepted.base_hash != frontier) if (frontier and accepted.base_hash) else None
+        acc_stale, acc_stale_reason = _attempt_stale_status(accepted, project)
         out["accepted_attempt"] = {
             "id": str(accepted.id),
             "short_commit_hash": acc_commit[:12] if acc_commit else None,
             "status": accepted.status,
             "wave_num": accepted.wave_num,
             "attempt_num": accepted.attempt_num,
+            "accepted_frontier_id": accepted_frontier_id,
             "stale": acc_stale,
+            "stale_reason": acc_stale_reason,
         }
     else:
         # latest IS accepted (or there's no accepted at all)

@@ -7,6 +7,10 @@ import requests as _requests
 from flask import current_app
 
 from models.db import db, TicketAttempt
+from .project_service import (
+    compare_base_to_accepted_frontier as _compare_base_to_accepted_frontier,
+    get_project_frontier_id as _get_project_frontier_id,
+)
 
 # ---------------------------------------------------------------------------
 # Valid status transitions
@@ -142,23 +146,36 @@ def validate_attempt(attempt: TicketAttempt, agenthub_url: str = "") -> TicketAt
     return attempt
 
 
+def attempt_stale_status(attempt: TicketAttempt, project=None) -> tuple[Optional[bool], Optional[str]]:
+    accepted_frontier_id = _get_project_frontier_id(project) if project else None
+    return _compare_base_to_accepted_frontier(
+        getattr(attempt, "base_hash", None),
+        accepted_frontier_id,
+        subject_name="attempt",
+        base_field_name="attempt.base_hash",
+    )
+
+
 def attempt_to_json(
     attempt: TicketAttempt,
     *,
     include_test_output: bool = False,
+    accepted_frontier_id: Optional[str] = None,
     shipped_frontier: Optional[str] = None,
 ) -> dict:
     """Serialize a TicketAttempt for API responses.
 
-    Pass shipped_frontier to include a staleness flag: True when the attempt's
-    base_hash predates the current frontier (i.e. main has advanced since this
-    attempt was created). This is used by the MVP path even though legacy
-    states remain valid in storage.
+    Pass accepted_frontier_id to compare against the canonical DAG frontier.
+    `shipped_frontier` remains as a compatibility alias for older callers.
     """
     commit = attempt.agenthub_commit_hash or ""
-    stale: Optional[bool] = None
-    if shipped_frontier and attempt.base_hash:
-        stale = attempt.base_hash != shipped_frontier
+    frontier_id = accepted_frontier_id or shipped_frontier
+    stale, stale_reason = _compare_base_to_accepted_frontier(
+        getattr(attempt, "base_hash", None),
+        frontier_id,
+        subject_name="attempt",
+        base_field_name="attempt.base_hash",
+    )
     return {
         "id": str(attempt.id),
         "project_id": str(attempt.project_id),
@@ -176,7 +193,9 @@ def attempt_to_json(
         "summary": attempt.summary,
         "validation_error": attempt.validation_error,
         "test_status": attempt.test_status,
+        "accepted_frontier_id": frontier_id,
         "stale": stale,
+        "stale_reason": stale_reason,
         **({"test_output": attempt.test_output} if include_test_output else {}),
         "created_at": attempt.created_at.isoformat() if attempt.created_at else None,
         "updated_at": attempt.updated_at.isoformat() if attempt.updated_at else None,

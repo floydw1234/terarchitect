@@ -52,7 +52,12 @@ def project(client, app):
     """Create a swarm project and return its JSON."""
     resp = client.post(
         "/api/projects",
-        json={"name": "test-proj", "git_mode": "swarm", "is_existing_repo": True},
+        json={
+            "name": "test-proj",
+            "git_mode": "swarm",
+            "accepted_frontier_id": "leaf_01HZX3CONCURRENCYBASE01234567",
+            "is_existing_repo": True,
+        },
     )
     assert resp.status_code == 201
     return resp.get_json()
@@ -75,7 +80,7 @@ def wave_with_accepted_attempt(client, project):
             project_id=project["id"],
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
-            base_hash="b" * 40,
+            base_hash=project["accepted_frontier_id"],
             wave_num=0,
             attempt_num=1,
             status="accepted",
@@ -330,6 +335,7 @@ def test_accept_attempt_while_compose_running(client, project, wave_with_accepte
             project_id=pid,
             ticket_id=t.id,
             agenthub_commit_hash="c" * 40,
+            base_hash=project["accepted_frontier_id"],
             wave_num=0,
             attempt_num=2,
             status="proposed",

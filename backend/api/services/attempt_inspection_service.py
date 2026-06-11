@@ -5,7 +5,11 @@ from typing import Optional
 
 from models.db import Project, TicketAttempt
 
-from .attempt_service import SATISFIED_STATUSES
+from .attempt_service import (
+    SATISFIED_STATUSES,
+    attempt_stale_status as _attempt_stale_status,
+)
+from .project_service import get_project_frontier_id as _get_project_frontier_id
 
 GIT_TIMEOUT_SECONDS = 10
 DEFAULT_MAX_DIFF_BYTES = 200_000
@@ -247,11 +251,8 @@ def inspect_diff(
 def attempt_inspection_json(project: Project, attempt: TicketAttempt) -> dict:
     inspection = inspect_changed_files(project, attempt)
     ticket = getattr(attempt, "ticket", None)
-    stale = (
-        attempt.base_hash != project.shipped_frontier
-        if getattr(project, "shipped_frontier", None) and attempt.base_hash
-        else None
-    )
+    accepted_frontier_id = _get_project_frontier_id(project)
+    stale, stale_reason = _attempt_stale_status(attempt, project)
     changed_paths = [item["path"] for item in inspection["changed_files"]]
     satisfied = attempt.status in SATISFIED_STATUSES
     accepted = attempt.status == "accepted"
@@ -276,7 +277,9 @@ def attempt_inspection_json(project: Project, attempt: TicketAttempt) -> dict:
         "worker_job_id": attempt.agent_id,
         "test_status": attempt.test_status,
         "validation_error": attempt.validation_error,
+        "accepted_frontier_id": accepted_frontier_id,
         "stale": stale,
+        "stale_reason": stale_reason,
         "git_available": inspection["git_available"],
         "commit_available": inspection["commit_available"],
         "base_available": inspection["base_available"],

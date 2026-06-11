@@ -327,3 +327,130 @@ def test_run_ticket_fails_clearly_when_swarm_ticket_has_no_base_leaf_id(client):
 
     assert response.status_code == 400
     assert "base_leaf_id is required for swarm projects" in response.get_json()["error"]
+
+
+def test_ticket_detail_reports_stale_status_against_accepted_frontier(client):
+    from models.db import Ticket, db
+
+    create_project = client.post(
+        "/api/projects",
+        json={
+            "name": "ticket-stale-status",
+            "git_mode": "swarm",
+            "accepted_frontier_id": "leaf_01HZX3CURRENTFRONTIER01234567",
+            "is_existing_repo": True,
+        },
+    )
+    assert create_project.status_code == 201
+    project_id = create_project.get_json()["id"]
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=project_id,
+            column_id="backlog",
+            title="Stale ticket",
+            intent_status="ready",
+            base_leaf_id="leaf_01HZX3STALETICKETBASE012345678",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+
+    response = client.get(f"/api/projects/{project_id}/tickets/{ticket_id}")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["stale"] is True
+    assert payload["accepted_frontier_id"] == "leaf_01HZX3CURRENTFRONTIER01234567"
+    assert "differs from project.accepted_frontier_id" in payload["stale_reason"]
+
+
+def test_ticket_rerun_from_current_frontier_updates_base_and_enqueues_job(client):
+    from models.db import AgentJob, Ticket, db
+
+    create_project = client.post(
+        "/api/projects",
+        json={
+            "name": "ticket-rerun-current-frontier",
+            "git_mode": "swarm",
+            "github_url": "https://github.com/example/repo",
+            "accepted_frontier_id": "leaf_01HZX3CURRENTFRONTIER01234567",
+            "is_existing_repo": True,
+        },
+    )
+    assert create_project.status_code == 201
+    project_id = create_project.get_json()["id"]
+
+    client.put(
+        f"/api/projects/{project_id}/graph",
+        json={"nodes": [{"id": "node-1", "label": "Node 1"}], "edges": []},
+    )
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=project_id,
+            column_id="done",
+            title="Needs rerun",
+            intent_status="active",
+            base_leaf_id="leaf_01HZX3OLDTICKETBASE0123456789",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+
+    response = client.post(
+        f"/api/projects/{project_id}/tickets/{ticket_id}/rerun-from-current-frontier",
+        json={},
+    )
+
+    assert response.status_code == 202
+    payload = response.get_json()
+    assert payload["base_leaf_id"] == "leaf_01HZX3CURRENTFRONTIER01234567"
+    assert payload["accepted_frontier_id"] == "leaf_01HZX3CURRENTFRONTIER01234567"
+    assert payload["column_id"] == "in_progress"
+    assert payload["intent_status"] == "active"
+    assert payload["stale"] is False
+
+    with client.application.app_context():
+        stored_ticket = db.session.get(Ticket, ticket_id)
+        jobs = AgentJob.query.filter_by(ticket_id=ticket_id).all()
+        assert stored_ticket.base_leaf_id == "leaf_01HZX3CURRENTFRONTIER01234567"
+        assert stored_ticket.column_id == "in_progress"
+        assert len(jobs) == 1
+        assert jobs[0].status == "pending"
+
+
+def test_ticket_rerun_from_current_frontier_fails_when_project_frontier_missing(client):
+    from models.db import Ticket, db
+
+    create_project = client.post(
+        "/api/projects",
+        json={
+            "name": "ticket-rerun-no-frontier",
+            "git_mode": "swarm",
+            "github_url": "https://github.com/example/repo",
+            "is_existing_repo": True,
+        },
+    )
+    assert create_project.status_code == 201
+    project_id = create_project.get_json()["id"]
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=project_id,
+            column_id="done",
+            title="Missing frontier",
+            intent_status="active",
+            base_leaf_id="leaf_01HZX3OLDTICKETBASE0123456789",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+
+    response = client.post(
+        f"/api/projects/{project_id}/tickets/{ticket_id}/rerun-from-current-frontier",
+        json={},
+    )
+
+    assert response.status_code == 409
+    assert "accepted_frontier_id is not set" in response.get_json()["error"]

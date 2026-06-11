@@ -193,3 +193,25 @@ def test_ticket_run_local_passes_explicit_base_and_agenthub_env(monkeypatch):
     assert captured["env"]["AGENTHUB_ROOT_HASH"] == "f" * 40
     assert captured["env"]["AGENTHUB_URL"] == "http://agenthub:8088"
     assert captured["env"]["AGENTHUB_API_KEY"] == "secret"
+
+
+def test_ticket_rerun_current_frontier_hits_explicit_endpoint(capsys):
+    api = StubAPI(post_response={
+        "id": "ticket-1",
+        "column_id": "in_progress",
+        "base_leaf_id": "leaf_01HZX3CURRENTFRONTIER01234567",
+        "accepted_frontier_id": "leaf_01HZX3CURRENTFRONTIER01234567",
+    })
+    args = SimpleNamespace(project_id="proj-1", ticket_id="ticket-1", output="human")
+
+    ticket_cmd._cmd_rerun_current_frontier(args, api)
+
+    assert api.posts == [
+        (
+            "/api/projects/proj-1/tickets/ticket-1/rerun-from-current-frontier",
+            {},
+        )
+    ]
+    stdout = capsys.readouterr().out
+    assert "current frontier" in stdout
+    assert "leaf_01HZX3C" in stdout

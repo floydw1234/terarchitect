@@ -1,5 +1,6 @@
 """Project domain helpers."""
 import re
+from typing import Optional
 
 from flask import current_app
 
@@ -21,6 +22,27 @@ def get_project_frontier_id(project: Project) -> str | None:
 
 def project_has_frontier(project: Project) -> bool:
     return get_project_frontier_id(project) is not None
+
+
+def compare_base_to_accepted_frontier(
+    base_value,
+    accepted_frontier_id,
+    *,
+    subject_name: str,
+    base_field_name: str,
+) -> tuple[Optional[bool], Optional[str]]:
+    normalized_base = normalize_frontier_id(base_value)
+    normalized_frontier = normalize_frontier_id(accepted_frontier_id)
+    missing = []
+    if normalized_base is None:
+        missing.append(f"{base_field_name} is not set")
+    if normalized_frontier is None:
+        missing.append("project.accepted_frontier_id is not set")
+    if missing:
+        return None, f"Cannot determine {subject_name} staleness: {' and '.join(missing)}."
+    if normalized_base != normalized_frontier:
+        return True, f"{base_field_name} differs from project.accepted_frontier_id."
+    return False, None
 
 
 def validate_project_frontier_candidate(project: Project | None, frontier_id) -> tuple[bool, str | None]:
