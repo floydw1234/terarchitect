@@ -56,6 +56,11 @@ from .services.project_service import (
     project_to_json as _project_to_json,
     validate_project_frontier_candidate as _validate_project_frontier_candidate,
 )
+from .services.project_migration_service import (
+    backfill_ticket_base_leaf_ids as _backfill_ticket_base_leaf_ids,
+    project_migration_status as _project_migration_status,
+    set_project_accepted_frontier as _set_project_accepted_frontier,
+)
 from .services.agenthub_import_service import (
     AgenthubImportError as _AgenthubImportError,
     import_project_agenthub_root as _import_project_agenthub_root,
@@ -663,6 +668,36 @@ def project_import_agenthub_root(project_id):
         "project": _project_to_json(project),
         "import_result": import_result,
     })
+
+
+@api_bp.route("/projects/<uuid:project_id>/migration/status", methods=["GET"])
+def project_migration_status(project_id):
+    project = _get_project_or_404(project_id)
+    return jsonify(_project_migration_status(project))
+
+
+@api_bp.route("/projects/<uuid:project_id>/migration/set-frontier", methods=["POST"])
+def project_migration_set_frontier(project_id):
+    project = _get_project_or_404(project_id)
+    data = request.json or {}
+    try:
+        _set_project_accepted_frontier(project, data.get("accepted_frontier_id"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({
+        "project": _project_to_json(project),
+    })
+
+
+@api_bp.route("/projects/<uuid:project_id>/migration/backfill-ticket-bases", methods=["POST"])
+def project_migration_backfill_ticket_bases(project_id):
+    project = _get_project_or_404(project_id)
+    data = request.json or {}
+    try:
+        result = _backfill_ticket_base_leaf_ids(project, dry_run=bool(data.get("dry_run", False)))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(result)
 
 
 @api_bp.route("/projects/<uuid:project_id>/frontier", methods=["POST"])

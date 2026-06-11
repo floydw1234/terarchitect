@@ -1,9 +1,9 @@
-"""project subcommand: list | create | show | update | import-agenthub-root | delete"""
+"""project subcommand: list | create | show | update | import-agenthub-root | migration | delete"""
 
 import sys
 from cli._api import API, APIError
 from cli._config import load_config_file
-from cli._output import die, print_json, print_table, short_id
+from cli._output import die, print_json, print_receipt, print_table, short_id
 
 
 def register(subparsers) -> None:
@@ -59,6 +59,25 @@ def register(subparsers) -> None:
     imp.add_argument("project_id", help="Project ID")
     imp.add_argument("--path", metavar="PATH", help="Optional local repo path override")
 
+    mig = sub.add_parser("migration", help="Admin tools for DAG source-of-truth migration")
+    mig_sub = mig.add_subparsers(dest="migration_cmd", metavar="SUBCOMMAND")
+    mig_sub.required = True
+
+    mig_status = mig_sub.add_parser("status", help="Inspect DAG migration status for a project")
+    mig_status.add_argument("project_id", help="Project ID")
+
+    mig_frontier = mig_sub.add_parser("set-frontier", help="Explicitly set project.accepted_frontier_id")
+    mig_frontier.add_argument("project_id", help="Project ID")
+    mig_frontier.add_argument("--accepted-frontier-id", required=True, metavar="ID", help="Explicit AgentHub leaf id or hash")
+
+    mig_backfill = mig_sub.add_parser("backfill-ticket-bases", help="Backfill missing ticket base_leaf_id values from project.accepted_frontier_id")
+    mig_backfill.add_argument("project_id", help="Project ID")
+    mig_backfill.add_argument("--dry-run", action="store_true", help="Report intended updates without writing")
+
+    mig_import = mig_sub.add_parser("import-agenthub-root", help="Reuse the explicit local repo import path for initial AgentHub import")
+    mig_import.add_argument("project_id", help="Project ID")
+    mig_import.add_argument("--path", metavar="PATH", help="Optional local repo path override")
+
     p.set_defaults(func=_dispatch)
 
 
@@ -74,8 +93,22 @@ def _dispatch(args, api: API) -> None:
         _cmd_update(args, api)
     elif cmd == "import-agenthub-root":
         _cmd_import_agenthub_root(args, api)
+    elif cmd == "migration":
+        _dispatch_migration(args, api)
     elif cmd == "delete":
         _cmd_delete(args, api)
+
+
+def _dispatch_migration(args, api: API) -> None:
+    cmd = args.migration_cmd
+    if cmd == "status":
+        _cmd_migration_status(args, api)
+    elif cmd == "set-frontier":
+        _cmd_migration_set_frontier(args, api)
+    elif cmd == "backfill-ticket-bases":
+        _cmd_migration_backfill_ticket_bases(args, api)
+    elif cmd == "import-agenthub-root":
+        _cmd_import_agenthub_root(args, api)
 
 
 # ---------------------------------------------------------------------------
@@ -235,3 +268,59 @@ def _cmd_import_agenthub_root(args, api: API) -> None:
     print(f"Imported AgentHub root for project {args.project_id}")
     print(f"  Frontier: {project.get('accepted_frontier_id') or import_result.get('accepted_frontier_id')}")
     print(f"  Path:     {import_result.get('path') or project.get('project_path')}")
+
+
+def _cmd_migration_status(args, api: API) -> None:
+    try:
+        result = api.get(f"/api/projects/{args.project_id}/migration/status")
+    except APIError as e:
+        die(e, output=args.output)
+    if args.output == "json":
+        print_json(result)
+        return
+    print(f"Migration status for project {args.project_id}")
+    print(f"  Accepted frontier: {result.get('accepted_frontier_id') or 'unset'}")
+    local_path = result.get("local_path") or {}
+    print(f"  Local path:         {local_path.get('path') or 'unset'}")
+    print(f"  Ticket bases missing: {result.get('ticket_counts', {}).get('missing_base_leaf_id', 0)}")
+    print(f"  Stale tickets:        {result.get('ticket_counts', {}).get('stale', 0)}")
+    print(f"  Attempts missing base/parent: {result.get('attempt_counts', {}).get('missing_base_hash', 0)}")
+
+
+def _cmd_migration_set_frontier(args, api: API) -> None:
+    try:
+        result = api.post(
+            f"/api/projects/{args.project_id}/migration/set-frontier",
+            {"accepted_frontier_id": args.accepted_frontier_id},
+        )
+    except APIError as e:
+        die(e, output=args.output)
+    if args.output == "json":
+        print_json(result)
+        return
+    project = result.get("project") or {}
+    print_receipt(
+        f"Set accepted frontier for project {args.project_id}",
+        fields=[("Frontier", project.get("accepted_frontier_id"))],
+    )
+
+
+def _cmd_migration_backfill_ticket_bases(args, api: API) -> None:
+    try:
+        result = api.post(
+            f"/api/projects/{args.project_id}/migration/backfill-ticket-bases",
+            {"dry_run": bool(getattr(args, "dry_run", False))},
+        )
+    except APIError as e:
+        die(e, output=args.output)
+    if args.output == "json":
+        print_json(result)
+        return
+    print_receipt(
+        f"Backfill ticket bases for project {args.project_id}",
+        fields=[
+            ("Dry run", result.get("dry_run")),
+            ("Frontier", result.get("accepted_frontier_id")),
+            ("Updated", result.get("updated_count")),
+        ],
+    )

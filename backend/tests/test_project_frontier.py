@@ -96,6 +96,236 @@ def test_create_project_does_not_infer_frontier_from_local_checkout(client):
     read_local_tip.assert_not_called()
 
 
+def test_project_migration_status_reports_missing_frontier_and_ticket_bases(client):
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "migration-status",
+            "project_path": "/tmp/migration-status",
+            "execution_mode": "local",
+            "is_existing_repo": True,
+        },
+    )
+    assert create.status_code == 201
+    project_id = create.get_json()["id"]
+
+    from models.db import Ticket, TicketAttempt, db
+    with client.application.app_context():
+        missing_base_ticket = Ticket(
+            project_id=project_id,
+            column_id="backlog",
+            title="Missing base",
+            intent_status="ready",
+            base_leaf_id=None,
+        )
+        stale_ticket = Ticket(
+            project_id=project_id,
+            column_id="backlog",
+            title="Stale ticket",
+            intent_status="ready",
+            base_leaf_id="leaf_01HZX3STALEBASE0123456789AB",
+        )
+        db.session.add_all([missing_base_ticket, stale_ticket])
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=project_id,
+            ticket_id=stale_ticket.id,
+            agenthub_commit_hash="leaf_01HZX3ATTEMPT0123456789ABCD",
+            base_hash=None,
+            attempt_num=1,
+            status="accepted",
+        )
+        db.session.add(attempt)
+        db.session.commit()
+        missing_base_ticket_id = str(missing_base_ticket.id)
+        stale_ticket_id = str(stale_ticket.id)
+        attempt_id = str(attempt.id)
+
+    response = client.get(f"/api/projects/{project_id}/migration/status")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["accepted_frontier_id"] is None
+    assert payload["has_accepted_frontier"] is False
+    assert payload["ticket_counts"]["missing_base_leaf_id"] == 1
+    assert payload["ticket_counts"]["stale"] == 0
+    assert payload["tickets_missing_base_leaf_ids"][0]["id"] == missing_base_ticket_id
+    assert payload["attempt_counts"]["missing_base_hash"] == 1
+    assert payload["attempt_counts"]["missing_parent_leaf_id"] == 1
+    assert payload["attempts_missing_lineage"][0]["id"] == attempt_id
+    assert payload["local_path"]["path"] == "/tmp/migration-status"
+    assert payload["local_path"]["exists"] is False
+    assert payload["local_path"]["is_directory"] is False
+    assert stale_ticket_id not in {item["id"] for item in payload["stale_tickets"]}
+
+
+def test_project_migration_status_reports_stale_tickets_when_frontier_present(client):
+    frontier_id = "leaf_01HZX3CURRENT0123456789ABCDEF"
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "migration-stale",
+            "accepted_frontier_id": frontier_id,
+            "is_existing_repo": True,
+        },
+    )
+    assert create.status_code == 201
+    project_id = create.get_json()["id"]
+
+    from models.db import Ticket, db
+    with client.application.app_context():
+        stale_ticket = Ticket(
+            project_id=project_id,
+            column_id="backlog",
+            title="Stale",
+            intent_status="ready",
+            base_leaf_id="leaf_01HZX3OLD0123456789ABCDEFGHI",
+        )
+        db.session.add(stale_ticket)
+        db.session.commit()
+        ticket_id = str(stale_ticket.id)
+
+    response = client.get(f"/api/projects/{project_id}/migration/status")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ticket_counts"]["stale"] == 1
+    assert payload["stale_tickets"][0]["id"] == ticket_id
+
+
+def test_project_migration_set_frontier_requires_explicit_valid_id_and_updates_project(client):
+    create = client.post(
+        "/api/projects",
+        json={"name": "set-frontier", "is_existing_repo": True},
+    )
+    assert create.status_code == 201
+    project_id = create.get_json()["id"]
+
+    invalid = client.post(
+        f"/api/projects/{project_id}/migration/set-frontier",
+        json={"accepted_frontier_id": "bad frontier"},
+    )
+    assert invalid.status_code == 400
+    assert "accepted_frontier_id" in invalid.get_json()["error"]
+
+    response = client.post(
+        f"/api/projects/{project_id}/migration/set-frontier",
+        json={"accepted_frontier_id": "leaf_01HZX3REPAIR0123456789ABCDE"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["project"]["accepted_frontier_id"] == "leaf_01HZX3REPAIR0123456789ABCDE"
+
+    detail = client.get(f"/api/projects/{project_id}")
+    assert detail.status_code == 200
+    assert detail.get_json()["accepted_frontier_id"] == "leaf_01HZX3REPAIR0123456789ABCDE"
+
+
+def test_project_migration_backfill_ticket_bases_dry_run_reports_without_writing(client):
+    frontier_id = "leaf_01HZX3BACKFILL0123456789ABCD"
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "backfill-dry-run",
+            "accepted_frontier_id": frontier_id,
+            "is_existing_repo": True,
+        },
+    )
+    assert create.status_code == 201
+    project_id = create.get_json()["id"]
+
+    from models.db import Ticket, db
+    with client.application.app_context():
+        missing = Ticket(project_id=project_id, column_id="backlog", title="Missing", base_leaf_id=None)
+        present = Ticket(project_id=project_id, column_id="backlog", title="Present", base_leaf_id="leaf_01HZX3EXISTING0123456789AB")
+        db.session.add_all([missing, present])
+        db.session.commit()
+        missing_id = str(missing.id)
+
+    response = client.post(
+        f"/api/projects/{project_id}/migration/backfill-ticket-bases",
+        json={"dry_run": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["dry_run"] is True
+    assert payload["updated_count"] == 1
+    assert payload["tickets_to_update"] == [{"id": missing_id, "base_leaf_id": frontier_id}]
+
+    detail = client.get(f"/api/projects/{project_id}/tickets/{missing_id}")
+    assert detail.status_code == 200
+    assert detail.get_json()["base_leaf_id"] is None
+
+
+def test_project_migration_backfill_ticket_bases_apply_writes_missing_bases(client):
+    frontier_id = "leaf_01HZX3BACKFILLAPPLY012345678"
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "backfill-apply",
+            "accepted_frontier_id": frontier_id,
+            "is_existing_repo": True,
+        },
+    )
+    assert create.status_code == 201
+    project_id = create.get_json()["id"]
+
+    from models.db import Ticket, db
+    with client.application.app_context():
+        missing = Ticket(project_id=project_id, column_id="backlog", title="Missing", base_leaf_id=None)
+        present = Ticket(project_id=project_id, column_id="backlog", title="Present", base_leaf_id="leaf_01HZX3EXISTING0123456789AB")
+        db.session.add_all([missing, present])
+        db.session.commit()
+        missing_id = str(missing.id)
+
+    response = client.post(
+        f"/api/projects/{project_id}/migration/backfill-ticket-bases",
+        json={"dry_run": False},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["dry_run"] is False
+    assert payload["updated_count"] == 1
+    assert payload["tickets_to_update"] == [{"id": missing_id, "base_leaf_id": frontier_id}]
+
+    detail = client.get(f"/api/projects/{project_id}/tickets/{missing_id}")
+    assert detail.status_code == 200
+    assert detail.get_json()["base_leaf_id"] == frontier_id
+
+
+def test_project_migration_actions_do_not_use_local_git_head_fallback(client):
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "no-local-head-fallback",
+            "project_path": "/tmp/no-local-head-fallback",
+            "execution_mode": "local",
+            "is_existing_repo": True,
+        },
+    )
+    assert create.status_code == 201
+    project_id = create.get_json()["id"]
+
+    with patch("api.routes._read_local_git_tip") as read_local_tip:
+        status_response = client.get(f"/api/projects/{project_id}/migration/status")
+        set_response = client.post(
+            f"/api/projects/{project_id}/migration/set-frontier",
+            json={"accepted_frontier_id": "leaf_01HZX3NOFALLBACK0123456789AB"},
+        )
+        backfill_response = client.post(
+            f"/api/projects/{project_id}/migration/backfill-ticket-bases",
+            json={"dry_run": True},
+        )
+
+    assert status_response.status_code == 200
+    assert set_response.status_code == 200
+    assert backfill_response.status_code == 200
+    read_local_tip.assert_not_called()
+
+
 def _make_import_repo(tmp_path):
     repo = tmp_path / "import-repo"
     repo.mkdir()

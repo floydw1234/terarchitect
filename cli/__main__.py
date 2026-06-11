@@ -5,7 +5,9 @@ Usage:
     python -m cli [--api-url URL] [--output json] COMMAND SUBCOMMAND [args]
 
 Commands:
-    project    list | create | show | update | delete
+    project    list | create | show | update | delete | import-agenthub-root
+               | migration status | migration set-frontier | migration backfill-ticket-bases
+               | migration import-agenthub-root
     ticket     list | create | show | update | run | cancel | logs
                | attempts | accept-attempt | reject-attempt
                (Intent fields: --rationale, --acceptance-criteria, --constraints, --intent-status)

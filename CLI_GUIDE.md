@@ -6,6 +6,7 @@ This guide defines the shared CLI and API conventions that new Terarchitect comm
 
 - Use a stable top-level command group such as `project`, `ticket`, `attempt`, `ship`, `workspace`, `graph`, or `plan`.
 - Prefer verb-oriented subcommands: `list`, `show`, `create`, `update`, `delete`, `run`, `compose-candidate`.
+- For explicit operator-only maintenance flows, prefer a narrow namespace such as `project migration ...` instead of overloading everyday ticket/project commands.
 - Keep backend-specific escape hatches out of operator-facing names unless there is no shared abstraction yet.
 
 ## Output modes
