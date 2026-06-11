@@ -96,6 +96,82 @@ def post_ticket_event(ticket_id: str, event_type: str, message: str, metadata: d
     _ah_post(f"/api/channels/{channel}/posts", {"content": body})
 
 
+def _format_subprocess_output(result: subprocess.CompletedProcess[str]) -> str:
+    parts = []
+    if result.stdout:
+        parts.append(result.stdout.strip())
+    if result.stderr:
+        parts.append(result.stderr.strip())
+    return "\n".join(part for part in parts if part).strip()
+
+
+def _is_missing_prerequisite_push_failure(result: subprocess.CompletedProcess[str]) -> bool:
+    if result.returncode == 0:
+        return False
+    output = _format_subprocess_output(result).lower()
+    return "repository lacks these prerequisite commits" in output
+
+
+def _run_ah_push(project_path: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["ah", "push"],
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+
+
+def _retry_ah_push_with_full_bundle(project_path: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    print(
+        "[git_backend] AgentHub rejected incremental bundle due to missing prerequisite commits; "
+        "retrying with a full bundle from an isolated clone",
+        flush=True,
+    )
+    with tempfile.TemporaryDirectory(prefix="agenthub-full-push-") as tmp_dir:
+        clone_path = os.path.join(tmp_dir, "repo")
+        clone_r = subprocess.run(
+            ["git", "clone", project_path, clone_path],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+        )
+        if clone_r.returncode != 0:
+            print(
+                f"[git_backend] Full-bundle retry clone failed: {_format_subprocess_output(clone_r)[:300]}",
+                flush=True,
+            )
+            return clone_r
+
+        remote_r = subprocess.run(
+            ["git", "remote", "remove", "origin"],
+            cwd=clone_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+        )
+        if remote_r.returncode != 0:
+            print(
+                f"[git_backend] Full-bundle retry could not remove origin from temp clone: "
+                f"{_format_subprocess_output(remote_r)[:300]}",
+                flush=True,
+            )
+            return remote_r
+
+        retry_r = _run_ah_push(clone_path, env)
+        if retry_r.returncode == 0:
+            print("[git_backend] Full-bundle retry succeeded", flush=True)
+        else:
+            print(
+                f"[git_backend] Full-bundle retry failed: {_format_subprocess_output(retry_r)[:300]}",
+                flush=True,
+            )
+        return retry_r
+
+
 # ---------------------------------------------------------------------------
 # Peer context — injected into Director prompt before work starts (swarm only)
 # ---------------------------------------------------------------------------
@@ -251,10 +327,11 @@ def swarm_publish(
         return None
 
     # Push to agenthub via ah CLI (reads AGENTHUB_URL + AGENTHUB_API_KEY from env)
-    push_r = subprocess.run(
-        ["ah", "push"],
-        cwd=project_path, capture_output=True, text=True, timeout=120, env=env,
-    )
+    push_r = _run_ah_push(project_path, env)
+    if _is_missing_prerequisite_push_failure(push_r):
+        push_r = _retry_ah_push_with_full_bundle(project_path, env)
+    elif push_r.returncode != 0:
+        print(f"[git_backend] ah push failed: {_format_subprocess_output(push_r)[:300]}", flush=True)
 
     # Post completion notice to ticket channel (auto-created if it doesn't exist)
     post_ticket_event(ticket_id, "attempt_published", f"done: {summary[:400]}" if summary else "done", {"ticket_id": ticket_id, "commit_hash": commit_hash, "commit_short": commit_hash[:12]})
