@@ -26,6 +26,7 @@ from typing import Dict, List, Optional
 from dotenv import load_dotenv
 
 import requests
+from agenthub_preflight import AgenthubPreflightError, prepare_local_job
 
 # Load .env from coordinator directory (so "python -m coordinator" from repo root sees coordinator/.env)
 _load_dir = Path(__file__).resolve().parent
@@ -389,7 +390,7 @@ def job_to_env(job: dict, for_docker: bool = False) -> dict:
     # and the current shipped root without any wave-derived meaning.
     if job.get("base_hash"):
         env["BASE_HASH"] = str(job["base_hash"])
-    root_hash = job.get("agenthub_root_hash") or job.get("shipped_frontier")
+    root_hash = job.get("agenthub_root_hash") or job.get("shipped_frontier") or job.get("base_hash")
     if root_hash:
         env["AGENTHUB_ROOT_HASH"] = str(root_hash)
     # When execution_mode=local, agent runs on host and uses this path instead of cloning
@@ -590,6 +591,14 @@ def _run_job(base_url: str, job_id: str, job: dict, default_image: str, project_
     project_id = str(job.get("project_id", ""))
     if job.get("execution_mode") == "local":
         # Local: run agent on host only (AGENT_WORKSPACE set in job_to_env)
+        try:
+            job = prepare_local_job(job)
+        except AgenthubPreflightError as exc:
+            message = f"Local swarm preflight failed: {exc}"
+            post_failure_log(base_url, job, message, reason="agenthub_preflight")
+            mark_fail(base_url, job_id)
+            print(f"[coordinator] job {job_id} failed preflight: {exc}", file=sys.stderr, flush=True)
+            return
         code = _run_agent_direct(job, "", base_url, job_id=job_id)
         if code == 0:
             mark_complete(base_url, job_id)

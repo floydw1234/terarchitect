@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 
+from agenthub_preflight import AgenthubPreflightError, prepare_local_job
 from cli._api import API, APIError
 from cli._config import load_config_file
 from cli._output import die, print_json, print_receipt, print_table, short_id
@@ -471,6 +472,20 @@ def _run_local(args, api: API) -> None:
 
     repo_url = project.get("github_url") or ""
     api_url = api.base_url
+    try:
+        prepared = prepare_local_job(
+            {
+                "project_id": args.project_id,
+                "ticket_id": args.ticket_id,
+                "repo_url": repo_url,
+                "execution_mode": "local",
+                "git_mode": project.get("git_mode") or "swarm",
+                "project_path": project.get("project_path"),
+                "shipped_frontier": project.get("shipped_frontier"),
+            }
+        )
+    except AgenthubPreflightError as e:
+        die(str(e), output=args.output)
 
     # Repo root is two levels above this file: cli/../
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -482,6 +497,10 @@ def _run_local(args, api: API) -> None:
         "TERARCHITECT_API_URL": api_url,
         "REPO_URL": repo_url,
     }
+    if prepared.get("base_hash"):
+        env["BASE_HASH"] = prepared["base_hash"]
+    if prepared.get("agenthub_root_hash"):
+        env["AGENTHUB_ROOT_HASH"] = prepared["agenthub_root_hash"]
 
     print(f"Running agent locally for ticket {args.ticket_id}")
     result = subprocess.run(

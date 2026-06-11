@@ -13,6 +13,7 @@ Covers:
   - coordinator env forwarding keeps BASE_HASH and AGENTHUB_ROOT_HASH intact
 """
 import os
+import subprocess
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -406,6 +407,98 @@ def test_coordinator_job_to_env_forwards_base_hashes():
 
     assert env["BASE_HASH"] == "b" * 40
     assert env["AGENTHUB_ROOT_HASH"] == "f" * 40
+
+
+def test_coordinator_job_to_env_uses_base_hash_as_root_fallback():
+    from coordinator.coordinator import job_to_env
+
+    env = job_to_env(
+        {
+            "project_id": "p1",
+            "ticket_id": "t1",
+            "repo_url": "https://github.com/org/repo",
+            "job_id": "j1",
+            "kind": "ticket",
+            "base_hash": "b" * 40,
+        },
+        for_docker=False,
+    )
+
+    assert env["BASE_HASH"] == "b" * 40
+    assert env["AGENTHUB_ROOT_HASH"] == "b" * 40
+
+
+def test_job_to_response_uses_local_repo_head_when_frontier_missing(app, tmp_path):
+    from api.services.job_service import job_to_response
+    from models.db import AgentJob, Project, Ticket, db
+
+    repo = tmp_path / "job-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, capture_output=True, text=True)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True, text=True)
+    head_hash = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    with app.app_context():
+        project = Project(
+            name="local-job-project",
+            execution_mode="local",
+            git_mode="swarm",
+            project_path=str(repo),
+        )
+        db.session.add(project)
+        db.session.flush()
+        ticket = Ticket(
+            project_id=project.id,
+            column_id="queued",
+            title="Local job",
+            intent_status="ready",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        job = AgentJob(
+            ticket_id=ticket.id,
+            project_id=project.id,
+            kind="ticket",
+            status="pending",
+        )
+        db.session.add(job)
+        db.session.commit()
+
+        payload = job_to_response(job)
+
+    assert payload["base_hash"] == head_hash
+    assert payload["agenthub_root_hash"] == head_hash
+    assert payload["base_selection"]["base_source"] == "project_head"
+
+
+def test_prepare_local_job_raises_when_agenthub_base_missing_and_no_repo_path():
+    from agenthub_preflight import AgenthubPreflightError, prepare_local_job
+
+    missing = MagicMock()
+    missing.status_code = 200
+    missing.raise_for_status.return_value = None
+    missing.json.return_value = {"exists": False, "bundle_fetchable": False}
+
+    with patch("agenthub_preflight.requests.get", return_value=missing):
+        with pytest.raises(AgenthubPreflightError, match="missing base commit"):
+            prepare_local_job(
+                {
+                    "execution_mode": "local",
+                    "git_mode": "swarm",
+                    "base_hash": "a" * 40,
+                },
+                env={"AGENTHUB_URL": "http://agenthub:8088", "AGENTHUB_API_KEY": "secret"},
+            )
 
 
 # ---------------------------------------------------------------------------

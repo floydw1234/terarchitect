@@ -2,6 +2,7 @@
 
 from flask import current_app
 
+from agenthub_preflight import read_git_head
 from models.db import db, Project, Ticket, AgentJob, TicketAttempt
 from .attempt_service import SATISFIED_STATUSES as _SATISFIED_STATUSES
 
@@ -193,6 +194,17 @@ def job_to_response(job):
     if ticket and project and git_mode == "swarm":
         base_context = mvp_dependency_base_context(ticket, project)
         base_hash = base_context.get("base_hash")
+        if not base_hash and execution_mode == "local" and not base_context.get("blocked"):
+            local_head = read_git_head((project.project_path or "").strip() or None)
+            if local_head:
+                base_hash = local_head
+                base_context = {
+                    **base_context,
+                    "base_hash": local_head,
+                    "base_source": "project_head",
+                    "blocked": False,
+                    "blocked_reason": None,
+                }
         current_app.logger.info(
             "base_selection project=%s ticket=%s base=%s source=%s frontier=%s deps=%s",
             job.project_id, job.ticket_id,
@@ -213,7 +225,7 @@ def job_to_response(job):
         "project_path": (project.project_path or "").strip() or None if project else None,
         "base_hash": base_hash,
         "shipped_frontier": shipped_frontier,
-        "agenthub_root_hash": shipped_frontier,
+        "agenthub_root_hash": shipped_frontier or base_hash,
         "base_selection": base_context,
     }
     return out

@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from cli.commands import ticket as ticket_cmd
 
@@ -94,3 +95,48 @@ def test_ticket_logs_renders_structured_failure_event_and_next_commands(capsys):
     assert "Execution failed" in stdout
     assert "Run the targeted test locally." in stdout
     assert "pytest agent/tests/test_ticket_run_logging.py" in stdout
+
+
+def test_ticket_run_local_passes_explicit_base_and_agenthub_env(monkeypatch):
+    captured = {}
+
+    class LocalAPI:
+        base_url = "http://backend:5000"
+
+        def get(self, path):
+            assert path == "/api/projects/proj-1"
+            return {
+                "id": "proj-1",
+                "github_url": "https://github.com/org/repo",
+                "git_mode": "swarm",
+                "project_path": "/repo/worktree",
+                "shipped_frontier": "f" * 40,
+            }
+
+    def fake_run(cmd, cwd, env):
+        captured["cmd"] = cmd
+        captured["cwd"] = cwd
+        captured["env"] = env
+        return SimpleNamespace(returncode=0)
+
+    args = SimpleNamespace(project_id="proj-1", ticket_id="ticket-1", output="human")
+    monkeypatch.setenv("AGENTHUB_URL", "http://agenthub:8088")
+    monkeypatch.setenv("AGENTHUB_API_KEY", "secret")
+    monkeypatch.setattr(ticket_cmd, "prepare_local_job", lambda job: {
+        **job,
+        "base_hash": "f" * 40,
+        "agenthub_root_hash": "f" * 40,
+    })
+    monkeypatch.setattr(ticket_cmd.subprocess, "run", fake_run)
+
+    with patch.object(ticket_cmd.sys, "exit", side_effect=SystemExit(0)):
+        try:
+            ticket_cmd._run_local(args, LocalAPI())
+        except SystemExit as exc:
+            assert exc.code == 0
+
+    assert captured["cmd"][-2:] == ["agent.agent_runner", "ticket"]
+    assert captured["env"]["BASE_HASH"] == "f" * 40
+    assert captured["env"]["AGENTHUB_ROOT_HASH"] == "f" * 40
+    assert captured["env"]["AGENTHUB_URL"] == "http://agenthub:8088"
+    assert captured["env"]["AGENTHUB_API_KEY"] == "secret"
