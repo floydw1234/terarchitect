@@ -1,4 +1,4 @@
-"""project subcommand: list | create | show | update | delete"""
+"""project subcommand: list | create | show | update | import-agenthub-root | delete"""
 
 import sys
 from cli._api import API, APIError
@@ -54,6 +54,11 @@ def register(subparsers) -> None:
     dd.add_argument("--confirm", metavar="NAME",
                     help="Project name to confirm deletion (prompted if omitted)")
 
+    # import-agenthub-root
+    imp = sub.add_parser("import-agenthub-root", help="Import a local repo into AgentHub and set the project frontier")
+    imp.add_argument("project_id", help="Project ID")
+    imp.add_argument("--path", metavar="PATH", help="Optional local repo path override")
+
     p.set_defaults(func=_dispatch)
 
 
@@ -67,6 +72,8 @@ def _dispatch(args, api: API) -> None:
         _cmd_show(args, api)
     elif cmd == "update":
         _cmd_update(args, api)
+    elif cmd == "import-agenthub-root":
+        _cmd_import_agenthub_root(args, api)
     elif cmd == "delete":
         _cmd_delete(args, api)
 
@@ -210,3 +217,21 @@ def _cmd_delete(args, api: API) -> None:
     except APIError as e:
         die(str(e))
     print(f"Deleted project {args.project_id}")
+
+
+def _cmd_import_agenthub_root(args, api: API) -> None:
+    payload = {}
+    if getattr(args, "path", None):
+        payload["path"] = args.path
+    try:
+        result = api.post(f"/api/projects/{args.project_id}/import-agenthub-root", payload)
+    except APIError as e:
+        die(str(e))
+    if args.output == "json":
+        print_json(result)
+        return
+    project = result.get("project") or {}
+    import_result = result.get("import_result") or {}
+    print(f"Imported AgentHub root for project {args.project_id}")
+    print(f"  Frontier: {project.get('accepted_frontier_id') or import_result.get('accepted_frontier_id')}")
+    print(f"  Path:     {import_result.get('path') or project.get('project_path')}")

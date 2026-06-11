@@ -71,3 +71,22 @@ def test_project_update_passes_explicit_frontier_id():
             {"accepted_frontier_id": "leaf_01HZX3ABCD9EF0123456789XYZ"},
         )
     ]
+
+
+def test_project_import_agenthub_root_posts_explicit_path(capsys):
+    api = StubAPI()
+    args = SimpleNamespace(
+        project_id="proj-1",
+        path="/repo/demo",
+        output="human",
+    )
+
+    project_cmd._cmd_import_agenthub_root(args, api)
+
+    assert api.posts == [
+        (
+            "/api/projects/proj-1/import-agenthub-root",
+            {"path": "/repo/demo"},
+        )
+    ]
+    assert "Imported AgentHub root for project proj-1" in capsys.readouterr().out

@@ -55,6 +55,10 @@ from .services.project_service import (
     project_to_json as _project_to_json,
     validate_project_frontier_candidate as _validate_project_frontier_candidate,
 )
+from .services.agenthub_import_service import (
+    AgenthubImportError as _AgenthubImportError,
+    import_project_agenthub_root as _import_project_agenthub_root,
+)
 from .services.ticket_service import (
     dispatch_unblocked_queued as _dispatch_unblocked_queued,
     enqueue_ticket_job as _enqueue_ticket_job,
@@ -638,6 +642,23 @@ def project_detail(project_id):
         db.session.delete(project)
         db.session.commit()
         return jsonify({"message": "Project deleted"})
+
+
+@api_bp.route("/projects/<uuid:project_id>/import-agenthub-root", methods=["POST"])
+def project_import_agenthub_root(project_id):
+    """Explicitly import a local repo into AgentHub and set accepted_frontier_id."""
+    project = _get_project_or_404(project_id)
+    data = request.json or {}
+    try:
+        import_result = _import_project_agenthub_root(project, path_override=data.get("path"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except _AgenthubImportError as exc:
+        return jsonify({"error": str(exc)}), 422
+    return jsonify({
+        "project": _project_to_json(project),
+        "import_result": import_result,
+    })
 
 
 @api_bp.route("/projects/<uuid:project_id>/frontier", methods=["POST"])

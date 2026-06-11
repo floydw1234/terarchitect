@@ -1,3 +1,6 @@
+import os
+import subprocess
+from importlib import import_module
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -91,3 +94,113 @@ def test_create_project_does_not_infer_frontier_from_local_checkout(client):
     assert payload["accepted_frontier_id"] is None
     assert payload["frontier_warning"]
     read_local_tip.assert_not_called()
+
+
+def _make_import_repo(tmp_path):
+    repo = tmp_path / "import-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, capture_output=True, text=True)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True, text=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    branch = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (repo / "README.md").write_text("base\ndirty\n", encoding="utf-8")
+    (repo / "UNTRACKED.txt").write_text("new\n", encoding="utf-8")
+    return repo, head, branch
+
+
+def test_import_agenthub_root_sets_accepted_frontier_id_and_returns_git_metadata(client, tmp_path):
+    repo, head, branch = _make_import_repo(tmp_path)
+    create = client.post(
+        "/api/projects",
+        json={
+            "name": "import-target",
+            "project_path": str(repo),
+            "execution_mode": "local",
+            "is_existing_repo": True,
+        },
+    )
+    assert create.status_code == 201
+    project_id = create.get_json()["id"]
+
+    push_response = SimpleNamespace(
+        status_code=200,
+        text='{"ok":true}',
+        raise_for_status=lambda: None,
+    )
+    missing_receipt_response = SimpleNamespace(
+        status_code=404,
+        raise_for_status=lambda: None,
+    )
+    receipt_response = SimpleNamespace(
+        status_code=200,
+        raise_for_status=lambda: None,
+        json=lambda: {
+            "hash": head,
+            "exists": True,
+            "is_leaf": True,
+            "bundle_fetchable": True,
+            "parents": [],
+        },
+    )
+
+    with patch.dict(
+        os.environ,
+        {"AGENTHUB_URL": "http://agenthub:8088", "AGENTHUB_API_KEY": "secret"},
+        clear=False,
+    ):
+        service = import_module("api.services.agenthub_import_service")
+        with patch.object(service.requests, "post", return_value=push_response) as post_mock:
+            with patch.object(
+                service.requests,
+                "get",
+                side_effect=[missing_receipt_response, receipt_response],
+            ) as get_mock:
+                response = client.post(f"/api/projects/{project_id}/import-agenthub-root", json={})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["project"]["accepted_frontier_id"] == head
+    assert payload["import_result"]["accepted_frontier_id"] == head
+    assert payload["import_result"]["path"] == str(repo.resolve())
+    assert payload["import_result"]["git"]["head_sha"] == head
+    assert payload["import_result"]["git"]["branch"] == branch
+    assert payload["import_result"]["git"]["is_dirty"] is True
+    assert payload["import_result"]["git"]["has_untracked"] is True
+    assert payload["import_result"]["git"]["is_git_repo"] is True
+    assert payload["import_result"]["agenthub_receipt"]["hash"] == head
+    assert post_mock.called
+    assert get_mock.called
+
+    detail = client.get(f"/api/projects/{project_id}")
+    assert detail.status_code == 200
+    assert detail.get_json()["accepted_frontier_id"] == head
+
+
+def test_import_agenthub_root_requires_project_path(client):
+    create = client.post(
+        "/api/projects",
+        json={"name": "missing-import-path", "is_existing_repo": True},
+    )
+    assert create.status_code == 201
+    project_id = create.get_json()["id"]
+
+    response = client.post(f"/api/projects/{project_id}/import-agenthub-root", json={})
+
+    assert response.status_code == 400
+    assert "project_path" in response.get_json()["error"]
