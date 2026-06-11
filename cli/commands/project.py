@@ -29,6 +29,7 @@ def register(subparsers) -> None:
     c.add_argument("--git-mode", choices=["swarm"], default="swarm",
                    help="Git mode (always swarm)")
     c.add_argument("--project-path", metavar="PATH", help="Host path for local execution mode")
+    c.add_argument("--accepted-frontier-id", metavar="ID", help="Canonical AgentHub frontier id for the project")
     c.add_argument("--existing-repo", action="store_true",
                    help="Skip creating default setup ticket (existing repo)")
 
@@ -45,6 +46,7 @@ def register(subparsers) -> None:
     u.add_argument("--execution-mode", choices=["docker", "local"])
     u.add_argument("--git-mode", choices=["swarm"])
     u.add_argument("--project-path", metavar="PATH")
+    u.add_argument("--accepted-frontier-id", metavar="ID")
 
     # delete
     dd = sub.add_parser("delete", help="Delete a project")
@@ -111,6 +113,7 @@ def _cmd_create(args, api: API) -> None:
         "execution_mode": getattr(args, "execution_mode", None) or cfg.get("execution_mode", "docker"),
         "git_mode": getattr(args, "git_mode", None) or cfg.get("git_mode", "swarm"),
         "project_path": getattr(args, "project_path", None) or cfg.get("project_path"),
+        "accepted_frontier_id": getattr(args, "accepted_frontier_id", None) or cfg.get("accepted_frontier_id"),
         "is_existing_repo": getattr(args, "existing_repo", False) or cfg.get("is_existing_repo", False),
     }
     payload = {k: v for k, v in payload.items() if v is not None and v is not False or k == "is_existing_repo"}
@@ -177,6 +180,8 @@ def _cmd_update(args, api: API) -> None:
         payload["git_mode"] = args.git_mode
     if getattr(args, "project_path", None):
         payload["project_path"] = args.project_path
+    if getattr(args, "accepted_frontier_id", None) is not None:
+        payload["accepted_frontier_id"] = args.accepted_frontier_id
     if not payload:
         die("No fields to update. Pass at least one option.")
     try:

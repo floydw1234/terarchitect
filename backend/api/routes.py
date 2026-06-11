@@ -51,7 +51,9 @@ from .services.github_service import (
 )
 from .services.project_service import (
     bootstrap_project_memory as _bootstrap_project_memory,
+    normalize_frontier_id as _normalize_frontier_id,
     project_to_json as _project_to_json,
+    validate_project_frontier_candidate as _validate_project_frontier_candidate,
 )
 from .services.ticket_service import (
     dispatch_unblocked_queued as _dispatch_unblocked_queued,
@@ -516,6 +518,7 @@ def projects():
         if not data.get("name"):
             return jsonify({"error": "name is required"}), 400
         project_path_val = (data.get("project_path") or "").strip() or None
+        accepted_frontier_id = _normalize_frontier_id(data.get("accepted_frontier_id"))
         project = Project(
             name=data.get("name"),
             description=data.get("description"),
@@ -523,17 +526,12 @@ def projects():
             execution_mode="local" if (data.get("execution_mode") or "").strip().lower() == "local" else "docker",
             git_mode="swarm",
             project_path=project_path_val,
+            accepted_frontier_id=accepted_frontier_id,
         )
-        # Seed shipped_frontier: try local git first, then GitHub URL
-        frontier_tip = None
-        if project_path_val:
-            frontier_tip = _read_local_git_tip(project_path_val)
-        if not frontier_tip and data.get("github_url"):
-            frontier_tip = _fetch_github_default_branch_tip(data["github_url"])
-        if frontier_tip:
-            from datetime import datetime, timezone
-            project.shipped_frontier = frontier_tip
-            project.shipped_frontier_updated_at = datetime.now(timezone.utc)
+        if accepted_frontier_id is not None:
+            valid, error = _validate_project_frontier_candidate(project, accepted_frontier_id)
+            if not valid:
+                return jsonify({"error": error}), 400
         db.session.add(project)
         db.session.flush()  # assigns project.id from the DB before it's used below
         graph = Graph(project_id=project.id)
@@ -580,14 +578,13 @@ def projects():
         response = {
             **_project_to_json(project),
             "created_at": project.created_at.isoformat(),
+            "frontier_warning": None,
         }
-        # Plan 4.2: warn if frontier could not be seeded — agents will start from clone base
-        git_mode_val = getattr(project, "git_mode", "swarm") or "swarm"
-        if git_mode_val == "swarm" and not project.shipped_frontier:
+        if not project.accepted_frontier_id:
             response["frontier_warning"] = (
-                "Could not determine the repository's default branch tip. "
-                "Set the frontier manually via POST /api/projects/{id}/frontier "
-                "before running agents, or it will be set automatically after the first ship."
+                "Project has no canonical AgentHub frontier configured. "
+                "Set accepted_frontier_id explicitly on create/import or via PUT /api/projects/{id} "
+                "before tickets start defaulting to a DAG frontier."
             )
         return jsonify(response), 201
 
@@ -611,6 +608,13 @@ def project_detail(project_id):
             project.git_mode = "swarm"
         if "project_path" in data:
             project.project_path = data.get("project_path") or None
+        if "accepted_frontier_id" in data:
+            accepted_frontier_id = _normalize_frontier_id(data.get("accepted_frontier_id"))
+            if accepted_frontier_id is not None:
+                valid, error = _validate_project_frontier_candidate(project, accepted_frontier_id)
+                if not valid:
+                    return jsonify({"error": error}), 400
+            project.accepted_frontier_id = accepted_frontier_id
         db.session.commit()
         return jsonify(_project_to_json(project))
 

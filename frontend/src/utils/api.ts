@@ -52,10 +52,12 @@ export interface Project {
   project_path?: string | null;
   execution_mode?: ProjectExecutionMode;
   git_mode?: ProjectGitMode;
+  /** Canonical accepted AgentHub frontier id for future ticket execution. */
+  accepted_frontier_id?: string | null;
   /** Last shipped main commit hash. All new agent work builds on top of this. */
   shipped_frontier?: string | null;
   shipped_frontier_updated_at?: string | null;
-  /** Set on project creation when frontier could not be auto-detected. */
+  /** Set when the project lacks an explicit canonical DAG frontier. */
   frontier_warning?: string | null;
   created_at?: string;
   updated_at?: string;
@@ -395,6 +397,7 @@ export async function createProject(data: {
   github_url?: string;
   execution_mode?: ProjectExecutionMode;
   git_mode?: ProjectGitMode;
+  accepted_frontier_id?: string | null;
   project_path?: string;
   /** If true, project is from an existing repo; default "Project setup" ticket is not created. */
   is_existing_repo?: boolean;
@@ -418,6 +421,7 @@ export async function updateProject(projectId: string, data: {
   github_url?: string;
   execution_mode?: ProjectExecutionMode;
   git_mode?: ProjectGitMode;
+  accepted_frontier_id?: string | null;
   project_path?: string | null;
 }): Promise<Project> {
   const response = await fetch(`${API_URL}/api/projects/${projectId}`, {

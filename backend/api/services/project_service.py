@@ -1,7 +1,38 @@
 """Project domain helpers."""
+import re
+
 from flask import current_app
 
 from models.db import Project
+
+_FRONTIER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{6,254}$")
+
+
+def normalize_frontier_id(value) -> str | None:
+    if value is None:
+        return None
+    frontier_id = str(value).strip()
+    return frontier_id or None
+
+
+def get_project_frontier_id(project: Project) -> str | None:
+    return normalize_frontier_id(getattr(project, "accepted_frontier_id", None))
+
+
+def project_has_frontier(project: Project) -> bool:
+    return get_project_frontier_id(project) is not None
+
+
+def validate_project_frontier_candidate(project: Project | None, frontier_id) -> tuple[bool, str | None]:
+    normalized = normalize_frontier_id(frontier_id)
+    if normalized is None:
+        return False, "accepted_frontier_id is required"
+    if not _FRONTIER_ID_RE.fullmatch(normalized):
+        return False, "accepted_frontier_id must look like an AgentHub frontier id or hash"
+    git_mode = (getattr(project, "git_mode", None) or "swarm").strip().lower() if project else "swarm"
+    if git_mode != "swarm":
+        return False, "accepted_frontier_id is only valid for swarm projects"
+    return True, None
 
 
 def project_to_json(project: Project):
@@ -15,6 +46,7 @@ def project_to_json(project: Project):
         "execution_mode": getattr(project, "execution_mode", None) or "docker",
         "git_mode": getattr(project, "git_mode", None) or "swarm",
         "project_path": project.project_path,
+        "accepted_frontier_id": get_project_frontier_id(project),
         "shipped_frontier": frontier,
         "shipped_frontier_updated_at": frontier_updated.isoformat() if frontier_updated else None,
         "created_at": project.created_at.isoformat() if project.created_at else None,

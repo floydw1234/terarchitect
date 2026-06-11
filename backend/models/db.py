@@ -39,6 +39,8 @@ class Project(db.Model):
     github_url = db.Column(db.Text)    # GitHub repository URL for PR creation and docker-mode clone
     execution_mode = db.Column(db.String(50), nullable=False, default="docker")  # "docker" | "local"
     git_mode = db.Column(db.String(20), nullable=False, default="swarm")
+    # Canonical AgentHub leaf/frontier selected for future ticket execution.
+    accepted_frontier_id = db.Column(db.String(255))
     # Canonical DAG-native noun: the currently shipped frontier commit for this project.
     # New work and future promotion validation should derive from this shipped state.
     shipped_frontier = db.Column(db.String(255))
