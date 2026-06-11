@@ -655,6 +655,132 @@ def test_accept_attempt_supersedes_prior_accepted_attempt(client, project):
     assert [attempt["status"] for attempt in attempts] == ["accepted", "superseded"]
 
 
+def test_accept_attempt_advances_project_accepted_frontier(client, project):
+    pid = project["id"]
+    initial_frontier = project["accepted_frontier_id"]
+    from models.db import db, Project, Ticket, TicketAttempt
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Advance frontier ticket",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="d" * 40,
+            base_hash=initial_frontier,
+            wave_num=0,
+            attempt_num=1,
+            status="proposed",
+            summary="advance accepted frontier",
+        )
+        db.session.add(attempt)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+        attempt_id = str(attempt.id)
+
+    resp = client.post(
+        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{attempt_id}/accept"
+    )
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["status"] == "accepted"
+    assert payload["accepted_frontier_id"] == "d" * 40
+    assert payload["project"]["accepted_frontier_id"] == "d" * 40
+
+    with client.application.app_context():
+        stored = db.session.get(Project, pid)
+        assert stored.accepted_frontier_id == "d" * 40
+        assert stored.updated_at is not None
+
+
+def test_accept_attempt_fails_clearly_without_agenthub_commit_hash(client, project):
+    pid = project["id"]
+    original_frontier = project["accepted_frontier_id"]
+    from models.db import db, Project, Ticket, TicketAttempt
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Missing commit hash ticket",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash=None,
+            base_hash=original_frontier,
+            wave_num=0,
+            attempt_num=1,
+            status="proposed",
+            summary="missing commit hash",
+        )
+        db.session.add(attempt)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+        attempt_id = str(attempt.id)
+
+    resp = client.post(
+        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{attempt_id}/accept"
+    )
+
+    assert resp.status_code == 409
+    assert "no AgentHub leaf/commit id" in resp.get_json()["error"]
+
+    with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        stored_attempt = db.session.get(TicketAttempt, attempt_id)
+        assert stored_project.accepted_frontier_id == original_frontier
+        assert stored_attempt.status == "proposed"
+
+
+def test_accept_attempt_does_not_fallback_to_local_git_head(client, project):
+    pid = project["id"]
+    from models.db import db, Ticket, TicketAttempt
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="No git head fallback ticket",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="e" * 40,
+            base_hash=project["accepted_frontier_id"],
+            wave_num=0,
+            attempt_num=1,
+            status="proposed",
+            summary="must use stored leaf only",
+        )
+        db.session.add(attempt)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+        attempt_id = str(attempt.id)
+
+    with patch("api.routes._read_local_git_tip") as read_local_tip:
+        resp = client.post(
+            f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{attempt_id}/accept"
+        )
+
+    assert resp.status_code == 200
+    assert resp.get_json()["accepted_frontier_id"] == "e" * 40
+    read_local_tip.assert_not_called()
+
+
 def test_reject_attempt_returns_rejected_state(client, project):
     pid = project["id"]
     from models.db import db, Ticket, TicketAttempt

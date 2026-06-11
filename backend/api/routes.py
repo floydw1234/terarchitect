@@ -2013,10 +2013,18 @@ def project_attempt_diff(project_id, attempt_id):
 @api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/attempts/<uuid:attempt_id>/accept", methods=["POST"])
 def ticket_attempt_accept(project_id, ticket_id, attempt_id):
     """Accept a ticket attempt. Supersedes any previously accepted attempt for the same ticket."""
+    from datetime import datetime, timezone
+
+    project = _get_project_or_404(project_id)
     attempt = TicketAttempt.query.filter_by(
         project_id=project_id, ticket_id=ticket_id, id=attempt_id
     ).first_or_404()
     try:
+        commit_hash = (attempt.agenthub_commit_hash or "").strip()
+        if not commit_hash:
+            raise ValueError(
+                "Attempt has no AgentHub leaf/commit id; cannot advance project.accepted_frontier_id."
+            )
         # Supersede any existing accepted attempt for this ticket
         prev_accepted = _get_accepted_attempt(ticket_id)
         if prev_accepted and str(prev_accepted.id) != str(attempt_id):
@@ -2025,6 +2033,8 @@ def ticket_attempt_accept(project_id, ticket_id, attempt_id):
             except ValueError:
                 pass  # already in a terminal state
         _transition_attempt(attempt, "accepted")
+        project.accepted_frontier_id = commit_hash
+        project.updated_at = datetime.now(timezone.utc)
         db.session.commit()
         _post_event(
             _ticket_channel(str(ticket_id)),
@@ -2043,7 +2053,10 @@ def ticket_attempt_accept(project_id, ticket_id, attempt_id):
     except ValueError as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 409
-    return jsonify(_attempt_to_json(attempt))
+    payload = _attempt_to_json(attempt)
+    payload["accepted_frontier_id"] = project.accepted_frontier_id
+    payload["project"] = _project_to_json(project)
+    return jsonify(payload)
 
 
 @api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/attempts/<uuid:attempt_id>/reject", methods=["POST"])
