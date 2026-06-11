@@ -392,7 +392,7 @@ def job_to_env(job: dict, for_docker: bool = False) -> dict:
     # and the current shipped root without any wave-derived meaning.
     if job.get("base_hash"):
         env["BASE_HASH"] = str(job["base_hash"])
-    root_hash = job.get("agenthub_root_hash") or job.get("shipped_frontier") or job.get("base_hash")
+    root_hash = job.get("agenthub_root_hash") or job.get("base_leaf_id") or job.get("base_hash")
     if root_hash:
         env["AGENTHUB_ROOT_HASH"] = str(root_hash)
     # Explicit workspace paths are only for local debug/import paths, not DAG-backed swarm jobs.

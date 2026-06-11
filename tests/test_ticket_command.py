@@ -157,14 +157,19 @@ def test_ticket_run_local_passes_explicit_base_and_agenthub_env(monkeypatch):
         base_url = "http://backend:5000"
 
         def get(self, path):
-            assert path == "/api/projects/proj-1"
-            return {
-                "id": "proj-1",
-                "github_url": "https://github.com/org/repo",
-                "git_mode": "swarm",
-                "project_path": "/repo/worktree",
-                "shipped_frontier": "f" * 40,
-            }
+            if path == "/api/projects/proj-1":
+                return {
+                    "id": "proj-1",
+                    "github_url": "https://github.com/org/repo",
+                    "git_mode": "swarm",
+                    "project_path": "/repo/worktree",
+                }
+            if path == "/api/projects/proj-1/tickets/ticket-1":
+                return {
+                    "id": "ticket-1",
+                    "base_leaf_id": "leaf_01HZX3BASE0123456789ABCDEFG",
+                }
+            raise AssertionError(f"Unexpected GET {path}")
 
     def fake_run(cmd, cwd, env):
         captured["cmd"] = cmd
@@ -177,8 +182,8 @@ def test_ticket_run_local_passes_explicit_base_and_agenthub_env(monkeypatch):
     monkeypatch.setenv("AGENTHUB_API_KEY", "secret")
     monkeypatch.setattr(ticket_cmd, "prepare_local_job", lambda job: {
         **job,
-        "base_hash": "f" * 40,
-        "agenthub_root_hash": "f" * 40,
+        "base_hash": "leaf_01HZX3BASE0123456789ABCDEFG",
+        "agenthub_root_hash": "leaf_01HZX3BASE0123456789ABCDEFG",
     })
     monkeypatch.setattr(ticket_cmd.subprocess, "run", fake_run)
 
@@ -189,8 +194,8 @@ def test_ticket_run_local_passes_explicit_base_and_agenthub_env(monkeypatch):
             assert exc.code == 0
 
     assert captured["cmd"][-2:] == ["agent.agent_runner", "ticket"]
-    assert captured["env"]["BASE_HASH"] == "f" * 40
-    assert captured["env"]["AGENTHUB_ROOT_HASH"] == "f" * 40
+    assert captured["env"]["BASE_HASH"] == "leaf_01HZX3BASE0123456789ABCDEFG"
+    assert captured["env"]["AGENTHUB_ROOT_HASH"] == "leaf_01HZX3BASE0123456789ABCDEFG"
     assert captured["env"]["AGENTHUB_URL"] == "http://agenthub:8088"
     assert captured["env"]["AGENTHUB_API_KEY"] == "secret"
 

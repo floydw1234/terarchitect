@@ -222,7 +222,7 @@ def job_to_response(job):
         "base_leaf_id": base_leaf_id,
         "base_hash": base_hash,
         "shipped_frontier": shipped_frontier,
-        "agenthub_root_hash": base_hash or shipped_frontier,
+        "agenthub_root_hash": base_hash,
         "base_selection": base_context,
     }
     return out

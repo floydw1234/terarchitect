@@ -10,7 +10,7 @@ Covers:
   - root refresh changes base for newly queued work
   - stale attempts are detectable (base_hash != shipped_frontier)
   - explicit MVP base selection uses frontier / accepted dependency / shipped frontier
-  - coordinator env forwarding keeps BASE_HASH and AGENTHUB_ROOT_HASH intact
+  - coordinator env forwarding keeps BASE_HASH and AGENTHUB_ROOT_HASH explicit
 """
 import os
 import subprocess
@@ -453,6 +453,24 @@ def test_coordinator_job_to_env_does_not_use_project_path_for_local_swarm_jobs()
     assert "AGENT_WORKSPACE" not in env
 
 
+def test_coordinator_job_to_env_does_not_use_shipped_frontier_as_root_fallback():
+    from coordinator.coordinator import job_to_env
+
+    env = job_to_env(
+        {
+            "project_id": "p1",
+            "ticket_id": "t1",
+            "repo_url": "https://github.com/org/repo",
+            "job_id": "j1",
+            "kind": "ticket",
+            "shipped_frontier": "f" * 40,
+        },
+        for_docker=False,
+    )
+
+    assert "AGENTHUB_ROOT_HASH" not in env
+
+
 def test_coordinator_job_to_env_uses_base_hash_as_root_fallback():
     from coordinator.coordinator import job_to_env
 
@@ -498,6 +516,7 @@ def test_job_to_response_uses_ticket_base_leaf_for_swarm_jobs(app, tmp_path):
             execution_mode="local",
             git_mode="swarm",
             project_path=str(repo),
+            shipped_frontier="s" * 40,
         )
         db.session.add(project)
         db.session.flush()
@@ -528,6 +547,23 @@ def test_job_to_response_uses_ticket_base_leaf_for_swarm_jobs(app, tmp_path):
     assert payload["project_path"] == str(repo)
 
 
+def test_prepare_local_job_refuses_shipped_frontier_fallback():
+    from agenthub_preflight import AgenthubPreflightError, prepare_local_job
+
+    with pytest.raises(
+        AgenthubPreflightError,
+        match="requires ticket.base_leaf_id.*import.*rerun",
+    ):
+        prepare_local_job(
+            {
+                "execution_mode": "local",
+                "git_mode": "swarm",
+                "shipped_frontier": "f" * 40,
+            },
+            env={"AGENTHUB_URL": "http://agenthub:8088", "AGENTHUB_API_KEY": "secret"},
+        )
+
+
 def test_prepare_local_job_raises_when_agenthub_base_is_unfetchable():
     from agenthub_preflight import AgenthubPreflightError, prepare_local_job
 
@@ -536,8 +572,8 @@ def test_prepare_local_job_raises_when_agenthub_base_is_unfetchable():
     missing.raise_for_status.return_value = None
     missing.json.return_value = {"exists": False, "bundle_fetchable": False}
 
-    with patch("agenthub_preflight.requests.get", return_value=missing):
-        with pytest.raises(AgenthubPreflightError, match="missing or not fetchable"):
+    with patch("backend.api.services.agenthub_import_service.requests.get", return_value=missing):
+        with pytest.raises(AgenthubPreflightError, match="import.*rerun"):
             prepare_local_job(
                 {
                     "execution_mode": "local",
@@ -546,6 +582,13 @@ def test_prepare_local_job_raises_when_agenthub_base_is_unfetchable():
                 },
                 env={"AGENTHUB_URL": "http://agenthub:8088", "AGENTHUB_API_KEY": "secret"},
             )
+
+
+def test_seed_commit_from_repo_is_disabled_for_runtime_paths():
+    from agenthub_preflight import AgenthubPreflightError, seed_commit_from_repo
+
+    with pytest.raises(AgenthubPreflightError, match="Automatic AgentHub seeding.*explicit project import/admin path"):
+        seed_commit_from_repo("/tmp/repo", "a" * 40, "http://agenthub:8088", "secret")
 
 
 # ---------------------------------------------------------------------------

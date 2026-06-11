@@ -12,6 +12,18 @@ from agent_runner import __main__ as agent_runner_main
 
 
 class TestAgentRunnerMaterialization(unittest.TestCase):
+    def test_run_ticket_exits_without_explicit_base_or_workspace(self):
+        with patch.dict(os.environ, {
+            "TERARCHITECT_API_URL": "http://backend:5000",
+            "TICKET_ID": "11111111-1111-1111-1111-111111111111",
+            "PROJECT_ID": "22222222-2222-2222-2222-222222222222",
+            "REPO_URL": "https://github.com/org/repo",
+        }, clear=False):
+            with self.assertRaises(SystemExit) as ctx:
+                agent_runner_main.run_ticket()
+
+        self.assertEqual(ctx.exception.code, 1)
+
     def test_run_ticket_exits_before_worker_when_base_leaf_materialization_fails(self):
         backend_instances = []
         agent_instances = []

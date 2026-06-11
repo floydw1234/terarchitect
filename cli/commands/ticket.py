@@ -496,9 +496,10 @@ def _cmd_rerun_current_frontier(args, api: API) -> None:
 
 def _run_local(args, api: API) -> None:
     """Spawn agent.agent_runner directly on this host (dev mode)."""
-    # Fetch project for REPO_URL
+    # Fetch project and ticket so local debug runs still honor explicit DAG lineage.
     try:
         project = api.get(f"/api/projects/{args.project_id}")
+        ticket = api.get(f"/api/projects/{args.project_id}/tickets/{args.ticket_id}")
     except APIError as e:
         die(e, output=args.output)
 
@@ -513,7 +514,7 @@ def _run_local(args, api: API) -> None:
                 "execution_mode": "local",
                 "git_mode": project.get("git_mode") or "swarm",
                 "project_path": project.get("project_path"),
-                "shipped_frontier": project.get("shipped_frontier"),
+                "base_leaf_id": ticket.get("base_leaf_id"),
             }
         )
     except AgenthubPreflightError as e:

@@ -4,13 +4,13 @@ Git backend for terarchitect agent (swarm mode only).
 Public API used by agent.py:
   is_swarm()                           → bool
   get_peer_context(ticket_id) → str    → injected into Director prompt before work starts
-  prepare_work(project_path)           → fetches BASE_HASH bundle from AgentHub and checks it out
+  prepare_work(project_path)           → verifies and checks out the explicit AgentHub base leaf
   swarm_publish(project_path, commit_message, ticket_id, summary) → commit_hash | None
 
 Env vars consumed:
   TERARCHITECT_MODE      — always "swarm"
-  BASE_HASH              — AgentHub commit hash to build on (set by coordinator)
-  AGENTHUB_ROOT_HASH     — last shipped frontier (informational; used for logging)
+  BASE_HASH              — explicit AgentHub commit hash to build on (set by coordinator)
+  AGENTHUB_ROOT_HASH     — explicit lineage root for logging/debug
   TICKET_ID              — used to name the local working branch
   PROJECT_ID             — used for logging
   AGENTHUB_URL           — AgentHub server URL
@@ -348,12 +348,8 @@ def materialize_workspace_from_agenthub(
 def prepare_work(project_path: str) -> None:
     """Set up the working base before the agent starts.
 
-    Reads BASE_HASH from env (set by coordinator from compute_base_hash).
-    Fetches that commit bundle from AgentHub and checks it out as the
-    local working branch. No origin/swarm branch needed.
-
-    If BASE_HASH is not set, the agent works from the clone's default branch (main).
-    Non-fatal throughout: on any failure the agent continues from the clone base.
+    Reads BASE_HASH/BASE_LEAF_ID from env and materializes that exact AgentHub base.
+    Ticket execution must not silently continue from a local clone default branch.
     """
     if not is_swarm():
         return
@@ -371,13 +367,16 @@ def prepare_work(project_path: str) -> None:
     )
 
     if not base_hash:
-        print("[git_backend] No BASE_HASH set — working from clone base (main)", flush=True)
-        return
+        raise AgentHubMaterializationError(
+            "Swarm execution requires BASE_LEAF_ID or BASE_HASH. "
+            "Rerun the ticket from the current frontier or import the project into AgentHub explicitly."
+        )
 
     url = _ah_url()
     if not url:
-        print("[git_backend] No AGENTHUB_URL set — cannot fetch base bundle", flush=True)
-        return
+        raise AgentHubMaterializationError(
+            "AGENTHUB_URL is required to materialize the explicit AgentHub base leaf."
+        )
 
     try:
         resp = requests.get(
@@ -387,8 +386,10 @@ def prepare_work(project_path: str) -> None:
             stream=True,
         )
         if not resp.ok:
-            print(f"[git_backend] AgentHub fetch {base_hash[:12]} → {resp.status_code}", flush=True)
-            return
+            raise AgentHubMaterializationError(
+                f"AgentHub fetch failed for base leaf {base_hash[:12]} with status {resp.status_code}. "
+                "Use explicit project import if this leaf has not been published, or rerun from the current frontier."
+            )
 
         with tempfile.NamedTemporaryFile(suffix=".bundle", delete=False) as f:
             for chunk in resp.iter_content(chunk_size=8192):
@@ -401,8 +402,9 @@ def prepare_work(project_path: str) -> None:
                 cwd=project_path, capture_output=True, text=True, timeout=60,
             )
             if r.returncode != 0:
-                print(f"[git_backend] git bundle unbundle failed: {r.stderr[:300]}", flush=True)
-                return
+                raise AgentHubMaterializationError(
+                    f"git bundle unbundle failed for base leaf {base_hash[:12]}: {r.stderr[:300]}"
+                )
 
             branch = f"ticket-{ticket_id}" if ticket_id else "swarm-work"
             checkout_r = subprocess.run(
@@ -412,14 +414,20 @@ def prepare_work(project_path: str) -> None:
             if checkout_r.returncode == 0:
                 print(f"[git_backend] Checked out base {base_hash[:12]} as branch {branch}", flush=True)
             else:
-                print(f"[git_backend] Checkout failed: {checkout_r.stderr[:200]}", flush=True)
+                raise AgentHubMaterializationError(
+                    f"Checkout failed for base leaf {base_hash[:12]}: {checkout_r.stderr[:200]}"
+                )
         finally:
             try:
                 os.unlink(bundle_path)
             except OSError:
                 pass
     except Exception as exc:
-        print(f"[git_backend] prepare_work error (non-fatal): {exc}", flush=True)
+        if isinstance(exc, AgentHubMaterializationError):
+            raise
+        raise AgentHubMaterializationError(
+            f"prepare_work failed for base leaf {base_hash[:12]}: {exc}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

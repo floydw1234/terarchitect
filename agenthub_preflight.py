@@ -1,4 +1,4 @@
-"""Helpers for local swarm runs that need an explicit AgentHub base commit."""
+"""Helpers for local swarm runs that require an explicit AgentHub DAG base."""
 
 from __future__ import annotations
 
@@ -34,33 +34,24 @@ def _agenthub_receipt(base_url: str, api_key: str, commit_hash: str) -> dict[str
 
 
 def seed_commit_from_repo(repo_path: str, commit_hash: str, base_url: str, api_key: str) -> None:
-    """Upload a full git bundle for commit_hash and its ancestry to AgentHub."""
-    AgenthubImportError, _, push_bundle, _ = _import_helpers()
-    try:
-        push_bundle(repo_path, commit_hash, base_url.rstrip("/"), api_key)
-    except AgenthubImportError as exc:
-        raise AgenthubPreflightError(str(exc)) from exc
+    """Legacy helper retained only to fail loudly in runtime paths."""
+    raise AgenthubPreflightError(
+        "Automatic AgentHub seeding during ticket execution is disabled. "
+        "Use the explicit project import/admin path to publish local git history before rerunning from the current frontier."
+    )
 
 
 def prepare_local_job(job: Mapping[str, Any], *, env: Mapping[str, str] | None = None) -> dict[str, Any]:
-    """Return a local swarm job with a verified AgentHub base leaf."""
+    """Return a local swarm job with a verified explicit AgentHub base leaf."""
     prepared = dict(job)
     run_env = env or os.environ
     base_leaf_id = (prepared.get("base_leaf_id") or "").strip() or None
-    explicit_base = (prepared.get("base_hash") or "").strip() or None
-    shipped_frontier = (prepared.get("shipped_frontier") or "").strip() or None
-    base_hash = base_leaf_id or explicit_base or shipped_frontier
     if base_leaf_id:
         prepared["base_leaf_id"] = base_leaf_id
-    if base_hash:
-        prepared["base_hash"] = base_hash
-    root_hash = (
-        (prepared.get("agenthub_root_hash") or "").strip()
-        or base_hash
-        or shipped_frontier
-    )
-    if root_hash:
-        prepared["agenthub_root_hash"] = root_hash
+        prepared["base_hash"] = base_leaf_id
+        prepared["agenthub_root_hash"] = (
+            (prepared.get("agenthub_root_hash") or "").strip() or base_leaf_id
+        )
 
     if (prepared.get("execution_mode") or "").strip().lower() != "local":
         return prepared
@@ -69,7 +60,9 @@ def prepare_local_job(job: Mapping[str, Any], *, env: Mapping[str, str] | None =
 
     if not base_leaf_id:
         raise AgenthubPreflightError(
-            "Local swarm run requires ticket.base_leaf_id so the workspace can be materialized from AgentHub."
+            "Local swarm run requires ticket.base_leaf_id. "
+            "Use the explicit project import/admin path to publish local history, "
+            "or rerun the ticket from the current frontier."
         )
 
     agenthub_url = (run_env.get("AGENTHUB_URL") or "").strip()
@@ -80,14 +73,15 @@ def prepare_local_job(job: Mapping[str, Any], *, env: Mapping[str, str] | None =
         )
 
     try:
-        receipt = _agenthub_receipt(agenthub_url, agenthub_api_key, base_hash)
+        receipt = _agenthub_receipt(agenthub_url, agenthub_api_key, base_leaf_id)
     except requests.RequestException as exc:
         raise AgenthubPreflightError(
-            f"Could not verify whether AgentHub already has base leaf {base_hash[:12]}: {exc}"
+            f"Could not verify whether AgentHub already has base leaf {base_leaf_id[:12]}: {exc}"
         ) from exc
     if receipt.get("exists") and receipt.get("bundle_fetchable", True):
         return prepared
 
     raise AgenthubPreflightError(
-        f"AgentHub base leaf {base_hash[:12]} is missing or not fetchable."
+        f"AgentHub base leaf {base_leaf_id[:12]} is missing or not fetchable. "
+        "Use the explicit project import/admin path to publish it, or rerun the ticket from the current frontier."
     )

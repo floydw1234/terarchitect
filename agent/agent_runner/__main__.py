@@ -2,8 +2,8 @@
 Standalone agent runner. Runs one ticket job using the HTTP API.
 Usage: TICKET_ID=... PROJECT_ID=... TERARCHITECT_API_URL=... REPO_URL=... python -m agent_runner ticket
 
-In swarm mode (default), prepare_work() in git_backend fetches the BASE_HASH bundle
-from AgentHub and checks it out. No per-ticket branches on origin are created.
+Swarm execution requires an explicit AgentHub base leaf/hash or an explicit debug workspace.
+No ticket path may silently start from a clone default branch.
 """
 import os
 import sys
@@ -99,12 +99,12 @@ def run_ticket() -> None:
         # Explicit local/debug execution mode: use the provided workspace as-is.
         pass
     else:
-        # Docker or default: clone from REPO_URL.
-        # prepare_work() will then overlay BASE_HASH from AgentHub.
-        repo_url = _env("REPO_URL")
-        work_dir = tempfile.mkdtemp(prefix="terarchitect_runner_")
-        if not _clone_repo(repo_url, work_dir, github_token):
-            sys.exit(1)
+        print(
+            "Error: swarm execution requires BASE_LEAF_ID or BASE_HASH. "
+            "Rerun the ticket from the current frontier or import the project into AgentHub explicitly.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     _ensure_git_config(work_dir)
 

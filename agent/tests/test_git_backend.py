@@ -175,6 +175,14 @@ class TestSwarmPublishFallback(unittest.TestCase):
 
 
 class TestAgentHubMaterialization(unittest.TestCase):
+    def test_prepare_work_requires_explicit_base_ref(self):
+        with tempfile.TemporaryDirectory(prefix="git-backend-test-") as tmp_dir, \
+             patch.dict(os.environ, {}, clear=False):
+            with self.assertRaises(git_backend.AgentHubMaterializationError) as ctx:
+                git_backend.prepare_work(tmp_dir)
+
+        self.assertIn("requires BASE_LEAF_ID or BASE_HASH", str(ctx.exception))
+
     def test_materialize_workspace_fetches_bundle_and_checks_out_base_leaf(self):
         base_leaf_id = "leaf_01HZX3BASE0123456789ABCDEFG"
         bundle_bytes = [b"# v2 git bundle\n", b"payload"]

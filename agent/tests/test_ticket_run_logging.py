@@ -61,6 +61,7 @@ class TestTicketRunLogging(unittest.TestCase):
              patch.object(agent, "_format_memories", return_value=""), \
              patch.object(agent, "_read_task_plan", return_value="- step"), \
              patch.object(agent, "_finalize"), \
+             patch("middle_agent.agent.git_backend.prepare_work"), \
              patch("os.path.isdir", return_value=True):
             agent.process_ticket(ticket_id, project_path="/tmp/fakerepo", project_id=project_id)
 
