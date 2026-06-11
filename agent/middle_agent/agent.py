@@ -172,6 +172,11 @@ def _is_empty_json_chat_content_error(error: "AgentAPIError") -> bool:
     """True only for the specific chat-completions JSON-mode empty-content exhaustion failure."""
     return "empty chat content three times while requesting JSON output" in str(error)
 
+
+def _is_invalid_director_control_json_error(error: "AgentAPIError") -> bool:
+    """True when Director returned non-empty control content that we could not parse as JSON."""
+    return "Director API response is not valid JSON:" in str(error)
+
 # Number of Director messages to summarize at once (2 user + 2 assistant = 2 full turns).
 _DIRECTOR_COMPACT_CHUNK_SIZE = 4
 
@@ -310,6 +315,73 @@ def _director_final_json_retry_messages(messages: List[Dict[str, str]]) -> List[
     else:
         final_messages.append({"role": "user", "content": reminder})
     return final_messages
+
+
+def _director_invalid_json_retry_messages(
+    messages: List[Dict[str, str]],
+    invalid_content: str,
+    phase: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    """Append the invalid assistant output and ask Director to repair it into valid JSON."""
+    repair_messages = [dict(message) for message in messages]
+    repair_messages.append({"role": "assistant", "content": invalid_content})
+    repair_messages.append(
+        {
+            "role": "user",
+            "content": (
+                "Your previous reply was malformed and could not be parsed as control JSON. "
+                "Repair it now and return exactly one valid compact JSON object only.\n\n"
+                + _director_json_user_instructions(phase)
+            ),
+        }
+    )
+    return repair_messages
+
+
+def _extract_director_control_json(content: str) -> tuple[Optional[Dict[str, Any]], str]:
+    """Parse Director control JSON from raw content, fenced JSON, or a surrounding brace span."""
+    stripped = (content or "").strip()
+    if not stripped:
+        return None, stripped
+
+    def _parse_candidate(candidate: str) -> Optional[Dict[str, Any]]:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    parsed = _parse_candidate(stripped)
+    if parsed is not None:
+        return parsed, stripped
+
+    fence_pattern = re.compile(r"```([^\n`]*)\n?(.*?)```", re.DOTALL)
+    json_fence_candidates: List[str] = []
+    other_fence_candidates: List[str] = []
+    for match in fence_pattern.finditer(stripped):
+        language = (match.group(1) or "").strip().lower()
+        candidate = (match.group(2) or "").strip()
+        if not candidate:
+            continue
+        if language in ("", "json"):
+            json_fence_candidates.append(candidate)
+        else:
+            other_fence_candidates.append(candidate)
+
+    for candidate in json_fence_candidates + other_fence_candidates:
+        parsed = _parse_candidate(candidate)
+        if parsed is not None:
+            return parsed, candidate
+
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start != -1 and end > start:
+        candidate = stripped[start : end + 1].strip()
+        parsed = _parse_candidate(candidate)
+        if parsed is not None:
+            return parsed, candidate
+
+    return None, stripped
 
 
 def _director_response_format_json_schema(phase: Optional[str] = None) -> Dict[str, Any]:
@@ -876,15 +948,21 @@ class MiddleAgent:
                     setup_ticket=setup_ticket,
                 )
             except AgentAPIError as e:
-                if not (is_first_execution_turn and _is_empty_json_chat_content_error(e)):
+                if not (
+                    is_first_execution_turn
+                    and (
+                        _is_empty_json_chat_content_error(e)
+                        or _is_invalid_director_control_json_error(e)
+                    )
+                ):
                     raise
                 self._debug_log(
-                    f"{prefix}Director returned empty JSON chat content on first execution turn; "
+                    f"{prefix}Director returned invalid control JSON on first execution turn; "
                     "falling back to the default execution prompt"
                 )
                 self._trace_log(
                     session_id,
-                    f"{prefix}Director returned empty JSON chat content on first execution turn; "
+                    f"{prefix}Director returned invalid control JSON on first execution turn; "
                     "using the default execution prompt fallback",
                     project_path,
                 )
@@ -2381,42 +2459,30 @@ Judge the plan.
             )
 
         content = content.strip()
-        # Try raw parse first (LLM may return bare JSON).
-        parsed = None
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
-            pass
-        if parsed is None and "```" in content:
-            # Extract JSON from markdown: prefer ```json ... ```; do not use first ``` (LLM may output other code blocks first).
-            extract = content
-            if "```json" in content:
-                start = content.find("```json") + 7
-                end = content.rfind("```")
-                if end > start:
-                    extract = content[start:end].strip()
-                else:
-                    extract = content[start:].strip()
-            else:
-                start = content.find("```") + 3
-                if start < len(content) and content[start : start + 4] == "json":
-                    start += 4
-                end = content.find("```", start)
-                extract = content[start:end].strip() if end > 0 else content[start:].strip()
-            try:
-                parsed = json.loads(extract)
-            except json.JSONDecodeError:
-                parsed = None
-            if parsed is not None:
-                content = extract
+        parsed, normalized_content = _extract_director_control_json(content)
+        if parsed is None and content:
+            repair_messages = _director_invalid_json_retry_messages(messages_for_api, content, phase)
+            repaired_content = self._director_request(
+                repair_messages,
+                timeout=300,
+                json_mode=True,
+                max_tokens=_director_assessment_max_tokens(phase),
+                phase=phase,
+            ).strip()
+            self._debug_log(f"Director API repaired response ({len(repaired_content)} chars): {repaired_content[:500]}")
+            if session_id:
+                self._trace_log(
+                    session_id,
+                    f"Director API repaired response content:\n{repaired_content}",
+                    project_path,
+                )
+            parsed, normalized_content = _extract_director_control_json(repaired_content)
+            content = repaired_content
         if parsed is None:
             raise AgentAPIError(
                 f"Director API response is not valid JSON: {content[:200]}...",
                 cause=None,
             )
-
-        if not isinstance(parsed, dict):
-            raise AgentAPIError(f"Director API response must be a JSON object, got: {type(parsed)}")
 
         response_dict: Dict[str, Any] = {
             "complete": parsed.get("complete", False),
@@ -2428,7 +2494,7 @@ Judge the plan.
             response_dict["plan_approved"] = raw_approved is True or (isinstance(raw_approved, str) and raw_approved.strip().lower() == "true")
             response_dict["feedback"] = parsed.get("feedback", "") or ""
             response_dict["approved_plan_text"] = parsed.get("approved_plan_text", "") or ""
-        assistant_msg = {"role": "assistant", "content": content.strip()}
+        assistant_msg = {"role": "assistant", "content": normalized_content.strip()}
         updated_director = compacted + [new_user_msg, assistant_msg]
         return response_dict, updated_director
 

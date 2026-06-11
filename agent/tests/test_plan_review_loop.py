@@ -194,6 +194,93 @@ class TestPlanReviewLoop(unittest.TestCase):
             )
         )
 
+    def test_execution_turn_zero_malformed_director_json_uses_default_prompt(self):
+        from middle_agent.agent import AgentAPIError
+
+        agent, backend = _make_agent()
+        ticket = MagicMock()
+        ticket.id = uuid.uuid4()
+        ticket.project_id = uuid.uuid4()
+        session_id = "session-1"
+        project_path = "/tmp/fakerepo"
+        initial_director_messages = [{"role": "assistant", "content": "prior plan review"}]
+        worker_prompts = []
+
+        def fake_send_to_worker(prompt, sent_session_id, path, resume=False):
+            worker_prompts.append(prompt)
+            return self._make_worker_response("implemented")
+
+        assess_calls = {"count": 0}
+
+        def fake_agent_assess(*args, **kwargs):
+            assess_calls["count"] += 1
+            if assess_calls["count"] == 1:
+                raise AgentAPIError(
+                    'Director API response is not valid JSON: ```json\n{"complete": false\n```...'
+                )
+            return self._make_agent_response_complete(), initial_director_messages
+
+        with patch.object(agent, "_retrieve_memory_passages", return_value=[]), \
+             patch.object(agent, "_format_memories", return_value=""), \
+             patch.object(agent, "_agent_assess", side_effect=fake_agent_assess), \
+             patch.object(agent, "_send_to_worker", side_effect=fake_send_to_worker), \
+             patch.object(agent, "_cleanup_after_completion"), \
+             patch.object(agent, "_index_completion_memory"):
+            completion = agent._run_execution_loop(
+                ticket=ticket,
+                session_id=session_id,
+                context={"current_ticket": {"title": "Test ticket", "description": "desc"}},
+                prompt_history=["Phase 2 planning prompt"],
+                conversation_history=["Approved plan is ready."],
+                director_messages=initial_director_messages,
+                approved_plan_text="- step 1",
+                start_memory_passages=[],
+                base_save_dir=None,
+                memory_kwargs={},
+                project_path=project_path,
+            )
+
+        self.assertEqual(completion, "Done")
+        self.assertEqual(assess_calls["count"], 2)
+        self.assertEqual(len(worker_prompts), 1)
+        self.assertIn("Implement the approved plan above. Start with the first step.", worker_prompts[0])
+
+    def test_later_execution_turn_malformed_director_json_still_fails(self):
+        from middle_agent.agent import AgentAPIError
+
+        agent, backend = _make_agent()
+        ticket = MagicMock()
+        ticket.id = uuid.uuid4()
+        ticket.project_id = uuid.uuid4()
+        assess_calls = {"count": 0}
+
+        def fake_agent_assess(*args, **kwargs):
+            assess_calls["count"] += 1
+            if assess_calls["count"] == 1:
+                return {"complete": False, "summary": "", "next_prompt": "continue implementation"}, []
+            raise AgentAPIError("Director API response is not valid JSON: nope...")
+
+        with patch.object(agent, "_retrieve_memory_passages", return_value=[]), \
+             patch.object(agent, "_format_memories", return_value=""), \
+             patch.object(agent, "_agent_assess", side_effect=fake_agent_assess), \
+             patch.object(agent, "_send_to_worker", return_value=self._make_worker_response("implemented one step")):
+            with self.assertRaises(AgentAPIError):
+                agent._run_execution_loop(
+                    ticket=ticket,
+                    session_id="session-1",
+                    context={"current_ticket": {"title": "Test ticket", "description": "desc"}},
+                    prompt_history=[],
+                    conversation_history=[],
+                    director_messages=[],
+                    approved_plan_text="- step 1",
+                    start_memory_passages=[],
+                    base_save_dir=None,
+                    memory_kwargs={},
+                    project_path="/tmp/fakerepo",
+                )
+
+        self.assertEqual(assess_calls["count"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

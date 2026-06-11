@@ -165,6 +165,59 @@ class TestDirectorRequestPayload(unittest.TestCase):
         self.assertEqual(payload["max_tokens"], 768)
         self.assertIn("Keep all four keys present.", payload["messages"][-1]["content"])
 
+    def test_agent_assess_accepts_valid_json_inside_markdown_fence(self):
+        agent = _make_agent()
+        fenced = """```json
+{"complete":false,"summary":"needs work","next_prompt":"continue"}
+```"""
+
+        with patch("middle_agent.agent.requests.post", return_value=_mock_chat_response(fenced)):
+            response_dict, director_messages = agent._agent_assess(
+                context={"current_ticket": {"title": "Fix bug"}},
+                prompt_history=["Check the implementation."],
+                conversation_history=["I updated one file."],
+                phase="execution",
+            )
+
+        self.assertFalse(response_dict["complete"])
+        self.assertEqual(response_dict["summary"], "needs work")
+        self.assertEqual(response_dict["next_prompt"], "continue")
+        self.assertEqual(
+            director_messages[-1]["content"],
+            '{"complete":false,"summary":"needs work","next_prompt":"continue"}',
+        )
+
+    def test_agent_assess_retries_once_when_non_empty_json_is_malformed(self):
+        agent = _make_agent()
+        malformed = """```json
+{"complete": false, "summary": "needs work"
+```"""
+
+        with patch(
+            "middle_agent.agent.requests.post",
+            side_effect=[
+                _mock_chat_response(malformed),
+                _mock_chat_response('{"complete":false,"summary":"needs work","next_prompt":"continue"}'),
+            ],
+        ) as mock_post:
+            response_dict, director_messages = agent._agent_assess(
+                context={"current_ticket": {"title": "Fix bug"}},
+                prompt_history=["Check the implementation."],
+                conversation_history=["I updated one file."],
+                phase="execution",
+            )
+
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertEqual(response_dict["next_prompt"], "continue")
+        retry_payload = mock_post.call_args_list[1].kwargs["json"]
+        self.assertEqual(retry_payload["response_format"]["type"], "json_schema")
+        self.assertEqual(retry_payload["messages"][-2]["role"], "assistant")
+        self.assertIn("could not be parsed as control JSON", retry_payload["messages"][-1]["content"])
+        self.assertEqual(
+            director_messages[-1]["content"],
+            '{"complete":false,"summary":"needs work","next_prompt":"continue"}',
+        )
+
     def test_local_chat_completions_empty_content_uses_third_retry_without_response_format(self):
         agent = _make_agent(
             {
