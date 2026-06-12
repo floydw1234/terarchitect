@@ -9,10 +9,10 @@ This runbook describes how to run the Terarchitect app, coordinator, and agent i
 | Component | Role |
 |-----------|------|
 | **App** | Flask API + DB + frontend. Enqueues jobs to `agent_jobs` when a ticket moves to In Progress. Does **not** run the Director or worker. |
-| **Coordinator** | **Host-side Python app** (not a Docker container). It claims jobs via `POST /api/worker/jobs/start`, runs `docker run ... terarchitect-agent` for each job, and calls `POST .../complete` or `.../fail` when the container exits. Must run on a host that has Docker. |
+| **Coordinator** | Claims jobs via `POST /api/worker/jobs/start`, runs `docker run ... terarchitect-agent` for each job, and calls `POST .../complete` or `.../fail` when the container exits. Can run on the host or as a Docker Compose service, but must have Docker access. |
 | **Agent image** | Single Docker image (`terarchitect-agent`). One container per job: clones or opens the repo, checks out the selected AgentHub base when provided, runs Director + worker (OpenCode, Claude Code, or Codex), publishes an AgentHub attempt, exits. |
 
-**Execution mode (per project):** In the project’s execution settings in the UI you can choose **Docker** (default: coordinator runs agent in a container, repo is cloned at runtime) or **Local** (coordinator runs the agent on the host at a configured project path; no clone).
+**Execution mode (per project):** In the project’s execution settings in the UI you can choose **Docker** (default: coordinator runs agent in a container, materializes the workspace from AgentHub at runtime, no host repo mount) or **Local** (coordinator runs the agent on the host at a configured project path).
 
 ---
 
@@ -55,9 +55,24 @@ Set `DATABASE_URL`, `TERARCHITECT_WORKER_API_KEY` (optional), and backend-owned 
 
 ## 2. Run the coordinator
 
-The coordinator is a **Python app that runs on the host** (not in Docker). It needs Docker available so it can run `docker run ... terarchitect-agent` for each job. It claims jobs for one or more project IDs and starts agent containers.
+The coordinator can run on the host or in Docker Compose. In both cases it needs Docker available so it can run `docker run ... terarchitect-agent` for each job. It claims jobs for one or more project IDs and starts agent containers.
 
-### Option A: Run manually (e.g. from repo root)
+### Option A: Run in Docker Compose (recommended for Docker-mode projects)
+
+```bash
+docker compose build agent coordinator
+docker compose up -d coordinator
+```
+
+Compose defaults:
+- `TERARCHITECT_API_URL=http://backend:5010`
+- `AGENTHUB_URL=http://agenthub:8080`
+- `DOCKER_NETWORK=terarchitect_default`
+- `/var/run/docker.sock` mounted into the coordinator so it can start sibling worker containers
+
+Provide project scope and credentials through the shell or repo `.env` before starting Compose (`PROJECT_ID`/`PROJECT_IDS`, `GITHUB_TOKEN`, Director/Worker API keys, optional `TERARCHITECT_WORKER_API_KEY`). Use the host-run option below for `execution_mode=local` projects that need host filesystem access.
+
+### Option B: Run manually on the host (e.g. from repo root)
 
 ```bash
 cd /path/to/terarchitect
@@ -94,7 +109,7 @@ See comments in `coordinator/terarchitect-coordinator.service` for details.
 
 ### Coordinator env
 
-- **TERARCHITECT_API_URL** — App base URL. When the coordinator runs on the same host as the app, use `http://localhost:5010`. Agent **containers** must reach the app: set `TERARCHITECT_API_URL=http://host.docker.internal:5010` so the coordinator passes that into each container (on Linux the coordinator adds `--add-host=host.docker.internal:host-gateway` when the URL contains `host.docker.internal`).
+- **TERARCHITECT_API_URL** — App base URL. Compose coordinator default: `http://backend:5010`. Host coordinator on the same machine as the app: use `http://host.docker.internal:5010` so the coordinator passes a container-reachable URL into each worker (on Linux the coordinator adds `--add-host=host.docker.internal:host-gateway` when the URL contains `host.docker.internal`).
 - **PROJECT_ID** or **PROJECT_IDS** — Optional. Comma-separated UUIDs to restrict which projects this coordinator serves. If unset, the coordinator fetches all project IDs from `GET /api/worker/projects` at startup (or claims from any project if the fetch fails).
 - **GITHUB_TOKEN** — Passed to the container for GitHub clone access and for Ship Room release/export PR creation when using GitHub as the export boundary.
 - **AGENT_IMAGE** — Default `terarchitect-agent`. Override if you use a different tag.
@@ -102,6 +117,7 @@ See comments in `coordinator/terarchitect-coordinator.service` for details.
 - **POLL_INTERVAL_SEC** — Default 10.
 - **AGENT_CACHE_VOLUME** — Default `terarchitect-agent-cache`. Named volume mounted at `/cache` in the agent so pip and npm reuse packages across runs. Set to empty to disable.
 - **AGENT_DOCKER_MODE** — Default `dind`. `dind`: each agent container runs its own isolated Docker daemon (requires kernel support for nested containers; coordinator adds `--privileged`). `dood`: mount host socket (legacy, shared daemon, unsafe for parallel jobs).
+- **DOCKER_NETWORK** — Optional Docker network for worker containers. Compose coordinator defaults this to `terarchitect_default` so workers can reach `backend` and `agenthub` by service name.
 - **COORDINATOR_STATE_DIR** — Default `~/.terarchitect/coordinator`. Holds `project_images.json` (project_id → image tag). When a Docker run succeeds for a project, that image is saved so the next job for that project uses it.
 - **COORDINATOR_REPO_ROOT** — Repo root path (for direct agent run when Docker fails). Default: parent of coordinator package. Set if you install elsewhere (e.g. systemd override).
 
@@ -147,7 +163,8 @@ OpenCode worker env (`WORKER_LLM_URL`, `WORKER_MODEL`, `WORKER_API_KEY`) must be
 
 **Single-box (dev / small deploy)**  
 - App, coordinator, and Docker on the same machine.  
-- Run app and coordinator as above. Set `TERARCHITECT_API_URL=http://host.docker.internal:5010` so containers can reach the app.  
+- Recommended: run app + coordinator in Compose. Workers join `terarchitect_default` and reach `backend`/`agenthub` by service name.  
+- Host coordinator remains available; if you use it, set `TERARCHITECT_API_URL=http://host.docker.internal:5010` so worker containers can reach the app.  
 - On Linux, the coordinator adds `--add-host=host.docker.internal:host-gateway` when the URL contains `host.docker.internal`.
 
 **Two-box (production)**  
@@ -159,7 +176,7 @@ OpenCode worker env (`WORKER_LLM_URL`, `WORKER_MODEL`, `WORKER_API_KEY`) must be
 
 ## 5. Worker types and env
 
-See **docs/PHASE1_WORKER_API.md** → Phase 5 for OpenCode and required env. Agent config (Director/Worker URLs and keys) is not sent by the app; set it in the coordinator env so it is forwarded to the container.
+See **docs/PHASE1_WORKER_API.md** → Phase 5 for OpenCode and required env. Agent config is not sent by the app; set it in the coordinator env so it is forwarded to the worker container. Docker-mode worker contract includes `TERARCHITECT_API_URL`, `AGENTHUB_URL`, `AGENTHUB_API_KEY` or `AGENTHUB_API_KEY_PATH`, explicit `BASE_LEAF_ID`/`BASE_HASH`, and the Director/Worker/Codex env required for the selected backend.
 
 ---
 

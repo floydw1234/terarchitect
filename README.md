@@ -93,7 +93,7 @@ Details: `docs/PHASE1_WORKER_API.md`.
 | Component | What it does | Where it runs |
 |-----------|--------------|---------------|
 | **App** | Flask API + Postgres + React frontend. Stores projects/graph/tickets/logs and enqueues jobs. Does **not** execute the agent. | **Docker Compose** (`postgres`, `backend`, `frontend`) |
-| **Coordinator** | Claims jobs from the API and starts one agent container per job. | **Host process** (can be a different machine with Docker) |
+| **Coordinator** | Claims jobs from the API and starts one agent container per job. | **Docker Compose** or **host process** |
 | **Agent image** | Director + Worker (OpenCode, Claude Code, or Codex). Clones or opens the project repo, implements the ticket, publishes an AgentHub attempt, exits. | **Docker container** started by the coordinator |
 
 High-level flow: **UI → enqueue → coordinator claims → agent container runs → AgentHub attempt created → accepted `TicketAttempt` → promotion candidate review → `ShipRun` compose/ship → release/export PR or local frontier advance**.
@@ -114,15 +114,23 @@ docker compose up -d
 - **API**: `http://localhost:5010`
 - **Postgres**: host port `5433` 
 
-### 2) Build the agent image (once)
+### 2) Build the agent and coordinator images (once)
 
 ```bash
-docker build -f Dockerfile.agent -t terarchitect-agent .
+docker compose build agent coordinator
 ```
 
 ### 3) Run the coordinator (so tickets actually execute)
 
-The coordinator is not part of docker compose. Run it on any host with Docker.
+Docker-first path:
+
+```bash
+docker compose up -d coordinator
+```
+
+The compose coordinator launches sibling worker containers onto `terarchitect_default` and forwards `TERARCHITECT_API_URL=http://backend:5010`, `AGENTHUB_URL=http://agenthub:8080`, `AGENT_IMAGE=terarchitect-agent`, and the Director/Worker env you provide via shell or repo `.env`. Worker containers materialize AgentHub workspaces per job; they do not bind-mount your host repo.
+
+Host-run path remains available for local-mode projects or for deployments that keep the coordinator outside Compose:
 
 ```bash
 pip install -r coordinator/requirements.txt
@@ -144,14 +152,15 @@ Tip: set `PYTHONPATH=/path/to/terarchitect` if your environment needs it.
 ### Single-box (dev / small deploy)
 
 - Run the app: `docker compose up -d`
-- Run the coordinator on the same host
-- Set `TERARCHITECT_API_URL=http://host.docker.internal:5010` so agent containers can reach the app
+- Run the coordinator in compose (`docker compose up -d coordinator`) or on the same host
+- Compose coordinator default: `TERARCHITECT_API_URL=http://backend:5010`, `AGENTHUB_URL=http://agenthub:8080`, `DOCKER_NETWORK=terarchitect_default`
+- Host coordinator: set `TERARCHITECT_API_URL=http://host.docker.internal:5010` so agent containers can reach the app
   - On Linux, the coordinator automatically adds `--add-host=host.docker.internal:host-gateway`
 
 ### Two-box (production)
 
 - **Machine A**: app only (docker compose). No coordinator required here.
-- **Machine B**: coordinator + Docker. Build the agent image here. Run the coordinator here.
+- **Machine B**: coordinator + Docker. Build the agent image here. Run the coordinator here (host process or coordinator container).
 - Set `TERARCHITECT_API_URL=https://machine-a.example.com` (or the public URL of Machine A)
 
 Agent containers only need:
@@ -172,7 +181,7 @@ Full ops notes (systemd, env, verification): see `docs/RUNBOOK.md`.
 3. The coordinator claims the job and runs:
    - `docker run ... -e REPO_URL=... -e TICKET_ID=... terarchitect-agent`
 4. Inside the container, the agent:
-   - clones your repo
+   - materializes the selected AgentHub base into an isolated worker workspace
    - checks out the selected AgentHub base/root when one is provided
    - runs Director + Worker (OpenCode, Claude Code, or Codex) to implement
    - commits and publishes an AgentHub attempt
@@ -192,7 +201,7 @@ No mixing with your project’s Dockerfile. The agent image is built once and re
 |------|------|
 | `backend/` | Flask API (served by docker compose). Stores graph/tickets/logs; enqueues jobs only. |
 | `frontend/` | React UI (served by docker compose). |
-| `coordinator/` | Host-side Python process. Claims jobs and starts agent containers. |
+| `coordinator/` | Docker/host coordinator. Claims jobs and starts agent containers. |
 | `agent/` | Director + runner + worker wiring (Codex, OpenCode, and Claude Code). Packaged into the agent image. |
 
 ---

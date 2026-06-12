@@ -85,7 +85,7 @@ docker run --rm \
   terarchitect-agent
 ```
 
-**Required env:** `TICKET_ID`, `PROJECT_ID`, `TERARCHITECT_API_URL`, `REPO_URL`. Optional: `GITHUB_TOKEN`, `TERARCHITECT_WORKER_API_KEY`. Agent config (DIRECTOR_LLM_URL, WORKER_LLM_URL, WORKER_MODEL, etc.) must be set in the environment (e.g. coordinator passes them into the container).
+**Required env:** `TICKET_ID`, `PROJECT_ID`, `TERARCHITECT_API_URL`, `REPO_URL`. Optional: `GITHUB_TOKEN`, `TERARCHITECT_WORKER_API_KEY`. Swarm/Docker runs also require `AGENTHUB_URL` plus `AGENTHUB_API_KEY` or `AGENTHUB_API_KEY_PATH`, and the coordinator forwards explicit `BASE_LEAF_ID` / `BASE_HASH` for workspace materialization. Agent config (Director/Worker/Codex env such as `DIRECTOR_*`, `WORKER_*`, `OPENROUTER_API_KEY`, `CODEX_EXTRA_FLAGS`) must be set in the environment.
 
 Workspace in container: `/workspace` (clone and run happen there). Exit 0 = success; non-zero = failure (coordinator uses this to call jobs/complete or jobs/fail). PR-review jobs have been removed; human feedback now flows through AgentHub channels and Ship Room/Workspace actions. The operator contract is candidate review followed by `ShipRun` execution; any remaining wave-keyed ship routes are backend compatibility shims.
 
@@ -118,7 +118,7 @@ python -m coordinator
 - **MAX_CONCURRENT_AGENTS** — Max containers at once (default 1).
 - **POLL_INTERVAL_SEC** — Seconds between claim attempts when no capacity or no job (default 10).
 
-**Container reachability:** The coordinator passes its env (including `TERARCHITECT_API_URL`) to each container. If the app is on the host and the coordinator runs on the same host, set `TERARCHITECT_API_URL=http://host.docker.internal:5010` (or the host’s IP) so the container can reach the app. On Linux without Docker Desktop you may need `--add-host=host.docker.internal:host-gateway` when running the coordinator’s `docker run` (the coordinator does not add this by default).
+**Container reachability:** The coordinator passes its env (including `TERARCHITECT_API_URL`) to each container. Compose coordinator should also pass `DOCKER_NETWORK=terarchitect_default` so workers can reach `backend` and `agenthub` by service name. If the app is on the host and the coordinator runs on the same host, set `TERARCHITECT_API_URL=http://host.docker.internal:5010` (or the host’s IP) so the container can reach the app. On Linux without Docker Desktop the coordinator adds `--add-host=host.docker.internal:host-gateway` automatically when needed.
 
 Operator note: this worker API doc freezes the DAG-native nouns only. It does not require every legacy backend route to be removed immediately; some wave-keyed ship endpoints may still exist as compatibility shims behind the candidate-first UI and CLI.
 

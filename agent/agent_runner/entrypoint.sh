@@ -4,6 +4,28 @@
 
 set -e
 
+load_secret_file() {
+  _target_var="$1"
+  _path_var="${_target_var}_PATH"
+  eval "_current_value=\${$_target_var:-}"
+  eval "_secret_path=\${$_path_var:-}"
+  if [ -n "$_current_value" ] || [ -z "$_secret_path" ]; then
+    return 0
+  fi
+  if [ ! -f "$_secret_path" ]; then
+    echo "[entrypoint] ${_path_var} points to a missing file: ${_secret_path}" >&2
+    exit 1
+  fi
+  export "$_target_var=$(tr -d '\r\n' < "$_secret_path")"
+}
+
+load_secret_file AGENTHUB_API_KEY
+load_secret_file DIRECTOR_API_KEY
+load_secret_file OPENROUTER_API_KEY
+load_secret_file WORKER_API_KEY
+load_secret_file OPENAI_API_KEY
+load_secret_file TERARCHITECT_WORKER_API_KEY
+
 # AGENT_WORKSPACE only set by coordinator for local execution. In Docker we leave it unset so the runner clones the repo.
 if [ -n "$AGENT_WORKSPACE" ]; then
   mkdir -p "$AGENT_WORKSPACE"

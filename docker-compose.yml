@@ -1,5 +1,5 @@
 services:
-  # Agent image (build only). Run the coordinator on the host; it starts agent containers with docker run.
+  # Agent image (build only). The coordinator service or host coordinator starts worker containers with docker run.
   # Build with: docker compose build agent
   agent:
     build:
@@ -8,6 +8,72 @@ services:
     image: terarchitect-agent
     profiles:
       - build-agent
+
+  # Coordinator runtime. Starts worker containers onto the compose network; no host repo bind mounts.
+  coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile.coordinator
+    container_name: terarchitect-coordinator
+    environment:
+      TERARCHITECT_API_URL: ${TERARCHITECT_API_URL:-http://backend:5010}
+      PROJECT_ID: ${PROJECT_ID:-}
+      PROJECT_IDS: ${PROJECT_IDS:-}
+      TERARCHITECT_WORKER_API_KEY: ${TERARCHITECT_WORKER_API_KEY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GH_TOKEN: ${GH_TOKEN:-}
+      GIT_USER_NAME: ${GIT_USER_NAME:-}
+      GIT_USER_EMAIL: ${GIT_USER_EMAIL:-}
+      AGENT_IMAGE: ${AGENT_IMAGE:-terarchitect-agent}
+      AGENT_DOCKER_MODE: ${AGENT_DOCKER_MODE:-dind}
+      AGENT_CACHE_VOLUME: ${AGENT_CACHE_VOLUME:-terarchitect-agent-cache}
+      MAX_CONCURRENT_AGENTS: ${MAX_CONCURRENT_AGENTS:-1}
+      POLL_INTERVAL_SEC: ${POLL_INTERVAL_SEC:-10}
+      DOCKER_NETWORK: ${DOCKER_NETWORK:-terarchitect_default}
+      AGENTHUB_URL: ${AGENTHUB_URL:-http://agenthub:8080}
+      AGENTHUB_API_KEY: ${AGENTHUB_API_KEY:-}
+      AGENTHUB_API_KEY_PATH: ${AGENTHUB_API_KEY_PATH:-}
+      AGENTHUB_AGENT_ID: ${AGENTHUB_AGENT_ID:-}
+      DIRECTOR_PROVIDER: ${DIRECTOR_PROVIDER:-}
+      DIRECTOR_LLM_URL: ${DIRECTOR_LLM_URL:-}
+      DIRECTOR_MODEL: ${DIRECTOR_MODEL:-}
+      DIRECTOR_API_KEY: ${DIRECTOR_API_KEY:-}
+      DIRECTOR_API_KEY_PATH: ${DIRECTOR_API_KEY_PATH:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_API_KEY_PATH: ${OPENROUTER_API_KEY_PATH:-}
+      WORKER_MODE: ${WORKER_MODE:-}
+      WORKER_LLM_URL: ${WORKER_LLM_URL:-}
+      WORKER_MODEL: ${WORKER_MODEL:-}
+      WORKER_API_KEY: ${WORKER_API_KEY:-}
+      WORKER_API_KEY_PATH: ${WORKER_API_KEY_PATH:-}
+      WORKER_TIMEOUT_SEC: ${WORKER_TIMEOUT_SEC:-}
+      CODEX_EXTRA_FLAGS: ${CODEX_EXTRA_FLAGS:-}
+      CODEX_SANDBOX: ${CODEX_SANDBOX:-}
+      CLAUDE_CODE_EXTRA_TOOLS: ${CLAUDE_CODE_EXTRA_TOOLS:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_KEY_PATH: ${OPENAI_API_KEY_PATH:-}
+      openai_api_key: ${openai_api_key:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-}
+      EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      MEMORY_EMBEDDING_MODEL: ${MEMORY_EMBEDDING_MODEL:-}
+      MEMORY_EMBEDDING_BASE_URL: ${MEMORY_EMBEDDING_BASE_URL:-}
+      MEMORY_LLM_MODEL: ${MEMORY_LLM_MODEL:-}
+      MEMORY_LLM_BASE_URL: ${MEMORY_LLM_BASE_URL:-}
+      MEMORY_LLM_API_KEY: ${MEMORY_LLM_API_KEY:-}
+      MIDDLE_AGENT_DEBUG: ${MIDDLE_AGENT_DEBUG:-}
+      OPENCODE_SERVER_URL: ${OPENCODE_SERVER_URL:-}
+      OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-}
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-}
+    depends_on:
+      backend:
+        condition: service_started
+      agenthub:
+        condition: service_started
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - coordinator-state:/data/coordinator
+    restart: unless-stopped
 
   # Flask API + DB (no in-process agent; enqueues jobs only)
   backend:
@@ -18,7 +84,7 @@ services:
     ports:
       - "5010:5010"
     env_file:
-      - ./backend/.env
+      - ./example.env
     environment:
       # Bridge network: reach postgres by service name on its internal port
       DATABASE_URL: postgresql://terarchitect:terarchitect@postgres:5432/terarchitect
@@ -95,3 +161,6 @@ services:
 networks:
   default:
     name: terarchitect_default
+
+volumes:
+  coordinator-state:
