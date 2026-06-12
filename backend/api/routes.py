@@ -2076,7 +2076,8 @@ def ticket_attempt_accept(project_id, ticket_id, attempt_id):
                 _transition_attempt(prev_accepted, "superseded", reason="superseded by newer acceptance")
             except ValueError:
                 pass  # already in a terminal state
-        _transition_attempt(attempt, "accepted")
+        if attempt.status != "accepted":
+            _transition_attempt(attempt, "accepted")
         project.accepted_frontier_id = commit_hash
         project.updated_at = datetime.now(timezone.utc)
         db.session.commit()
