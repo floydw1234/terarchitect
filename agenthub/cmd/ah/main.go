@@ -142,6 +142,26 @@ func readBody(resp *http.Response) (string, error) {
 
 // Commands
 
+func incrementalBundleBaseCandidates() []string {
+	candidates := make([]string, 0, 6)
+	seen := map[string]bool{}
+	add := func(candidate string) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || seen[candidate] {
+			return
+		}
+		seen[candidate] = true
+		candidates = append(candidates, candidate)
+	}
+	for _, envName := range []string{"BASE_LEAF_ID", "BASE_HASH", "AGENTHUB_ROOT_HASH"} {
+		add(os.Getenv(envName))
+	}
+	for _, ref := range []string{"origin/HEAD", "origin/main", "origin/master"} {
+		add(ref)
+	}
+	return candidates
+}
+
 func cmdJoin(args []string) {
 	fs := flag.NewFlagSet("join", flag.ExitOnError)
 	serverFlag := fs.String("server", "", "server URL")
@@ -210,10 +230,11 @@ func cmdPush(args []string) {
 	}
 	headHash = strings.TrimSpace(headHash)
 
-	// Only bundle commits not already reachable from origin (incremental push).
-	// Fall back to full bundle when no origin ref exists (e.g. seeding a fresh agenthub repo).
+	// Only bundle commits not already present in AgentHub (incremental push).
+	// AgentHub-materialized workspaces often have no origin refs, so prefer the
+	// explicit DAG base env passed by Terarchitect before falling back to origin.
 	bundleArgs := []string{"bundle", "create", tmpFile.Name(), "HEAD"}
-	for _, candidate := range []string{"origin/HEAD", "origin/main", "origin/master"} {
+	for _, candidate := range incrementalBundleBaseCandidates() {
 		if _, err := gitOutput("rev-parse", "--verify", candidate); err == nil {
 			bundleArgs = []string{"bundle", "create", tmpFile.Name(), "HEAD", "^" + candidate}
 			break
