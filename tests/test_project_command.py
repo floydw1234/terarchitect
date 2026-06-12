@@ -1,5 +1,9 @@
+import json
 from types import SimpleNamespace
 
+import pytest
+
+from cli import __main__
 from cli.commands import project as project_cmd
 
 
@@ -32,13 +36,59 @@ class StubAPI:
         }
 
 
+class StubGitHubProjectAPI(StubAPI):
+    def post(self, path, body):
+        self.posts.append((path, body))
+        return {
+            "id": "proj-1",
+            "name": body.get("name"),
+            "github_url": body.get("github_url"),
+            "github_ref": body.get("base_ref"),
+            "github_resolved_sha": "a" * 40,
+            "accepted_frontier_id": "leaf_01HZX3ABCD9EF0123456789XYZ",
+            "execution_mode": body.get("execution_mode", "docker"),
+            "git_mode": body.get("git_mode", "swarm"),
+        }
+
+
+def test_project_create_parser_accepts_github_first_without_project_path():
+    parser = __main__.build_parser()
+
+    args = parser.parse_args(
+        [
+            "project",
+            "create",
+            "--name",
+            "vid_splitter",
+            "--github-url",
+            "https://github.com/floydw1234/vid_splitter",
+            "--base-ref",
+            "main",
+            "--import-to-agenthub",
+            "--execution-mode",
+            "docker",
+            "--git-mode",
+            "swarm",
+        ]
+    )
+
+    assert args.group == "project"
+    assert args.project_cmd == "create"
+    assert args.github_url == "https://github.com/floydw1234/vid_splitter"
+    assert args.project_path is None
+    assert args.base_ref == "main"
+    assert args.import_to_agenthub is True
+
+
 def test_project_create_passes_explicit_frontier_id(capsys):
     api = StubAPI()
     args = SimpleNamespace(
         config=None,
         name="CLI Project",
         description=None,
-        github_url=None,
+        github_url="https://github.com/floydw1234/cli-project",
+        base_ref=None,
+        import_to_agenthub=False,
         execution_mode="docker",
         git_mode="swarm",
         project_path=None,
@@ -54,6 +104,7 @@ def test_project_create_passes_explicit_frontier_id(capsys):
             "/api/projects",
             {
                 "name": "CLI Project",
+                "github_url": "https://github.com/floydw1234/cli-project",
                 "execution_mode": "docker",
                 "git_mode": "swarm",
                 "accepted_frontier_id": "leaf_01HZX3ABCD9EF0123456789XYZ",
@@ -61,7 +112,130 @@ def test_project_create_passes_explicit_frontier_id(capsys):
             },
         )
     ]
-    assert "Created project: proj-1" in capsys.readouterr().out
+    assert "Created project" in capsys.readouterr().out
+
+
+def test_project_create_github_first_includes_github_fields_in_payload_and_output(capsys):
+    api = StubGitHubProjectAPI()
+    args = SimpleNamespace(
+        config=None,
+        name="vid_splitter",
+        description=None,
+        github_url="https://github.com/floydw1234/vid_splitter",
+        base_ref="main",
+        import_to_agenthub=True,
+        execution_mode="docker",
+        git_mode="swarm",
+        project_path=None,
+        accepted_frontier_id=None,
+        existing_repo=True,
+        output="human",
+    )
+
+    project_cmd._cmd_create(args, api)
+
+    assert api.posts == [
+        (
+            "/api/projects",
+            {
+                "name": "vid_splitter",
+                "github_url": "https://github.com/floydw1234/vid_splitter",
+                "base_ref": "main",
+                "execution_mode": "docker",
+                "git_mode": "swarm",
+                "is_existing_repo": True,
+                "import_to_agenthub": True,
+            },
+        )
+    ]
+    stdout = capsys.readouterr().out
+    assert "proj-1" in stdout
+    assert "https://github.com/floydw1234/vid_splitter" in stdout
+    assert "main" in stdout
+    assert "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in stdout
+    assert "leaf_01HZX3ABCD9EF0123456789XYZ" in stdout
+
+
+def test_project_create_json_output_includes_github_fields(capsys):
+    api = StubGitHubProjectAPI()
+    args = SimpleNamespace(
+        config=None,
+        name="vid_splitter",
+        description=None,
+        github_url="https://github.com/floydw1234/vid_splitter",
+        base_ref="main",
+        import_to_agenthub=True,
+        execution_mode="docker",
+        git_mode="swarm",
+        project_path=None,
+        accepted_frontier_id=None,
+        existing_repo=True,
+        output="json",
+    )
+
+    project_cmd._cmd_create(args, api)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["id"] == "proj-1"
+    assert payload["github_url"] == "https://github.com/floydw1234/vid_splitter"
+    assert payload["github_ref"] == "main"
+    assert payload["github_resolved_sha"] == "a" * 40
+    assert payload["accepted_frontier_id"] == "leaf_01HZX3ABCD9EF0123456789XYZ"
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (
+            dict(
+                name="CLI Project",
+                github_url=None,
+                project_path=None,
+                base_ref=None,
+                execution_mode="docker",
+            ),
+            "Provide --github-url for GitHub-first onboarding or --project-path for legacy local onboarding.",
+        ),
+        (
+            dict(
+                name="CLI Project",
+                github_url=None,
+                project_path="/repo/demo",
+                base_ref="main",
+                execution_mode="docker",
+            ),
+            "--base-ref requires --github-url.",
+        ),
+        (
+            dict(
+                name="CLI Project",
+                github_url="https://github.com/floydw1234/vid_splitter",
+                project_path=None,
+                base_ref=None,
+                execution_mode="local",
+            ),
+            "--execution-mode local requires --project-path.",
+        ),
+    ],
+)
+def test_project_create_rejects_incompatible_inputs(args, message, capsys):
+    api = StubAPI()
+    namespace = SimpleNamespace(
+        config=None,
+        description=None,
+        import_to_agenthub=False,
+        git_mode="swarm",
+        accepted_frontier_id=None,
+        existing_repo=False,
+        output="human",
+        **args,
+    )
+
+    with pytest.raises(SystemExit):
+        project_cmd._cmd_create(namespace, api)
+
+    assert api.posts == []
+    assert message in capsys.readouterr().err
 
 
 def test_project_update_passes_explicit_frontier_id():

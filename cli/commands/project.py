@@ -20,6 +20,12 @@ def register(subparsers) -> None:
     c.add_argument("--name", "-n", help="Project name")
     c.add_argument("--description", "-d", help="Project description")
     c.add_argument("--github-url", metavar="URL", help="GitHub repo URL")
+    c.add_argument("--base-ref", metavar="REF", help="GitHub branch or ref to treat as the onboarding base")
+    c.add_argument(
+        "--import-to-agenthub",
+        action="store_true",
+        help="Request backend import of the GitHub project into AgentHub when supported",
+    )
     c.add_argument(
         "--execution-mode",
         choices=["docker", "local"],
@@ -145,26 +151,15 @@ def _cmd_create(args, api: API) -> None:
     if args.config:
         cfg = load_config_file(args.config)
 
-    # CLI flags override config file values
-    payload = {
-        "name": getattr(args, "name", None) or cfg.get("name"),
-        "description": getattr(args, "description", None) or cfg.get("description"),
-        "github_url": getattr(args, "github_url", None) or cfg.get("github_url"),
-        "execution_mode": getattr(args, "execution_mode", None) or cfg.get("execution_mode", "docker"),
-        "git_mode": getattr(args, "git_mode", None) or cfg.get("git_mode", "swarm"),
-        "project_path": getattr(args, "project_path", None) or cfg.get("project_path"),
-        "accepted_frontier_id": getattr(args, "accepted_frontier_id", None) or cfg.get("accepted_frontier_id"),
-        "is_existing_repo": getattr(args, "existing_repo", False) or cfg.get("is_existing_repo", False),
-    }
-    payload = {k: v for k, v in payload.items() if v is not None and v is not False or k == "is_existing_repo"}
-
-    if not payload.get("name"):
-        die("--name is required (or provide it in --config file)")
+    payload = _build_create_payload(args, cfg)
+    _validate_create_payload(payload, output=args.output)
 
     try:
         project = api.post("/api/projects", payload)
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
+
+    project = _augment_project_payload(project, payload)
 
     # Create any default_tickets specified in config
     default_tickets = cfg.get("default_tickets") or []
@@ -185,19 +180,71 @@ def _cmd_create(args, api: API) -> None:
     if args.output == "json":
         print_json(project)
         return
-    print(f"Created project: {project['id']}")
-    print(f"  Name:     {project.get('name')}")
-    print(f"  Git mode: {project.get('git_mode', 'swarm')}")
-    print(f"  Exec:     {project.get('execution_mode', 'docker')}")
+    fields = [
+        ("ID", project.get("id")),
+        ("Name", project.get("name")),
+        ("GitHub URL", project.get("github_url")),
+        ("Base ref", project.get("github_ref") or project.get("base_ref")),
+        ("Resolved SHA", project.get("github_resolved_sha")),
+        ("Accepted frontier", project.get("accepted_frontier_id")),
+        ("Git mode", project.get("git_mode", "swarm")),
+        ("Exec", project.get("execution_mode", "docker")),
+    ]
     if default_tickets:
-        print(f"  Tickets created: {len(default_tickets)}")
+        fields.append(("Tickets created", len(default_tickets)))
+    print_receipt(
+        "Created project",
+        fields=[(label, value) for label, value in fields if value is not None],
+    )
+
+
+def _build_create_payload(args, cfg: dict) -> dict:
+    # CLI flags override config file values.
+    payload = {
+        "name": getattr(args, "name", None) or cfg.get("name"),
+        "description": getattr(args, "description", None) or cfg.get("description"),
+        "github_url": getattr(args, "github_url", None) or cfg.get("github_url"),
+        "base_ref": getattr(args, "base_ref", None) or cfg.get("base_ref") or cfg.get("github_ref"),
+        "execution_mode": getattr(args, "execution_mode", None) or cfg.get("execution_mode", "docker"),
+        "git_mode": getattr(args, "git_mode", None) or cfg.get("git_mode", "swarm"),
+        "project_path": getattr(args, "project_path", None) or cfg.get("project_path"),
+        "accepted_frontier_id": getattr(args, "accepted_frontier_id", None) or cfg.get("accepted_frontier_id"),
+        "is_existing_repo": getattr(args, "existing_repo", False) or cfg.get("is_existing_repo", False),
+        "import_to_agenthub": getattr(args, "import_to_agenthub", False) or cfg.get("import_to_agenthub", False),
+    }
+    return {
+        k: v
+        for k, v in payload.items()
+        if (v is not None and v is not False) or k == "is_existing_repo"
+    }
+
+
+def _validate_create_payload(payload: dict, *, output: str) -> None:
+    if not payload.get("name"):
+        die("--name is required (or provide it in --config file)", output=output)
+    if not payload.get("github_url") and not payload.get("project_path"):
+        die("Provide --github-url for GitHub-first onboarding or --project-path for legacy local onboarding.", output=output)
+    if payload.get("base_ref") and not payload.get("github_url"):
+        die("--base-ref requires --github-url.", output=output)
+    if payload.get("execution_mode") == "local" and not payload.get("project_path"):
+        die("--execution-mode local requires --project-path.", output=output)
+
+
+def _augment_project_payload(project: dict, payload: dict) -> dict:
+    result = dict(project or {})
+    if payload.get("github_url") and not result.get("github_url"):
+        result["github_url"] = payload["github_url"]
+    if payload.get("base_ref") and not (result.get("github_ref") or result.get("base_ref")):
+        result["base_ref"] = payload["base_ref"]
+    return result
 
 
 def _cmd_show(args, api: API) -> None:
     try:
         project = api.get(f"/api/projects/{args.project_id}")
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
+    project = _augment_project_payload(project, {})
     if args.output == "json":
         print_json(project)
         return
@@ -227,7 +274,7 @@ def _cmd_update(args, api: API) -> None:
     try:
         project = api.put(f"/api/projects/{args.project_id}", payload)
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     if args.output == "json":
         print_json(project)
         return
@@ -259,7 +306,7 @@ def _cmd_import_agenthub_root(args, api: API) -> None:
     try:
         result = api.post(f"/api/projects/{args.project_id}/import-agenthub-root", payload)
     except APIError as e:
-        die(str(e))
+        die(e, output=args.output)
     if args.output == "json":
         print_json(result)
         return
