@@ -128,6 +128,13 @@ const ProjectPage: React.FC = () => {
     fontSize: '0.95rem',
   } as const;
 
+  const sourceTypeLabel =
+    project.source_type === 'local_path'
+      ? 'Local path (advanced/dev)'
+      : project.source_type === 'github'
+        ? 'GitHub repository'
+        : project.source_type;
+
   const toolCardSx = {
     display: 'flex',
     flexDirection: 'column',
@@ -182,6 +189,11 @@ const ProjectPage: React.FC = () => {
         )}
 
         <Stack spacing={0.5}>
+          {sourceTypeLabel && (
+            <Typography sx={infoTextSx}>
+              Source: {sourceTypeLabel}
+            </Typography>
+          )}
           <Typography sx={infoTextSx}>
             Agent execution: {project.execution_mode === 'local' ? 'Local' : 'Docker'}
           </Typography>
@@ -199,6 +211,21 @@ const ProjectPage: React.FC = () => {
           {project.github_url && (
             <Typography sx={infoTextSx}>
               GitHub URL: {project.github_url}
+            </Typography>
+          )}
+          {(project.github_ref || project.base_ref) && (
+            <Typography sx={infoTextSx}>
+              GitHub ref: {project.github_ref ?? project.base_ref}
+            </Typography>
+          )}
+          {project.github_resolved_sha && (
+            <Typography sx={infoTextSx}>
+              Resolved SHA: {project.github_resolved_sha}
+            </Typography>
+          )}
+          {typeof project.import_to_agenthub === 'boolean' && (
+            <Typography sx={infoTextSx}>
+              Import to AgentHub: {project.import_to_agenthub ? 'Yes' : 'No'}
             </Typography>
           )}
           <LineageField

@@ -16,9 +16,11 @@ import {
   InputLabel,
   Select,
   MenuItem,
+  Checkbox,
+  FormControlLabel,
 } from '@mui/material';
 import { Link } from 'react-router-dom';
-import { getProjects, createProject, deleteProject, getExecutionReady, type Project, type ProjectExecutionMode, type ProjectGitMode } from '../utils/api';
+import { getProjects, createProject, deleteProject, getExecutionReady, type Project, type ProjectExecutionMode, type ProjectGitMode, type ProjectSourceType } from '../utils/api';
 import { LineageField } from '../components/LineageField';
 
 const ProjectsPage: React.FC = () => {
@@ -26,7 +28,10 @@ const ProjectsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [sourceType, setSourceType] = useState<ProjectSourceType>('github');
   const [githubUrl, setGithubUrl] = useState('');
+  const [baseRef, setBaseRef] = useState('main');
+  const [importToAgenthub, setImportToAgenthub] = useState(true);
   const [executionMode, setExecutionMode] = useState<ProjectExecutionMode>('docker');
   const [gitMode, setGitMode] = useState<ProjectGitMode>('swarm');
   const [projectPath, setProjectPath] = useState('');
@@ -58,21 +63,32 @@ const ProjectsPage: React.FC = () => {
 
   const handleCreateProject = async () => {
     if (!name.trim()) return;
+    if (sourceType === 'github' && !githubUrl.trim()) return;
+    if (sourceType === 'local_path' && !projectPath.trim()) return;
+
+    const normalizedBaseRef = baseRef.trim() || 'main';
 
     try {
       const data = await createProject({
-        name,
-        description,
-        github_url: githubUrl || undefined,
+        name: name.trim(),
+        description: description.trim() || undefined,
+        source_type: sourceType,
+        github_url: sourceType === 'github' ? (githubUrl.trim() || undefined) : undefined,
+        base_ref: sourceType === 'github' ? normalizedBaseRef : undefined,
+        github_ref: sourceType === 'github' ? normalizedBaseRef : undefined,
+        import_to_agenthub: sourceType === 'github' ? importToAgenthub : undefined,
         execution_mode: executionMode,
         git_mode: gitMode,
-        project_path: executionMode === 'local' ? (projectPath.trim() || undefined) : undefined,
+        project_path: sourceType === 'local_path' ? (projectPath.trim() || undefined) : undefined,
         is_existing_repo: projectType === 'existing',
       });
 
       setName('');
       setDescription('');
+      setSourceType('github');
       setGithubUrl('');
+      setBaseRef('main');
+      setImportToAgenthub(true);
       setExecutionMode('docker');
       setGitMode('swarm');
       setProjectPath('');
@@ -113,6 +129,9 @@ const ProjectsPage: React.FC = () => {
       </Box>
     );
   }
+
+  const isGithubSource = sourceType === 'github';
+  const createDisabled = !name.trim() || (isGithubSource ? !githubUrl.trim() : !projectPath.trim());
 
   return (
     <Box sx={{ maxWidth: 1200, mx: 'auto', width: '100%' }}>
@@ -306,22 +325,87 @@ const ProjectsPage: React.FC = () => {
               size="small"
             />
             <FormControl size="small" fullWidth>
+              <InputLabel>Source</InputLabel>
+              <Select
+                value={sourceType}
+                label="Source"
+                onChange={(e) => {
+                  const nextSource = e.target.value as ProjectSourceType;
+                  setSourceType(nextSource);
+                  if (nextSource === 'github') {
+                    setExecutionMode('docker');
+                  } else {
+                    setExecutionMode('local');
+                  }
+                }}
+              >
+                <MenuItem value="github">GitHub repository</MenuItem>
+                <MenuItem value="local_path">Local path (advanced/dev)</MenuItem>
+              </Select>
+            </FormControl>
+            {isGithubSource ? (
+              <>
+                <TextField
+                  label="GitHub Repository URL"
+                  value={githubUrl}
+                  onChange={(e) => setGithubUrl(e.target.value)}
+                  placeholder="https://github.com/owner/repo"
+                  helperText="Primary onboarding path for GitHub-first projects."
+                  fullWidth
+                  required
+                  size="small"
+                />
+                <TextField
+                  label="Base ref"
+                  value={baseRef}
+                  onChange={(e) => setBaseRef(e.target.value)}
+                  placeholder="main"
+                  helperText="Branch, tag, or commit to import from. Defaults to main."
+                  fullWidth
+                  size="small"
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={importToAgenthub}
+                      onChange={(e) => setImportToAgenthub(e.target.checked)}
+                    />
+                  }
+                  label="Import to AgentHub"
+                />
+              </>
+            ) : (
+              <TextField
+                label="Project path"
+                value={projectPath}
+                onChange={(e) => setProjectPath(e.target.value)}
+                placeholder="/path/to/project/on/host"
+                helperText="Advanced/dev-only path on the coordinator host."
+                fullWidth
+                required
+                size="small"
+              />
+            )}
+            <FormControl size="small" fullWidth>
               <InputLabel>Agent execution</InputLabel>
               <Select
                 value={executionMode}
                 label="Agent execution"
                 onChange={(e) => setExecutionMode(e.target.value as ProjectExecutionMode)}
               >
-                <MenuItem value="docker">Docker</MenuItem>
+                {sourceType === 'github' && (
+                  <MenuItem value="docker">Docker (recommended)</MenuItem>
+                )}
                 <MenuItem value="local">Local</MenuItem>
               </Select>
             </FormControl>
-            {executionMode === 'local' && (
+            {executionMode === 'local' && sourceType === 'github' && (
               <TextField
                 label="Project path"
                 value={projectPath}
                 onChange={(e) => setProjectPath(e.target.value)}
                 placeholder="/path/to/project/on/host"
+                helperText="Optional override for local execution against an already-checked-out repo."
                 fullWidth
                 size="small"
               />
@@ -336,15 +420,6 @@ const ProjectsPage: React.FC = () => {
                 <MenuItem value="swarm">AgentHub (swarm) — recommended</MenuItem>
               </Select>
             </FormControl>
-            <TextField
-              label="GitHub Repository URL"
-              value={githubUrl}
-              onChange={(e) => setGithubUrl(e.target.value)}
-              placeholder="https://github.com/username/repo"
-              helperText="Required for Docker; optional for Local"
-              fullWidth
-              size="small"
-            />
           </Box>
         </DialogContent>
         <DialogActions>
@@ -352,7 +427,7 @@ const ProjectsPage: React.FC = () => {
           <Button
             variant="contained"
             onClick={handleCreateProject}
-            disabled={!name.trim()}
+            disabled={createDisabled}
           >
             Create
           </Button>

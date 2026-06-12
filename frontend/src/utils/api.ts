@@ -42,12 +42,18 @@ export const AGENTHUB_URL = resolveAgenthubUrl();
 
 export type ProjectExecutionMode = 'docker' | 'local';
 export type ProjectGitMode = 'swarm';
+export type ProjectSourceType = 'github' | 'local_path';
 
 export interface Project {
   id: string;
   name: string;
   description?: string;
+  source_type?: ProjectSourceType | string;
   github_url?: string;
+  base_ref?: string | null;
+  github_ref?: string | null;
+  github_resolved_sha?: string | null;
+  import_to_agenthub?: boolean;
   /** When execution_mode is "local", agent runs on host at this path. */
   project_path?: string | null;
   execution_mode?: ProjectExecutionMode;
@@ -408,7 +414,11 @@ export async function getProjects(): Promise<Project[]> {
 export async function createProject(data: {
   name: string;
   description?: string;
+  source_type?: ProjectSourceType | string;
   github_url?: string;
+  base_ref?: string;
+  github_ref?: string;
+  import_to_agenthub?: boolean;
   execution_mode?: ProjectExecutionMode;
   git_mode?: ProjectGitMode;
   accepted_frontier_id?: string | null;
@@ -432,7 +442,11 @@ export async function getProject(projectId: string): Promise<Project> {
 export async function updateProject(projectId: string, data: {
   name?: string;
   description?: string;
+  source_type?: ProjectSourceType | string;
   github_url?: string;
+  base_ref?: string | null;
+  github_ref?: string | null;
+  import_to_agenthub?: boolean;
   execution_mode?: ProjectExecutionMode;
   git_mode?: ProjectGitMode;
   accepted_frontier_id?: string | null;
