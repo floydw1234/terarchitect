@@ -63,6 +63,7 @@ from .services.project_service import (
     infer_project_source_type as _infer_project_source_type,
     normalize_github_ref as _normalize_github_ref,
     normalize_frontier_id as _normalize_frontier_id,
+    project_doctor_report as _project_doctor_report,
     normalize_project_source_type as _normalize_project_source_type,
     project_to_json as _project_to_json,
     validate_project_frontier_candidate as _validate_project_frontier_candidate,
@@ -724,6 +725,12 @@ def project_detail(project_id):
         db.session.delete(project)
         db.session.commit()
         return jsonify({"message": "Project deleted"})
+
+
+@api_bp.route("/projects/<uuid:project_id>/doctor", methods=["GET"])
+def project_doctor(project_id):
+    project = _get_project_or_404(project_id)
+    return jsonify(_project_doctor_report(project))
 
 
 @api_bp.route("/projects/<uuid:project_id>/import-agenthub-root", methods=["POST"])

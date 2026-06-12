@@ -175,6 +175,72 @@ def test_create_github_project_defaults_ref_to_main_when_missing(client):
     assert import_mock.call_args.kwargs["github_ref"] == "main"
 
 
+def test_project_doctor_reports_github_first_project_without_local_path(client):
+    response = client.post(
+        "/api/projects",
+        json={
+            "name": "doctor-github",
+            "github_url": "https://github.com/example/repo",
+            "base_ref": "main",
+            "accepted_frontier_id": "leaf_01HZX3DOCTOR0123456789ABCD",
+            "is_existing_repo": True,
+        },
+    )
+    assert response.status_code == 201
+    project_id = response.get_json()["id"]
+
+    from models.db import db, Ticket, TicketAttempt
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=project_id,
+            column_id="done",
+            title="Operator status",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=project_id,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="c" * 40,
+            base_hash="leaf_01HZX3DOCTOR0123456789ABCD",
+            attempt_num=1,
+            status="accepted",
+            summary="Healthy attempt",
+        )
+        db.session.add(attempt)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+
+    with patch.dict(
+        os.environ,
+        {
+            "AGENTHUB_URL": "https://agenthub.example",
+            "AGENTHUB_API_KEY": "test-key",
+            "GITHUB_TOKEN": "ghs_test",
+            "MEMORY_EMBEDDING_MODEL": "text-embedding-3-small",
+            "OPENAI_API_KEY": "sk-test",
+        },
+        clear=False,
+    ):
+        doctor = client.get(f"/api/projects/{project_id}/doctor")
+
+    assert doctor.status_code == 200
+    payload = doctor.get_json()
+    assert payload["source_type"] == "github"
+    assert payload["source_url"] == "https://github.com/example/repo"
+    assert payload["source_ref"] == "main"
+    assert payload["project_path"] is None
+    assert payload["accepted_frontier_id"] == "leaf_01HZX3DOCTOR0123456789ABCD"
+    assert payload["accepted_frontier_hash"] == "leaf_01HZX3DOCTOR0123456789ABCD"
+    assert payload["root_hash"] == "leaf_01HZX3DOCTOR0123456789ABCD"
+    assert payload["latest_attempt"]["ticket_id"] == ticket_id
+    assert payload["latest_attempt"]["stale"] is False
+    assert payload["execution_readiness"]["ready"] is True
+    assert payload["execution_readiness"]["issues"] == []
+    assert "No pending or running jobs." in payload["execution_readiness"]["observations"]
+
+
 def test_create_github_project_agenthub_failure_does_not_persist_project(client):
     from api.routes import _AgenthubImportError
     from models.db import Project

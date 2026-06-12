@@ -1,10 +1,15 @@
 """Project domain helpers."""
+import os
 import re
 from typing import Optional
 
 from flask import current_app
 
-from models.db import Project
+from models.db import Project, Ticket, AgentJob, TicketAttempt
+try:
+    from utils.app_settings import check_execution_readiness
+except (ModuleNotFoundError, ImportError):
+    from backend.utils.app_settings import check_execution_readiness
 
 _FRONTIER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{6,254}$")
 _SOURCE_TYPES = {"github", "local_path", "agenthub_leaf"}
@@ -122,6 +127,97 @@ def project_to_json(project: Project):
         "shipped_frontier_updated_at": frontier_updated.isoformat() if frontier_updated else None,
         "created_at": project.created_at.isoformat() if project.created_at else None,
         "updated_at": project.updated_at.isoformat() if project.updated_at else None,
+    }
+
+
+def project_doctor_report(project: Project) -> dict:
+    frontier_id = get_project_frontier_id(project)
+    source_type = getattr(project, "source_type", None) or "local_path"
+    execution_mode = getattr(project, "execution_mode", None) or "docker"
+    source_url = (getattr(project, "github_url", None) or "").strip() or None
+    source_ref = normalize_github_ref(getattr(project, "github_ref", None))
+
+    pending_jobs = AgentJob.query.filter_by(project_id=project.id, status="pending").count()
+    running_jobs = AgentJob.query.filter_by(project_id=project.id, status="running").count()
+
+    latest_attempt = (
+        TicketAttempt.query
+        .filter_by(project_id=project.id)
+        .order_by(TicketAttempt.created_at.desc(), TicketAttempt.attempt_num.desc())
+        .first()
+    )
+    latest_attempt_payload = None
+    if latest_attempt:
+        stale, stale_reason = compare_base_to_accepted_frontier(
+            getattr(latest_attempt, "base_hash", None),
+            frontier_id,
+            subject_name="attempt",
+            base_field_name="attempt.base_hash",
+        )
+        ticket = Ticket.query.filter_by(id=latest_attempt.ticket_id).first()
+        latest_attempt_payload = {
+            "id": str(latest_attempt.id),
+            "ticket_id": str(latest_attempt.ticket_id),
+            "ticket_title": getattr(ticket, "title", None),
+            "status": latest_attempt.status,
+            "attempt_num": latest_attempt.attempt_num,
+            "agenthub_commit_hash": latest_attempt.agenthub_commit_hash,
+            "base_hash": latest_attempt.base_hash,
+            "stale": stale,
+            "stale_reason": stale_reason,
+            "created_at": latest_attempt.created_at.isoformat() if latest_attempt.created_at else None,
+            "updated_at": latest_attempt.updated_at.isoformat() if latest_attempt.updated_at else None,
+        }
+
+    ready, missing = check_execution_readiness()
+    readiness_issues: list[str] = []
+    if frontier_id is None:
+        readiness_issues.append("Project has no accepted AgentHub frontier.")
+    if execution_mode == "local":
+        if not ((getattr(project, "project_path", None) or "").strip()):
+            readiness_issues.append("Execution mode is local but project_path is not set.")
+    elif not source_url:
+        readiness_issues.append("Execution mode is docker but GitHub source URL is not set.")
+
+    agenthub_url = (os.environ.get("AGENTHUB_URL") or "").strip().rstrip("/")
+    agenthub_key = (
+        (os.environ.get("AGENTHUB_API_KEY") or "").strip()
+        or (os.environ.get("AGENTHUB_ADMIN_KEY") or "").strip()
+    )
+    if not agenthub_url:
+        readiness_issues.append("AGENTHUB_URL is not configured in backend runtime.")
+    if not agenthub_key:
+        readiness_issues.append("AGENTHUB_API_KEY or AGENTHUB_ADMIN_KEY is not configured in backend runtime.")
+    if latest_attempt_payload and latest_attempt_payload.get("stale") is True:
+        readiness_issues.append("Latest attempt is stale against project.accepted_frontier_id.")
+
+    observations: list[str] = []
+    if pending_jobs == 0 and running_jobs == 0:
+        observations.append("No pending or running jobs.")
+    if latest_attempt_payload is None:
+        observations.append("No attempts recorded yet.")
+
+    return {
+        "project": project_to_json(project),
+        "source_type": source_type,
+        "source_url": source_url,
+        "source_ref": source_ref,
+        "accepted_frontier_id": frontier_id,
+        "accepted_frontier_hash": frontier_id,
+        "root_hash": frontier_id,
+        "execution_mode": execution_mode,
+        "project_path": getattr(project, "project_path", None),
+        "latest_attempt": latest_attempt_payload,
+        "job_counts": {
+            "pending": pending_jobs,
+            "running": running_jobs,
+        },
+        "execution_readiness": {
+            "ready": ready and not readiness_issues,
+            "missing": [{"key": key, "label": label} for key, label in missing],
+            "issues": readiness_issues,
+            "observations": observations,
+        },
     }
 
 

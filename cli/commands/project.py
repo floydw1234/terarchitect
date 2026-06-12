@@ -1,4 +1,4 @@
-"""project subcommand: list | create | show | update | import-agenthub-root | migration | delete"""
+"""project subcommand: list | create | show | doctor | update | import-agenthub-root | migration | delete"""
 
 import sys
 from cli._api import API, APIError
@@ -42,6 +42,10 @@ def register(subparsers) -> None:
     # show
     s = sub.add_parser("show", help="Show project details")
     s.add_argument("project_id", help="Project ID")
+
+    # doctor
+    d = sub.add_parser("doctor", help="Show operator diagnostics for a project")
+    d.add_argument("project_ref", help="Project ID or exact project name")
 
     # update
     u = sub.add_parser("update", help="Update a project")
@@ -95,6 +99,8 @@ def _dispatch(args, api: API) -> None:
         _cmd_create(args, api)
     elif cmd == "show":
         _cmd_show(args, api)
+    elif cmd == "doctor":
+        _cmd_doctor(args, api)
     elif cmd == "update":
         _cmd_update(args, api)
     elif cmd == "import-agenthub-root":
@@ -251,6 +257,73 @@ def _cmd_show(args, api: API) -> None:
     for k, v in project.items():
         if v is not None:
             print(f"  {k}: {v}")
+
+
+def _resolve_project_id(project_ref: str, api: API, *, output: str = "human") -> str:
+    try:
+        projects = api.get("/api/projects")
+    except APIError as e:
+        raise e.with_context(detail="Could not list projects to resolve the requested project.")
+
+    matches = [
+        project for project in (projects or [])
+        if project.get("id") == project_ref or project.get("name") == project_ref
+    ]
+    if not matches:
+        die(f"Project '{project_ref}' was not found.", output=output)
+    if len(matches) > 1:
+        die(f"Project name '{project_ref}' is ambiguous; use a project ID.", output=output)
+    return matches[0]["id"]
+
+
+def _cmd_doctor(args, api: API) -> None:
+    project_id = _resolve_project_id(args.project_ref, api, output=args.output)
+    try:
+        result = api.get(f"/api/projects/{project_id}/doctor")
+    except APIError as e:
+        die(e, output=args.output)
+    if args.output == "json":
+        print_json(result)
+        return
+
+    project = result.get("project") or {}
+    latest_attempt = result.get("latest_attempt") or {}
+    readiness = result.get("execution_readiness") or {}
+    missing = readiness.get("missing") or []
+    issues = readiness.get("issues") or []
+    observations = readiness.get("observations") or []
+    source_url = result.get("source_url") or "unset"
+    source_ref = result.get("source_ref") or "unset"
+
+    print(f"Project doctor for {project.get('name') or project_id} ({project_id})")
+    print(f"  Source:         {result.get('source_type') or 'unknown'}")
+    print(f"  Source URL:     {source_url}")
+    print(f"  Source ref:     {source_ref}")
+    print(f"  Frontier:       {result.get('accepted_frontier_id') or 'unset'}")
+    print(f"  Frontier hash:  {result.get('accepted_frontier_hash') or 'unset'}")
+    print(f"  Root hash:      {result.get('root_hash') or 'unset'}")
+    print(f"  Exec:           {result.get('execution_mode') or 'unknown'}")
+    print(f"  Legacy path:    {result.get('project_path') or 'unset'}")
+    print(
+        f"  Jobs:           pending={result.get('job_counts', {}).get('pending', 0)} "
+        f"running={result.get('job_counts', {}).get('running', 0)}"
+    )
+    if latest_attempt:
+        print(
+            f"  Latest attempt: {latest_attempt.get('status') or 'unknown'} "
+            f"ticket={short_id(latest_attempt.get('ticket_id') or '')} "
+            f"commit={(latest_attempt.get('agenthub_commit_hash') or 'unset')[:12]} "
+            f"stale={latest_attempt.get('stale')}"
+        )
+    else:
+        print("  Latest attempt: none")
+    print(f"  Ready:          {'yes' if readiness.get('ready') else 'no'}")
+    for item in issues:
+        print(f"  Issue:          {item}")
+    for item in missing:
+        print(f"  Missing:        {item.get('label')} ({item.get('key')})")
+    for item in observations:
+        print(f"  Note:           {item}")
 
 
 def _cmd_update(args, api: API) -> None:

@@ -23,6 +23,28 @@ class StubAPI:
 
     def get(self, path):
         self.gets.append(path)
+        if path == "/api/projects":
+            return [{"id": "proj-1", "name": "demo"}]
+        if path == "/api/projects/proj-1/doctor":
+            return {
+                "project": {"id": "proj-1", "name": "demo", "project_path": None},
+                "source_type": "github",
+                "source_url": "https://github.com/example/demo",
+                "source_ref": "main",
+                "accepted_frontier_id": "leaf_01HZX3ABCD9EF0123456789XYZ",
+                "accepted_frontier_hash": "leaf_01HZX3ABCD9EF0123456789XYZ",
+                "root_hash": "leaf_01HZX3ABCD9EF0123456789XYZ",
+                "execution_mode": "docker",
+                "project_path": None,
+                "latest_attempt": None,
+                "job_counts": {"pending": 0, "running": 0},
+                "execution_readiness": {
+                    "ready": False,
+                    "missing": [],
+                    "issues": ["AGENTHUB_URL is not configured in backend runtime."],
+                    "observations": ["No pending or running jobs."],
+                },
+            }
         return {
             "project_id": "proj-1",
             "accepted_frontier_id": None,
@@ -78,6 +100,16 @@ def test_project_create_parser_accepts_github_first_without_project_path():
     assert args.project_path is None
     assert args.base_ref == "main"
     assert args.import_to_agenthub is True
+
+
+def test_project_doctor_parser_accepts_project_ref():
+    parser = __main__.build_parser()
+
+    args = parser.parse_args(["project", "doctor", "vid_splitter"])
+
+    assert args.group == "project"
+    assert args.project_cmd == "doctor"
+    assert args.project_ref == "vid_splitter"
 
 
 def test_project_create_passes_explicit_frontier_id(capsys):
@@ -326,3 +358,18 @@ def test_project_migration_backfill_ticket_bases_posts_dry_run_flag(capsys):
         )
     ]
     assert "Backfill ticket bases for project proj-1" in capsys.readouterr().out
+
+
+def test_project_doctor_resolves_name_and_prints_github_first_status(capsys):
+    api = StubAPI()
+    args = SimpleNamespace(project_ref="demo", output="human")
+
+    project_cmd._cmd_doctor(args, api)
+
+    assert api.gets == ["/api/projects", "/api/projects/proj-1/doctor"]
+    stdout = capsys.readouterr().out
+    assert "Project doctor for demo (proj-1)" in stdout
+    assert "Source URL:     https://github.com/example/demo" in stdout
+    assert "Source ref:     main" in stdout
+    assert "Legacy path:    unset" in stdout
+    assert "Latest attempt: none" in stdout
