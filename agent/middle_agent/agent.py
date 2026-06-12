@@ -215,7 +215,7 @@ def _utc_timestamp() -> str:
 
 
 def _structured_log_json(payload: Dict[str, Any]) -> str:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
 
 _DIRECTOR_PLAN_REVIEW_RESPONSE_JSON_SCHEMA: Dict[str, Any] = {
     "type": "object",
@@ -1193,7 +1193,7 @@ class MiddleAgent:
                 "current_ticket": context.get("current_ticket"),
                 "graph_relevant_to_current_ticket": context.get("graph_relevant_to_current_ticket"),
             }
-            context_json = "\nContext:\n" + json.dumps(worker_context, indent=2)
+            context_json = "\nContext:\n" + json.dumps(worker_context, indent=2, default=str)
 
             # Swarm mode: prepend peer context (what other agents have done on this ticket)
             peer_ctx = git_backend.get_peer_context(str(ticket_id))

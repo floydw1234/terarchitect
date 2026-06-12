@@ -27,6 +27,7 @@ def _make_agent(env_overrides: dict | None = None):
         "WORKER_MODEL": "gpt-4o",
         "WORKER_API_KEY": "dummy",
         "CODEX_EXTRA_FLAGS": "",
+        "CODEX_SANDBOX": "workspace-write",
     }
     if env_overrides:
         env.update(env_overrides)
