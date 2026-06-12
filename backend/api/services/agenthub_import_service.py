@@ -215,3 +215,82 @@ def import_project_agenthub_root(project: Project, *, path_override: str | None 
         "git": git_metadata,
         "agenthub_receipt": receipt,
     }
+
+
+def _extract_import_frontier(payload: dict[str, Any]) -> tuple[str | None, str | None]:
+    accepted_frontier_id = (
+        payload.get("leaf")
+        or payload.get("leaf_id")
+        or payload.get("frontier_id")
+        or payload.get("accepted_frontier_id")
+    )
+    resolved_sha = (
+        payload.get("resolved_sha")
+        or payload.get("github_resolved_sha")
+        or payload.get("commit_hash")
+        or payload.get("hash")
+    )
+    accepted_frontier_id = str(accepted_frontier_id).strip() if accepted_frontier_id is not None else None
+    resolved_sha = str(resolved_sha).strip() if resolved_sha is not None else None
+    return accepted_frontier_id or None, resolved_sha or None
+
+
+def import_github_project_to_agenthub(
+    project: Project,
+    *,
+    github_url: str,
+    github_ref: str,
+) -> dict[str, Any]:
+    """Import a GitHub repository into AgentHub and set project frontier metadata."""
+    repo_url = (github_url or "").strip()
+    ref = (github_ref or "").strip()
+    if not repo_url:
+        raise ValueError("github_url is required for AgentHub GitHub import")
+    if not ref:
+        raise ValueError("github_ref is required for AgentHub GitHub import")
+
+    base_url, api_key = agenthub_connection_from_env()
+    try:
+        response = requests.post(
+            f"{base_url}/api/git/import/github",
+            headers=_agenthub_headers(api_key),
+            json={"url": repo_url, "ref": ref},
+            timeout=120,
+        )
+    except requests.RequestException as exc:
+        raise AgenthubImportError(f"Could not import GitHub repo into AgentHub: {exc}") from exc
+
+    if response.status_code >= 400:
+        detail = (response.text or "").strip()
+        raise AgenthubImportError(
+            f"AgentHub GitHub import failed with status {response.status_code}"
+            + (f": {detail[:200]}" if detail else "")
+        )
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise AgenthubImportError("AgentHub GitHub import response was not valid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise AgenthubImportError("AgentHub GitHub import response was not valid JSON.")
+
+    accepted_frontier_id, resolved_sha = _extract_import_frontier(payload)
+    valid, error = validate_project_frontier_candidate(project, accepted_frontier_id)
+    if not valid:
+        raise AgenthubImportError(error or "AgentHub GitHub import returned an invalid frontier id.")
+    if not resolved_sha:
+        raise AgenthubImportError("AgentHub GitHub import did not return a resolved commit SHA.")
+
+    project.source_type = "github"
+    project.github_url = repo_url
+    project.github_ref = ref
+    project.github_resolved_sha = resolved_sha
+    project.accepted_frontier_id = accepted_frontier_id
+
+    return {
+        "github_url": repo_url,
+        "github_ref": ref,
+        "github_resolved_sha": resolved_sha,
+        "accepted_frontier_id": accepted_frontier_id,
+        "agenthub_import": payload,
+    }

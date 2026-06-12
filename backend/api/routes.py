@@ -52,7 +52,10 @@ from .services.github_service import (
 from .services.project_service import (
     bootstrap_project_memory as _bootstrap_project_memory,
     get_project_frontier_id as _get_project_frontier_id,
+    infer_project_source_type as _infer_project_source_type,
+    normalize_github_ref as _normalize_github_ref,
     normalize_frontier_id as _normalize_frontier_id,
+    normalize_project_source_type as _normalize_project_source_type,
     project_to_json as _project_to_json,
     validate_project_frontier_candidate as _validate_project_frontier_candidate,
 )
@@ -63,6 +66,7 @@ from .services.project_migration_service import (
 )
 from .services.agenthub_import_service import (
     AgenthubImportError as _AgenthubImportError,
+    import_github_project_to_agenthub as _import_github_project_to_agenthub,
     import_project_agenthub_root as _import_project_agenthub_root,
 )
 from .services.ticket_service import (
@@ -531,11 +535,32 @@ def projects():
         if not data.get("name"):
             return jsonify({"error": "name is required"}), 400
         project_path_val = (data.get("project_path") or "").strip() or None
+        github_url = (data.get("github_url") or "").strip() or None
+        github_ref = _normalize_github_ref(data.get("github_ref"))
+        base_ref = _normalize_github_ref(data.get("base_ref"))
+        if github_ref and base_ref and github_ref != base_ref:
+            return jsonify({"error": "github_ref and base_ref must match when both are provided"}), 400
+        github_ref = github_ref or base_ref
+        if github_url and github_ref is None:
+            github_ref = "main"
         accepted_frontier_id = _normalize_frontier_id(data.get("accepted_frontier_id"))
+        source_type, source_error = _infer_project_source_type(
+            explicit_source_type=data.get("source_type"),
+            github_url=github_url,
+            project_path=project_path_val,
+            accepted_frontier_id=accepted_frontier_id,
+        )
+        if source_error:
+            return jsonify({"error": source_error}), 400
+        import_to_agenthub = data.get("import_to_agenthub") is True
+        if import_to_agenthub and not github_url:
+            return jsonify({"error": "github_url is required when import_to_agenthub=true"}), 400
         project = Project(
             name=data.get("name"),
             description=data.get("description"),
-            github_url=data.get("github_url"),
+            source_type=source_type,
+            github_url=github_url,
+            github_ref=github_ref,
             execution_mode="local" if (data.get("execution_mode") or "").strip().lower() == "local" else "docker",
             git_mode="swarm",
             project_path=project_path_val,
@@ -545,19 +570,35 @@ def projects():
             valid, error = _validate_project_frontier_candidate(project, accepted_frontier_id)
             if not valid:
                 return jsonify({"error": error}), 400
-        db.session.add(project)
-        db.session.flush()  # assigns project.id from the DB before it's used below
-        graph = Graph(project_id=project.id)
-        default_columns = [
-            {"id": "backlog", "title": "Backlog", "order": 0},
-            {"id": "queued", "title": "Queued", "order": 1},
-            {"id": "in_progress", "title": "In Progress", "order": 2},
-            {"id": "done", "title": "Done", "order": 3},
-        ]
-        kanban_board = KanbanBoard(project_id=project.id, columns=default_columns)
-        db.session.add(graph)
-        db.session.add(kanban_board)
-        db.session.commit()
+        try:
+            db.session.add(project)
+            db.session.flush()  # assigns project.id from the DB before it's used below
+            graph = Graph(project_id=project.id)
+            default_columns = [
+                {"id": "backlog", "title": "Backlog", "order": 0},
+                {"id": "queued", "title": "Queued", "order": 1},
+                {"id": "in_progress", "title": "In Progress", "order": 2},
+                {"id": "done", "title": "Done", "order": 3},
+            ]
+            kanban_board = KanbanBoard(project_id=project.id, columns=default_columns)
+            db.session.add(graph)
+            db.session.add(kanban_board)
+
+            import_result = None
+            if import_to_agenthub:
+                import_result = _import_github_project_to_agenthub(
+                    project,
+                    github_url=github_url,
+                    github_ref=github_ref,
+                )
+
+            db.session.commit()
+        except ValueError as exc:
+            db.session.rollback()
+            return jsonify({"error": str(exc)}), 400
+        except _AgenthubImportError as exc:
+            db.session.rollback()
+            return jsonify({"error": str(exc)}), 422
 
         # Create default "Project setup" ticket(s) from config only for new projects (not existing repos)
         is_existing_repo = data.get("is_existing_repo") is True
@@ -593,6 +634,8 @@ def projects():
             "created_at": project.created_at.isoformat(),
             "frontier_warning": None,
         }
+        if import_result is not None:
+            response["import_result"] = import_result
         if not project.accepted_frontier_id:
             response["frontier_warning"] = (
                 "Project has no canonical AgentHub frontier configured. "
@@ -611,16 +654,27 @@ def project_detail(project_id):
         return jsonify(_project_to_json(project))
 
     if request.method == "PUT":
-        data = request.json
+        data = request.json or {}
         project.name = data.get("name", project.name)
         project.description = data.get("description", project.description)
-        project.github_url = data.get("github_url", project.github_url)
+        github_url = project.github_url
+        if "github_url" in data:
+            github_url = (data.get("github_url") or "").strip() or None
+            project.github_url = github_url
         if "execution_mode" in data:
             project.execution_mode = "local" if (data.get("execution_mode") or "").strip().lower() == "local" else "docker"
         if "git_mode" in data:
             project.git_mode = "swarm"
         if "project_path" in data:
             project.project_path = data.get("project_path") or None
+        if "github_ref" in data or "base_ref" in data:
+            github_ref = _normalize_github_ref(data.get("github_ref"))
+            base_ref = _normalize_github_ref(data.get("base_ref"))
+            if github_ref and base_ref and github_ref != base_ref:
+                return jsonify({"error": "github_ref and base_ref must match when both are provided"}), 400
+            project.github_ref = github_ref or base_ref
+        if "github_resolved_sha" in data:
+            project.github_resolved_sha = _normalize_github_ref(data.get("github_resolved_sha"))
         if "accepted_frontier_id" in data:
             accepted_frontier_id = _normalize_frontier_id(data.get("accepted_frontier_id"))
             if accepted_frontier_id is not None:
@@ -628,6 +682,16 @@ def project_detail(project_id):
                 if not valid:
                     return jsonify({"error": error}), 400
             project.accepted_frontier_id = accepted_frontier_id
+        if "source_type" in data or "github_url" in data or "project_path" in data or "accepted_frontier_id" in data:
+            source_type, source_error = _infer_project_source_type(
+                explicit_source_type=data.get("source_type", _normalize_project_source_type(project.source_type)),
+                github_url=project.github_url,
+                project_path=project.project_path,
+                accepted_frontier_id=project.accepted_frontier_id,
+            )
+            if source_error:
+                return jsonify({"error": source_error}), 400
+            project.source_type = source_type
         db.session.commit()
         return jsonify(_project_to_json(project))
 

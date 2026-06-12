@@ -7,6 +7,7 @@ from flask import current_app
 from models.db import Project
 
 _FRONTIER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{6,254}$")
+_SOURCE_TYPES = {"github", "local_path", "agenthub_leaf"}
 
 
 def normalize_frontier_id(value) -> str | None:
@@ -18,6 +19,51 @@ def normalize_frontier_id(value) -> str | None:
 
 def get_project_frontier_id(project: Project) -> str | None:
     return normalize_frontier_id(getattr(project, "accepted_frontier_id", None))
+
+
+def normalize_project_source_type(value) -> str | None:
+    if value is None:
+        return None
+    source_type = str(value).strip().lower()
+    return source_type or None
+
+
+def infer_project_source_type(
+    *,
+    explicit_source_type,
+    github_url,
+    project_path,
+    accepted_frontier_id,
+) -> tuple[str | None, str | None]:
+    source_type = normalize_project_source_type(explicit_source_type)
+    github_url_value = (github_url or "").strip()
+    project_path_value = (project_path or "").strip()
+    frontier_id = normalize_frontier_id(accepted_frontier_id)
+
+    if source_type is None:
+        if github_url_value:
+            source_type = "github"
+        elif frontier_id is not None and not project_path_value:
+            source_type = "agenthub_leaf"
+        else:
+            source_type = "local_path"
+
+    if source_type not in _SOURCE_TYPES:
+        return None, "source_type must be one of: github, local_path, agenthub_leaf"
+    if source_type == "github" and not github_url_value:
+        return None, "github_url is required when source_type=github"
+    if source_type == "local_path" and not project_path_value and github_url_value:
+        return None, "source_type=local_path is incompatible with github_url"
+    if source_type == "agenthub_leaf" and project_path_value:
+        return None, "source_type=agenthub_leaf is incompatible with project_path"
+    return source_type, None
+
+
+def normalize_github_ref(value) -> str | None:
+    if value is None:
+        return None
+    github_ref = str(value).strip()
+    return github_ref or None
 
 
 def project_has_frontier(project: Project) -> bool:
@@ -64,7 +110,10 @@ def project_to_json(project: Project):
         "id": str(project.id),
         "name": project.name,
         "description": project.description,
+        "source_type": getattr(project, "source_type", None) or "local_path",
         "github_url": project.github_url,
+        "github_ref": getattr(project, "github_ref", None),
+        "github_resolved_sha": getattr(project, "github_resolved_sha", None),
         "execution_mode": getattr(project, "execution_mode", None) or "docker",
         "git_mode": getattr(project, "git_mode", None) or "swarm",
         "project_path": project.project_path,

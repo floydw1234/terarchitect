@@ -35,8 +35,11 @@ class Project(db.Model):
     id = db.Column(UUID_TYPE, primary_key=True, default=new_uuid)
     name = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text)
+    source_type = db.Column(db.String(50), nullable=False, default="local_path")
     project_path = db.Column(db.Text)  # When execution_mode=local: path on host for agent to run in
     github_url = db.Column(db.Text)    # GitHub repository URL for PR creation and docker-mode clone
+    github_ref = db.Column(db.String(255))
+    github_resolved_sha = db.Column(db.String(255))
     execution_mode = db.Column(db.String(50), nullable=False, default="docker")  # "docker" | "local"
     git_mode = db.Column(db.String(20), nullable=False, default="swarm")
     # Canonical AgentHub leaf/frontier selected for future ticket execution.

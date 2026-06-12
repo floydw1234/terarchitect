@@ -71,6 +71,9 @@ def test_create_project_accepts_explicit_frontier_id(client):
     payload = response.get_json()
     assert payload["accepted_frontier_id"] == frontier_id
     assert payload["frontier_warning"] is None
+    assert payload["source_type"] == "agenthub_leaf"
+    assert payload["github_ref"] is None
+    assert payload["github_resolved_sha"] is None
 
     detail = client.get(f"/api/projects/{payload['id']}")
     assert detail.status_code == 200
@@ -93,7 +96,107 @@ def test_create_project_does_not_infer_frontier_from_local_checkout(client):
     payload = response.get_json()
     assert payload["accepted_frontier_id"] is None
     assert payload["frontier_warning"]
+    assert payload["source_type"] == "local_path"
     read_local_tip.assert_not_called()
+
+
+def test_create_github_project_imports_agenthub_and_persists_source_metadata(client):
+    with patch("api.routes._import_github_project_to_agenthub") as import_mock:
+        def _apply_import(project, *, github_url, github_ref):
+            project.accepted_frontier_id = "leaf_01HZX3GITHUB0123456789ABCDE"
+            project.github_resolved_sha = "a" * 40
+            project.source_type = "github"
+            return {
+                "github_url": github_url,
+                "github_ref": github_ref,
+                "github_resolved_sha": "a" * 40,
+                "accepted_frontier_id": "leaf_01HZX3GITHUB0123456789ABCDE",
+            }
+
+        import_mock.side_effect = _apply_import
+        response = client.post(
+            "/api/projects",
+            json={
+                "name": "github-import",
+                "github_url": "https://github.com/example/repo",
+                "base_ref": "release/1.0",
+                "import_to_agenthub": True,
+                "is_existing_repo": True,
+            },
+        )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload["source_type"] == "github"
+    assert payload["project_path"] is None
+    assert payload["github_url"] == "https://github.com/example/repo"
+    assert payload["github_ref"] == "release/1.0"
+    assert payload["github_resolved_sha"] == "a" * 40
+    assert payload["accepted_frontier_id"] == "leaf_01HZX3GITHUB0123456789ABCDE"
+    assert payload["frontier_warning"] is None
+    assert payload["import_result"]["github_ref"] == "release/1.0"
+    import_mock.assert_called_once()
+
+    detail = client.get(f"/api/projects/{payload['id']}")
+    assert detail.status_code == 200
+    detail_payload = detail.get_json()
+    assert detail_payload["source_type"] == "github"
+    assert detail_payload["github_ref"] == "release/1.0"
+    assert detail_payload["github_resolved_sha"] == "a" * 40
+
+
+def test_create_github_project_defaults_ref_to_main_when_missing(client):
+    with patch("api.routes._import_github_project_to_agenthub") as import_mock:
+        def _apply_import(project, *, github_url, github_ref):
+            project.accepted_frontier_id = "leaf_01HZX3MAIN0123456789ABCDEF"
+            project.github_resolved_sha = "b" * 40
+            return {
+                "github_url": github_url,
+                "github_ref": github_ref,
+                "github_resolved_sha": "b" * 40,
+                "accepted_frontier_id": "leaf_01HZX3MAIN0123456789ABCDEF",
+            }
+
+        import_mock.side_effect = _apply_import
+        response = client.post(
+            "/api/projects",
+            json={
+                "name": "github-main-default",
+                "github_url": "https://github.com/example/repo",
+                "import_to_agenthub": True,
+                "is_existing_repo": True,
+            },
+        )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload["github_ref"] == "main"
+    import_mock.assert_called_once()
+    assert import_mock.call_args.kwargs["github_ref"] == "main"
+
+
+def test_create_github_project_agenthub_failure_does_not_persist_project(client):
+    from api.routes import _AgenthubImportError
+    from models.db import Project
+
+    with patch(
+        "api.routes._import_github_project_to_agenthub",
+        side_effect=_AgenthubImportError("agenthub import failed"),
+    ):
+        response = client.post(
+            "/api/projects",
+            json={
+                "name": "github-import-fail",
+                "github_url": "https://github.com/example/repo",
+                "import_to_agenthub": True,
+                "is_existing_repo": True,
+            },
+        )
+
+    assert response.status_code == 422
+    assert "agenthub import failed" in response.get_json()["error"]
+    with client.application.app_context():
+        assert Project.query.filter_by(name="github-import-fail").count() == 0
 
 
 def test_project_migration_status_reports_missing_frontier_and_ticket_bases(client):
