@@ -12,25 +12,42 @@ class AgenthubPreflightError(RuntimeError):
     """Raised when a local swarm run cannot guarantee a valid AgentHub base."""
 
 
-def _import_helpers():
-    from backend.api.services.agenthub_import_service import (
-        AgenthubImportError,
-        fetch_agenthub_receipt,
-        push_commit_bundle_to_agenthub,
-        read_git_head,
-    )
-
-    return AgenthubImportError, fetch_agenthub_receipt, push_commit_bundle_to_agenthub, read_git_head
-
-
 def read_git_head(path: str | None) -> str | None:
-    _, _, _, read_head = _import_helpers()
-    return read_head(path)
+    """Return the git HEAD for a local repo path without importing backend Flask modules."""
+    if not path:
+        return None
+    import subprocess
+
+    result = subprocess.run(
+        ["git", "-C", path, "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _agenthub_headers(api_key: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
 
 def _agenthub_receipt(base_url: str, api_key: str, commit_hash: str) -> dict[str, Any]:
-    _, fetch_receipt, _, _ = _import_helpers()
-    return fetch_receipt(base_url.rstrip("/"), api_key, commit_hash)
+    """Fetch an AgentHub commit receipt without importing backend Flask dependencies."""
+    response = requests.get(
+        f"{base_url.rstrip('/')}/api/git/receipts/{commit_hash}",
+        headers=_agenthub_headers(api_key),
+        timeout=30,
+    )
+    if response.status_code == 404:
+        return {"hash": commit_hash, "exists": False, "bundle_fetchable": False}
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise AgenthubPreflightError("AgentHub receipt response was not valid JSON.")
+    return payload
 
 
 def seed_commit_from_repo(repo_path: str, commit_hash: str, base_url: str, api_key: str) -> None:

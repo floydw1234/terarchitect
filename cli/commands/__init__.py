@@ -1,4 +1,4 @@
-from . import attempt, context, graph, plan, project, ship, status, ticket, workspace
+from . import attempt, context, graph, plan, project, publish, ship, status, ticket, workspace
 
 __all__ = [
     "attempt",
@@ -6,6 +6,7 @@ __all__ = [
     "graph",
     "plan",
     "project",
+    "publish",
     "ship",
     "status",
     "ticket",

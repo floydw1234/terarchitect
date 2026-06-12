@@ -17,11 +17,15 @@ services:
     container_name: terarchitect-coordinator
     environment:
       TERARCHITECT_API_URL: ${TERARCHITECT_API_URL:-http://backend:5010}
+      PYTHONPATH: /app:/app/agent
       PROJECT_ID: ${PROJECT_ID:-}
       PROJECT_IDS: ${PROJECT_IDS:-}
       TERARCHITECT_WORKER_API_KEY: ${TERARCHITECT_WORKER_API_KEY:-}
+      TERARCHITECT_WORKER_API_KEY_PATH: ${TERARCHITECT_WORKER_API_KEY_PATH:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GH_TOKEN: ${GH_TOKEN:-}
+      GITHUB_AGENT_TOKEN: ${GITHUB_AGENT_TOKEN:-}
+      github_agent_token: ${github_agent_token:-}
       GIT_USER_NAME: ${GIT_USER_NAME:-}
       GIT_USER_EMAIL: ${GIT_USER_EMAIL:-}
       AGENT_IMAGE: ${AGENT_IMAGE:-terarchitect-agent}
@@ -72,6 +76,7 @@ services:
         condition: service_started
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - /home/william/.codex:/root/.codex
       - coordinator-state:/data/coordinator
     restart: unless-stopped
 
@@ -93,6 +98,20 @@ services:
       MEMORY_SAVE_DIR: /tmp/terarchitect
       AGENTHUB_URL: ${AGENTHUB_URL:-http://agenthub:8080}
       AGENTHUB_API_KEY: ${AGENTHUB_API_KEY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GH_TOKEN: ${GH_TOKEN:-}
+      GITHUB_AGENT_TOKEN: ${GITHUB_AGENT_TOKEN:-}
+      github_agent_token: ${github_agent_token:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      openai_api_key: ${openai_api_key:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-}
+      EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      MEMORY_EMBEDDING_MODEL: ${MEMORY_EMBEDDING_MODEL:-}
+      MEMORY_EMBEDDING_BASE_URL: ${MEMORY_EMBEDDING_BASE_URL:-}
+      MEMORY_LLM_MODEL: ${MEMORY_LLM_MODEL:-}
+      MEMORY_LLM_BASE_URL: ${MEMORY_LLM_BASE_URL:-}
+      MEMORY_LLM_API_KEY: ${MEMORY_LLM_API_KEY:-}
       # CORS: allow the frontend (port 3000) from any hostname.
       # This covers localhost, LAN IPs, SSH port-forwards, etc.
       CORS_ORIGINS: "ANY_PORT_3000"

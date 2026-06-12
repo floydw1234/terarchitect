@@ -50,6 +50,21 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _runtime_pythonpath(existing: Optional[str] = None) -> str:
+    """Return a PYTHONPATH that can import both ``agent`` and top-level ``middle_agent``."""
+    repo_root = _repo_root()
+    parts = [str(repo_root), str(repo_root / "agent")]
+    if existing:
+        parts.append(existing)
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for part in parts:
+        if part and part not in seen:
+            seen.add(part)
+            ordered.append(part)
+    return os.pathsep.join(ordered)
+
+
 _PROJECT_IMAGES_FILE = "project_images.json"
 _state_lock = threading.Lock()
 
@@ -233,10 +248,7 @@ def _run_workspace_composer(base_url: str, job_data: dict) -> None:
 
     repo_root = _repo_root()
     full_env = {**os.environ, **env}
-    pythonpath = str(repo_root)
-    if full_env.get("PYTHONPATH"):
-        pythonpath = pythonpath + os.pathsep + full_env["PYTHONPATH"]
-    full_env["PYTHONPATH"] = pythonpath
+    full_env["PYTHONPATH"] = _runtime_pythonpath(full_env.get("PYTHONPATH"))
 
     try:
         result = subprocess.run(
@@ -284,10 +296,7 @@ def _run_shipper(base_url: str, run_data: dict) -> None:
 
     repo_root = _repo_root()
     full_env = {**os.environ, **env}
-    pythonpath = str(repo_root)
-    if full_env.get("PYTHONPATH"):
-        pythonpath = pythonpath + os.pathsep + full_env["PYTHONPATH"]
-    full_env["PYTHONPATH"] = pythonpath
+    full_env["PYTHONPATH"] = _runtime_pythonpath(full_env.get("PYTHONPATH"))
 
     try:
         result = subprocess.run(
@@ -385,6 +394,10 @@ def job_to_env(job: dict, for_docker: bool = False) -> dict:
     """Build env for container/host from job payload.
     When for_docker=True, only job vars + explicit coordinator-forwarded agent vars are included."""
     env = {} if for_docker else dict(os.environ)
+    if for_docker:
+        host_path = os.environ.get("PATH") or ""
+        container_defaults = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        env["PATH"] = f"{host_path}:{container_defaults}" if host_path else container_defaults
     env["TICKET_ID"] = str(job.get("ticket_id", ""))
     env["PROJECT_ID"] = str(job.get("project_id", ""))
     env["REPO_URL"] = str(job.get("repo_url", ""))
@@ -572,7 +585,7 @@ def _run_agent_direct(job: dict, docker_error: str, base_url: str, job_id: str =
     env["TERARCHITECT_DOCKER_RUN_ERROR"] = docker_error[:8000] if len(docker_error) > 8000 else docker_error
     repo_root = _repo_root()
     full_env = {**os.environ, **env}
-    full_env["PYTHONPATH"] = str(repo_root) + (os.pathsep + full_env["PYTHONPATH"] if full_env.get("PYTHONPATH") else "")
+    full_env["PYTHONPATH"] = _runtime_pythonpath(full_env.get("PYTHONPATH"))
     cmd = [sys.executable, "-m", "agent.agent_runner", "ticket"]
     if job_id:
         _write_run_command(job_id, "local", local_cmd=cmd, local_env=full_env, cwd=str(repo_root))

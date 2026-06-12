@@ -75,6 +75,26 @@ def claim_swarm_job(project_id):
         # Another coordinator just claimed it — keep looking
 
 
+def claim_pending_job(project_id=None):
+    """Claim the next pending ticket job, respecting swarm constraints for project-scoped claims."""
+    if project_id:
+        project = db.session.get(Project, project_id)
+        if getattr(project, "git_mode", None) == "swarm":
+            return claim_swarm_job(project_id)
+        return (
+            AgentJob.query.filter_by(project_id=project_id, status="pending")
+            .order_by(AgentJob.created_at.asc())
+            .with_for_update(skip_locked=True)
+            .first()
+        )
+    return (
+        AgentJob.query.filter_by(status="pending")
+        .order_by(AgentJob.created_at.asc())
+        .with_for_update(skip_locked=True)
+        .first()
+    )
+
+
 def compute_base_hash(ticket: Ticket, project: Project) -> str | None:
     """Return the DAG-native base hash for a ticket job, if one is available."""
     context = mvp_dependency_base_context(ticket, project)

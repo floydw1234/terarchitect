@@ -7,10 +7,17 @@ _COORDINATOR_PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 if _COORDINATOR_PARENT not in sys.path:
     sys.path.insert(0, _COORDINATOR_PARENT)
 
-from coordinator.coordinator import _docker_run_args, job_to_env
+from coordinator.coordinator import _docker_run_args, _runtime_pythonpath, job_to_env
 
 
 class TestDockerRuntimeContract(unittest.TestCase):
+    def test_runtime_pythonpath_includes_repo_and_agent_roots(self):
+        pythonpath = _runtime_pythonpath("/tmp/custom")
+        parts = pythonpath.split(os.pathsep)
+        self.assertIn("/tmp/custom", parts)
+        self.assertTrue(any(part.endswith("/terarchitect") for part in parts))
+        self.assertTrue(any(part.endswith("/terarchitect/agent") for part in parts))
+
     def test_job_to_env_rewrites_host_urls_and_forwards_swarm_env(self):
         job = {
             "ticket_id": "ticket-1",

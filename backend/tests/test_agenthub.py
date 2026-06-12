@@ -574,7 +574,7 @@ def test_prepare_local_job_raises_when_agenthub_base_is_unfetchable():
     missing.raise_for_status.return_value = None
     missing.json.return_value = {"exists": False, "bundle_fetchable": False}
 
-    with patch("backend.api.services.agenthub_import_service.requests.get", return_value=missing):
+    with patch("agenthub_preflight.requests.get", return_value=missing):
         with pytest.raises(AgenthubPreflightError, match="import.*rerun"):
             prepare_local_job(
                 {

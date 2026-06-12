@@ -8,6 +8,7 @@ Commands:
     project    list | create | show | doctor | update | delete | import-agenthub-root
                | migration status | migration set-frontier | migration backfill-ticket-bases
                | migration import-agenthub-root
+    publish    <project-id> [--target github] [--attempt-id ID | --commit HASH] [--push]
     ticket     list | create | show | update | run | cancel | logs
                | attempts | accept-attempt | reject-attempt
                (Intent fields: --rationale, --acceptance-criteria, --constraints, --intent-status)
@@ -36,7 +37,7 @@ import argparse
 from cli._api import API, APIError
 from cli._config import get_api_url
 from cli._output import die
-from cli.commands import attempt, context, graph, plan, project, ship, status, ticket, workspace
+from cli.commands import attempt, context, graph, plan, project, publish, ship, status, ticket, workspace
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -68,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.required = True
 
     project.register(subparsers)
+    publish.register(subparsers)
     ticket.register(subparsers)
     attempt.register(subparsers)
     status.register(subparsers)

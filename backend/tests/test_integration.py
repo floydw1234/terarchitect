@@ -1074,7 +1074,7 @@ def test_github_first_job_payload_uses_project_frontier_without_project_path(cli
     assert payload["base_selection"]["base_source"] == "ticket_base_leaf"
 
 
-def test_worker_job_claim_fails_clearly_when_no_frontier_base_exists(client):
+def test_worker_job_claim_fails_invalid_pending_job_without_blocking_queue(client):
     from models.db import AgentJob, Project, Ticket, db
 
     with client.application.app_context():
@@ -1104,15 +1104,47 @@ def test_worker_job_claim_fails_clearly_when_no_frontier_base_exists(client):
             status="pending",
         )
         db.session.add(job)
+        valid_ticket = Ticket(
+            project_id=project.id,
+            column_id="in_progress",
+            title="Valid frontier base",
+            intent_status="active",
+            base_leaf_id="leaf_01HZX3VALIDBASE0123456789AB",
+        )
+        db.session.add(valid_ticket)
+        db.session.flush()
+        valid_job = AgentJob(
+            ticket_id=valid_ticket.id,
+            project_id=project.id,
+            kind="ticket",
+            status="pending",
+        )
+        db.session.add(valid_job)
         db.session.commit()
         project_id = str(project.id)
         job_id = str(job.id)
+        invalid_ticket_id = str(ticket.id)
+        valid_job_id = str(valid_job.id)
+        valid_ticket_id = str(valid_ticket.id)
 
     resp = client.post("/api/worker/jobs/start", json={"project_id": project_id})
-    assert resp.status_code == 409
+    assert resp.status_code == 200
     payload = resp.get_json()
-    assert payload["job_id"] == job_id
-    assert "ticket.base_leaf_id is not set and project.accepted_frontier_id is not set" in payload["error"]
+    assert payload["job_id"] == valid_job_id
+    assert payload["ticket_id"] == valid_ticket_id
+    assert payload["base_leaf_id"] == "leaf_01HZX3VALIDBASE0123456789AB"
+
+    with client.application.app_context():
+        invalid_job = db.session.get(AgentJob, job_id)
+        claimed_job = db.session.get(AgentJob, valid_job_id)
+        invalid_ticket = db.session.get(Ticket, invalid_ticket_id)
+        assert invalid_job is not None
+        assert invalid_job.status == "failed"
+        assert invalid_ticket is not None
+        assert invalid_ticket.column_id == "queued"
+        assert invalid_ticket.failed_count == 1
+        assert claimed_job is not None
+        assert claimed_job.status == "running"
 
 
 def test_multi_dependency_ticket_stays_queued_in_mvp(client, project):

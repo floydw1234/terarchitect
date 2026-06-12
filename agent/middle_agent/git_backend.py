@@ -176,6 +176,23 @@ def _git_head(project_path: str) -> str | None:
 
 
 def _head_parent_matches_base(project_path: str, expected_base_leaf_id: str, env: dict[str, str]) -> bool:
+    """Return true when HEAD is based on the expected ticket base.
+
+    Workers may create more than one local commit during a TDD loop. The
+    publish safety check must reject unrelated histories, but it should not
+    require the final HEAD to be a single direct child of the ticket base.
+    """
+    ancestor_r = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", expected_base_leaf_id, "HEAD"],
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        env=env,
+    )
+    if ancestor_r.returncode == 0:
+        return True
+
     parent_r = subprocess.run(
         ["git", "rev-parse", "HEAD^"],
         cwd=project_path,
@@ -184,22 +201,14 @@ def _head_parent_matches_base(project_path: str, expected_base_leaf_id: str, env
         timeout=5,
         env=env,
     )
-    if parent_r.returncode != 0:
-        print(
-            f"[git_backend] publish aborted: could not resolve HEAD parent for expected base {expected_base_leaf_id[:12]}: "
-            f"{_format_subprocess_output(parent_r)[:300]}",
-            flush=True,
-        )
-        return False
-    head_parent = (parent_r.stdout or "").strip()
-    if head_parent != expected_base_leaf_id:
-        print(
-            f"[git_backend] publish aborted: HEAD parent {head_parent[:12] or 'none'} does not match "
-            f"ticket base leaf {expected_base_leaf_id[:12]}",
-            flush=True,
-        )
-        return False
-    return True
+    head_parent = (parent_r.stdout or "").strip() if parent_r.returncode == 0 else ""
+    detail = _format_subprocess_output(ancestor_r)[:300]
+    print(
+        f"[git_backend] publish aborted: HEAD ancestry does not contain ticket base "
+        f"{expected_base_leaf_id[:12]} (HEAD parent {head_parent[:12] or 'none'}). {detail}",
+        flush=True,
+    )
+    return False
 
 
 def _retry_ah_push_with_full_bundle(project_path: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:

@@ -51,6 +51,8 @@ class TestSwarmPublishFallback(unittest.TestCase):
                 return _cp(args)
             if args[:3] == ["git", "status", "--porcelain"]:
                 return _cp(args, stdout="")
+            if args[:4] == ["git", "merge-base", "--is-ancestor", base_leaf_id]:
+                return _cp(args)
             if args[:3] == ["git", "rev-parse", "HEAD"]:
                 return _cp(args, stdout=f"{head_hash}\n")
             if args[:3] == ["git", "rev-parse", "HEAD^"]:
@@ -96,6 +98,8 @@ class TestSwarmPublishFallback(unittest.TestCase):
                 return _cp(args)
             if args[:3] == ["git", "status", "--porcelain"]:
                 return _cp(args, stdout="")
+            if args[:4] == ["git", "merge-base", "--is-ancestor", base_leaf_id]:
+                return _cp(args)
             if args[:3] == ["git", "rev-parse", "HEAD"]:
                 return _cp(args, stdout=f"{head_hash}\n")
             if args[:3] == ["git", "rev-parse", "HEAD^"]:
@@ -147,6 +151,8 @@ class TestSwarmPublishFallback(unittest.TestCase):
                 return _cp(args)
             if args[:3] == ["git", "status", "--porcelain"]:
                 return _cp(args, stdout="")
+            if args[:4] == ["git", "merge-base", "--is-ancestor", base_leaf_id]:
+                return _cp(args)
             if args[:3] == ["git", "rev-parse", "HEAD"]:
                 return _cp(args, stdout=f"{'b' * 40}\n")
             if args[:3] == ["git", "rev-parse", "HEAD^"]:

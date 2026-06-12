@@ -1,3 +1,8 @@
+FROM golang:1.26 AS ah-builder
+WORKDIR /src
+COPY agenthub/ .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /ah ./cmd/ah
+
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -11,15 +16,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && chmod a+r /etc/apt/keyrings/docker.asc \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends docker-ce-cli git \
+    && apt-get install -y --no-install-recommends docker-ce-cli git nodejs npm \
+    && npm install -g @openai/codex \
+    && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 
 COPY coordinator/requirements.txt /app/coordinator-requirements.txt
-RUN pip install --no-cache-dir -r /app/coordinator-requirements.txt
+COPY agent/requirements.txt /app/agent-requirements.txt
+RUN pip install --no-cache-dir -r /app/coordinator-requirements.txt -r /app/agent-requirements.txt
 
+COPY --from=ah-builder /ah /usr/local/bin/ah
 COPY . /app
 
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app:/app/agent
 ENV COORDINATOR_STATE_DIR=/data/coordinator
 
 CMD ["python", "-m", "coordinator"]

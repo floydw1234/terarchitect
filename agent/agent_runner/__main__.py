@@ -13,6 +13,12 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+_AGENT_DIR = Path(__file__).resolve().parent.parent
+_TOP_LEVEL_IMPORT_ROOTS = (str(_AGENT_DIR), str(_AGENT_DIR.parent))
+for _path in reversed(_TOP_LEVEL_IMPORT_ROOTS):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
 from middle_agent.git_backend import (
     AgentHubMaterializationError,
     materialize_workspace_from_agenthub,
@@ -108,7 +114,6 @@ def run_ticket() -> None:
 
     _ensure_git_config(work_dir)
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from middle_agent.backend import HttpAgentBackend
     from middle_agent.agent import MiddleAgent, WorkerUnavailableError
 

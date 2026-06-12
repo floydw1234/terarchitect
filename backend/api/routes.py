@@ -32,6 +32,7 @@ from .services.graph_service import (
     update_graph_embeddings as _update_graph_embeddings,
 )
 from .services.job_service import (
+    claim_pending_job as _claim_pending_job,
     claim_swarm_job as _claim_swarm_job,
     job_to_response as _job_to_response,
 )
@@ -77,6 +78,10 @@ from .services.agenthub_import_service import (
     AgenthubImportError as _AgenthubImportError,
     import_github_project_to_agenthub as _import_github_project_to_agenthub,
     import_project_agenthub_root as _import_project_agenthub_root,
+)
+from .services.publish_service import (
+    PublishError as _PublishError,
+    publish_project as _publish_project,
 )
 from .services.ticket_service import (
     dispatch_unblocked_queued as _dispatch_unblocked_queued,
@@ -153,6 +158,19 @@ def _get_project_or_404(project_id):
     if not project:
         abort(404)
     return project
+
+
+def _fail_job_with_ticket_recovery(job, *, reset_column_id: str = "queued") -> None:
+    """Apply the worker-failure side effects consistently across endpoints."""
+    job.status = "failed"
+    if not job.ticket_id:
+        return
+    ticket = Ticket.query.filter_by(id=job.ticket_id).first()
+    if not ticket:
+        return
+    if ticket.column_id == "in_progress":
+        ticket.column_id = reset_column_id
+    ticket.failed_count = (ticket.failed_count or 0) + 1
 
 
 def _evidence_gate_response(project, target_type: str, target_id) -> tuple[dict | None, int | None]:
@@ -731,6 +749,34 @@ def project_detail(project_id):
 def project_doctor(project_id):
     project = _get_project_or_404(project_id)
     return jsonify(_project_doctor_report(project))
+
+
+@api_bp.route("/projects/<uuid:project_id>/publish", methods=["POST"])
+def project_publish(project_id):
+    project = _get_project_or_404(project_id)
+    data = request.json or {}
+    try:
+        result = _publish_project(
+            project,
+            target=data.get("target") or "github",
+            attempt_id=data.get("attempt_id"),
+            commit_hash=data.get("commit"),
+            branch=data.get("branch"),
+            push=bool(data.get("push", False)),
+            force=bool(data.get("force", False)),
+        )
+    except _PublishError as exc:
+        payload = {"error": exc.message}
+        if exc.detail:
+            payload["detail"] = exc.detail
+        if exc.phase:
+            payload["phase"] = exc.phase
+        if exc.hint:
+            payload["hint"] = exc.hint
+        if exc.next_commands:
+            payload["next_commands"] = exc.next_commands
+        return jsonify(payload), exc.status_code
+    return jsonify(result)
 
 
 @api_bp.route("/projects/<uuid:project_id>/import-agenthub-root", methods=["POST"])
@@ -2357,33 +2403,20 @@ def worker_jobs_start():
         if project is None:
             return jsonify({"error": "Project not found"}), 404
 
-        if getattr(project, "git_mode", None) == "swarm":
-            job = _claim_swarm_job(project_id)
-        else:
-            job = (
-                AgentJob.query.filter_by(project_id=project_id, status="pending")
-                .order_by(AgentJob.created_at.asc())
-                .with_for_update(skip_locked=True)
-                .first()
-            )
-    else:
-        job = (
-            AgentJob.query.filter_by(status="pending")
-            .order_by(AgentJob.created_at.asc())
-            .with_for_update(skip_locked=True)
-            .first()
-        )
-
-    if not job:
-        return "", 204
-    try:
-        payload = _job_to_response(job)
-    except ValueError as exc:
-        current_app.logger.warning("worker_jobs_start rejected job %s: %s", job.id, exc)
-        return jsonify({"error": str(exc), "job_id": str(job.id)}), 409
-    job.status = "running"
-    db.session.commit()
-    return jsonify(payload), 200
+    while True:
+        job = _claim_pending_job(project_id)
+        if not job:
+            return "", 204
+        try:
+            payload = _job_to_response(job)
+        except ValueError as exc:
+            current_app.logger.warning("worker_jobs_start failing invalid job %s: %s", job.id, exc)
+            _fail_job_with_ticket_recovery(job)
+            db.session.commit()
+            continue
+        job.status = "running"
+        db.session.commit()
+        return jsonify(payload), 200
 
 
 @api_bp.route("/worker/jobs/<uuid:job_id>/complete", methods=["POST"])
@@ -2409,12 +2442,7 @@ def worker_jobs_fail(job_id):
     job = AgentJob.query.filter_by(id=job_id).first_or_404()
     if job.status != "running":
         return jsonify({"error": "Job not running", "status": job.status}), 409
-    job.status = "failed"
-    if job.ticket_id:
-        ticket = Ticket.query.filter_by(id=job.ticket_id).first()
-        if ticket:
-            ticket.column_id = "queued"
-            ticket.failed_count = (ticket.failed_count or 0) + 1
+    _fail_job_with_ticket_recovery(job)
     db.session.commit()
     if job.ticket_id:
         _post_event(
@@ -2448,12 +2476,7 @@ def worker_jobs_reset_stale():
     ).all()
     count = len(stale)
     for job in stale:
-        job.status = "failed"
-        if job.ticket_id:
-            ticket = Ticket.query.filter_by(id=job.ticket_id).first()
-            if ticket:
-                ticket.column_id = "queued"
-                ticket.failed_count = (ticket.failed_count or 0) + 1
+        _fail_job_with_ticket_recovery(job)
     db.session.commit()
     current_app.logger.info("Reset %d stale running jobs (older than %ds)", count, max_age)
     return jsonify({"reset": count, "max_age_seconds": max_age})
