@@ -164,7 +164,9 @@ class TestCodexWorkerDispatch(unittest.TestCase):
         with patch("subprocess.Popen", return_value=_make_popen_mock(stdout_text="Done.\n")) as mock_popen:
             agent._call_codex_worker("my prompt", "sess1", project_path=None, resume=False)
             cmd = mock_popen.call_args[0][0]
-            self.assertEqual(cmd[:5], ["codex", "exec", "--json", "--sandbox", "workspace-write"])
+            self.assertEqual(cmd[:3], ["codex", "exec", "--json"])
+            self.assertIn("--sandbox", cmd)
+            self.assertEqual(cmd[cmd.index("--sandbox") + 1], "workspace-write")
             self.assertIn("my prompt", cmd)
 
     def test_codex_passes_model_flag_when_set(self):
@@ -235,7 +237,9 @@ class TestCodexWorkerDispatch(unittest.TestCase):
         with patch("subprocess.Popen", return_value=_make_popen_mock(stdout_text="Done.\n")) as mock_popen:
             agent._call_codex_worker("prompt", "sess1", project_path=None, resume=True)
             cmd = mock_popen.call_args[0][0]
-            self.assertEqual(cmd[:5], ["codex", "exec", "--json", "--sandbox", "workspace-write"])
+            self.assertEqual(cmd[:3], ["codex", "exec", "--json"])
+            self.assertIn("--sandbox", cmd)
+            self.assertEqual(cmd[cmd.index("--sandbox") + 1], "workspace-write")
             self.assertNotIn("resume", cmd)
 
     def test_codex_turn_count_incremented(self):
@@ -249,6 +253,22 @@ class TestCodexWorkerDispatch(unittest.TestCase):
         with patch("subprocess.Popen", return_value=_make_popen_mock(stdout_text="Done.\n")) as mock_popen:
             agent._call_codex_worker("prompt", "sess1", project_path="/tmp", resume=False)
             self.assertEqual(mock_popen.call_args.kwargs.get("cwd"), "/tmp")
+
+    def test_codex_passes_agenthub_lineage_env(self):
+        agent = self._make_codex_agent(api_key="dummy")
+        with patch.dict(os.environ, {
+            "BASE_LEAF_ID": "leaf_01HZX3BASE0123456789ABCDEFG",
+            "BASE_HASH": "b" * 40,
+            "AGENTHUB_ROOT_HASH": "f" * 40,
+        }, clear=False), patch(
+            "subprocess.Popen",
+            return_value=_make_popen_mock(stdout_text="Done.\n"),
+        ) as mock_popen:
+            agent._call_codex_worker("prompt", "sess1", project_path=None, resume=False)
+            call_env = mock_popen.call_args.kwargs.get("env") or mock_popen.call_args[1].get("env", {})
+            self.assertEqual(call_env.get("BASE_LEAF_ID"), "leaf_01HZX3BASE0123456789ABCDEFG")
+            self.assertEqual(call_env.get("BASE_HASH"), "b" * 40)
+            self.assertEqual(call_env.get("AGENTHUB_ROOT_HASH"), "f" * 40)
 
 
 if __name__ == "__main__":

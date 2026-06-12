@@ -146,6 +146,15 @@ def _get_task_plan_path(project_path: Optional[str], ticket_id: Optional[uuid.UU
     return os.path.join(project_path, "plan", f"{ticket_id}_task_plan.md")
 
 
+def _worker_lineage_env() -> dict[str, str]:
+    out: dict[str, str] = {}
+    for key in ("BASE_LEAF_ID", "BASE_HASH", "AGENTHUB_ROOT_HASH"):
+        value = (os.environ.get(key) or "").strip()
+        if value:
+            out[key] = value
+    return out
+
+
 # Cap Director conversation context before summarization (model max often ~170k).
 DIRECTOR_CONTEXT_TOKEN_LIMIT = 150_000
 # Plan-review tends to get verbose quickly; compact earlier.
@@ -1156,14 +1165,6 @@ class MiddleAgent:
         )
 
         # Resolve project_path: from arg (standalone) or from context (Flask has project_path in context)
-        if project_path is None:
-            project_path = (context.get("project_path") or "").strip() or None
-        if not project_path or not os.path.isdir(project_path):
-            msg = f"Invalid project_path for ticket: {project_path!r}. Pass a clone path (standalone) or set project path in project config (local execution mode)."
-            self._debug_log(msg)
-            self._log(project_id, ticket_id, session_id, "invalid_project_path", msg)
-            sys.exit(1)
-
         if self._backend.cancel_requested(project_id, ticket_id):
             self._log(project_id, ticket_id, session_id, "cancelled", "Execution cancelled before first worker turn")
             return
@@ -1172,7 +1173,17 @@ class MiddleAgent:
             completion_summary: Optional[str] = None  # initialized here so _finalize always has a defined value
             base_save_dir = None  # Not used; memory via backend
             memory_kwargs = {}
-            git_backend.prepare_work(project_path)
+            if project_path is None:
+                project_path = (context.get("project_path") or "").strip() or None
+            project_path = git_backend.prepare_work(project_path)
+            if not project_path or not os.path.isdir(project_path):
+                msg = (
+                    f"Invalid project_path for ticket after workspace preparation: {project_path!r}. "
+                    "Provide a valid local project path for local execution, or set BASE_LEAF_ID/BASE_HASH for swarm execution."
+                )
+                self._debug_log(msg)
+                self._log(project_id, ticket_id, session_id, "invalid_project_path", msg)
+                sys.exit(1)
             self._log(ticket.project_id, ticket_id, session_id, "swarm_prepare", "Base hash checked out (prepare_work)")
 
             # Worker context (same for all phases; worker session is never reset). project_path is the clone dir (from runner).
@@ -1650,6 +1661,7 @@ class MiddleAgent:
         if resume and worker_session_id:
             cmd.extend(["--resume", worker_session_id])
         env = dict(os.environ)
+        env.update(_worker_lineage_env())
         if self.worker_api_key and self.worker_api_key != "dummy":
             env["ANTHROPIC_API_KEY"] = self.worker_api_key
         cwd = project_path if (project_path and os.path.isdir(project_path)) else None
@@ -1796,6 +1808,7 @@ class MiddleAgent:
             cmd.append(prompt)
 
         env = dict(os.environ)
+        env.update(_worker_lineage_env())
         if self.worker_api_key and self.worker_api_key != "dummy":
             env["OPENAI_API_KEY"] = self.worker_api_key
 

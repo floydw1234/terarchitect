@@ -236,6 +236,22 @@ class TestClaudeCodeWorkerDispatch(unittest.TestCase):
         self.assertEqual(second_call.args[0], project_id)
         self.assertNotEqual(first_call.args[0], "/tmp/terarchitect_runner_123")
 
+    def test_claude_code_passes_agenthub_lineage_env(self):
+        agent = self._make_claude_agent(api_key="dummy")
+        with patch.dict(os.environ, {
+            "BASE_LEAF_ID": "leaf_01HZX3BASE0123456789ABCDEFG",
+            "BASE_HASH": "b" * 40,
+            "AGENTHUB_ROOT_HASH": "f" * 40,
+        }, clear=False), patch(
+            "subprocess.Popen",
+            return_value=_mock_success_popen(),
+        ) as mock_popen:
+            agent._call_claude_code_worker("prompt", "sess1", project_path=None, resume=False)
+            call_env = mock_popen.call_args.kwargs.get("env") or mock_popen.call_args[1].get("env", {})
+            self.assertEqual(call_env.get("BASE_LEAF_ID"), "leaf_01HZX3BASE0123456789ABCDEFG")
+            self.assertEqual(call_env.get("BASE_HASH"), "b" * 40)
+            self.assertEqual(call_env.get("AGENTHUB_ROOT_HASH"), "f" * 40)
+
 
 class TestDirectorProviderAutoUrl(unittest.TestCase):
     """DIRECTOR_LLM_URL should be auto-inferred from DIRECTOR_PROVIDER for known providers."""

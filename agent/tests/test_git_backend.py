@@ -241,3 +241,29 @@ class TestAgentHubMaterialization(unittest.TestCase):
 
         self.assertIn(base_leaf_id[:12], str(ctx.exception))
         self.assertIn("404", str(ctx.exception))
+
+    def test_prepare_work_materializes_when_project_path_absent(self):
+        base_leaf_id = "leaf_01HZX3BASE0123456789ABCDEFG"
+
+        with patch.dict(os.environ, {"BASE_LEAF_ID": base_leaf_id}, clear=False), \
+             patch(
+                 "middle_agent.git_backend.materialize_workspace_from_agenthub",
+                 return_value="/tmp/materialized/repo",
+             ) as mock_materialize:
+            workspace = git_backend.prepare_work(None)
+
+        self.assertEqual(workspace, "/tmp/materialized/repo")
+        mock_materialize.assert_called_once_with(base_leaf_id, branch_name="swarm-work")
+
+    def test_prepare_work_reuses_existing_workspace_already_at_base(self):
+        base_leaf_id = "leaf_01HZX3BASE0123456789ABCDEFG"
+
+        with tempfile.TemporaryDirectory(prefix="git-backend-test-") as tmp_dir, \
+             patch.dict(os.environ, {"BASE_LEAF_ID": base_leaf_id}, clear=False), \
+             patch("middle_agent.git_backend._git_head", return_value=base_leaf_id) as mock_head, \
+             patch("middle_agent.git_backend.materialize_workspace_from_agenthub") as mock_materialize:
+            workspace = git_backend.prepare_work(tmp_dir)
+
+        self.assertEqual(workspace, tmp_dir)
+        mock_head.assert_called_once_with(tmp_dir)
+        mock_materialize.assert_not_called()
