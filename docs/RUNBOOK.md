@@ -10,9 +10,27 @@ This runbook describes how to run the Terarchitect app, coordinator, and agent i
 |-----------|------|
 | **App** | Flask API + DB + frontend. Enqueues jobs to `agent_jobs` when a ticket moves to In Progress. Does **not** run the Director or worker. |
 | **Coordinator** | Claims jobs via `POST /api/worker/jobs/start`, runs `docker run ... terarchitect-agent` for each job, and calls `POST .../complete` or `.../fail` when the container exits. Can run on the host or as a Docker Compose service, but must have Docker access. |
-| **Agent image** | Single Docker image (`terarchitect-agent`). One container per job: clones or opens the repo, checks out the selected AgentHub base when provided, runs Director + worker (OpenCode, Claude Code, or Codex), publishes an AgentHub attempt, exits. |
+| **Agent image** | Single Docker image (`terarchitect-agent`). One container per job: materializes the selected AgentHub base leaf into an isolated workspace, runs Director + worker (OpenCode, Claude Code, or Codex), publishes an AgentHub child attempt, exits. |
 
-**Execution mode (per project):** In the project’s execution settings in the UI you can choose **Docker** (default: coordinator runs agent in a container, materializes the workspace from AgentHub at runtime, no host repo mount) or **Local** (coordinator runs the agent on the host at a configured project path).
+**Execution mode (per project):** In the project’s execution settings in the UI you can choose **Docker** (default and normal GitHub-first path: coordinator runs agent in a container, materializes the workspace from AgentHub at runtime, no host repo mount) or **Local** (legacy/debug path: coordinator runs the agent on the host at a configured project path).
+
+## GitHub-first onboarding + AgentHub DAG runtime
+
+Treat the AgentHub DAG as the runtime source of truth.
+
+Canonical lifecycle:
+
+1. Operator creates/imports the project from a **GitHub URL + ref**.
+2. AgentHub imports that repo state and creates the project's initial DAG state.
+3. The project tracks an **accepted_frontier_id** that represents the accepted DAG frontier.
+4. When a ticket is prepared for execution, Terarchitect records a `base_leaf_id` for that ticket/job from the accepted frontier.
+5. The coordinator claims the job and starts the Docker worker.
+6. The worker uses `REPO_URL`, `AGENTHUB_URL`, and `BASE_LEAF_ID`/`BASE_HASH` to materialize the requested base leaf into the workspace.
+7. The worker runs Director + worker backend, then publishes a child leaf/attempt to AgentHub.
+8. Terarchitect stores that result as a `TicketAttempt`.
+9. Human acceptance advances the project's accepted frontier; future tickets should base from that frontier.
+
+Operational rule: a host repo path is **not** the runtime source of truth for normal GitHub-first execution. Local paths exist only for legacy import, local-mode debugging, or recovery workflows.
 
 ---
 
@@ -70,7 +88,7 @@ Compose defaults:
 - `DOCKER_NETWORK=terarchitect_default`
 - `/var/run/docker.sock` mounted into the coordinator so it can start sibling worker containers
 
-Provide project scope and credentials through the shell or repo `.env` before starting Compose (`PROJECT_ID`/`PROJECT_IDS`, `GITHUB_TOKEN`, Director/Worker API keys, optional `TERARCHITECT_WORKER_API_KEY`). Use the host-run option below for `execution_mode=local` projects that need host filesystem access.
+Provide project scope and credentials through the shell or repo `.env` before starting Compose (`PROJECT_ID`/`PROJECT_IDS`, `GITHUB_TOKEN`, `AGENTHUB_API_KEY`, Director/Worker API keys, optional `TERARCHITECT_WORKER_API_KEY`). Use the host-run option below only for `execution_mode=local` projects that need host filesystem access for legacy/debug workflows.
 
 ### Option B: Run manually on the host (e.g. from repo root)
 
@@ -178,6 +196,30 @@ OpenCode worker env (`WORKER_LLM_URL`, `WORKER_MODEL`, `WORKER_API_KEY`) must be
 
 See **docs/PHASE1_WORKER_API.md** → Phase 5 for OpenCode and required env. Agent config is not sent by the app; set it in the coordinator env so it is forwarded to the worker container. Docker-mode worker contract includes `TERARCHITECT_API_URL`, `AGENTHUB_URL`, `AGENTHUB_API_KEY` or `AGENTHUB_API_KEY_PATH`, explicit `BASE_LEAF_ID`/`BASE_HASH`, and the Director/Worker/Codex env required for the selected backend.
 
+### Environment/config by component
+
+Backend/app:
+- `DATABASE_URL`
+- `TERARCHITECT_WORKER_API_KEY` if worker API auth is enabled
+- GitHub token (`github_agent_token` or `GITHUB_TOKEN`/`GH_TOKEN`) for UI/server-side GitHub actions
+- memory/embedding env from `backend/README.md`
+
+Coordinator:
+- `TERARCHITECT_API_URL`
+- `PROJECT_ID` or `PROJECT_IDS`
+- `GITHUB_TOKEN`
+- `AGENT_IMAGE`
+- `AGENTHUB_URL`
+- `AGENTHUB_API_KEY` or `AGENTHUB_API_KEY_PATH`
+- `AGENTHUB_AGENT_ID` when required by your AgentHub deployment
+- Director env: `DIRECTOR_PROVIDER`, `DIRECTOR_LLM_URL`, `DIRECTOR_MODEL`, `DIRECTOR_API_KEY` or path, optional `OPENROUTER_API_KEY`
+- Worker env for selected backend: `WORKER_MODE`, `WORKER_LLM_URL`, `WORKER_MODEL`, `WORKER_API_KEY` or path, `CODEX_EXTRA_FLAGS`, `CODEX_SANDBOX`, `CLAUDE_CODE_EXTRA_TOOLS`
+
+Worker container:
+- receives the coordinator env above
+- requires job-scoped `REPO_URL`, `BASE_LEAF_ID`/`BASE_HASH`, `PROJECT_ID`, `TICKET_ID`, `TERARCHITECT_API_URL`
+- materializes the DAG base in `/workspace`; it should not require a host repo mount for normal Docker/GitHub-first runs
+
 ---
 
 ## 6. Quick verification
@@ -191,6 +233,33 @@ See **docs/PHASE1_WORKER_API.md** → Phase 5 for OpenCode and required env. Age
 7. **Ship/merge final boundary:** When the `ShipRun` is `ready_to_ship`, shipping advances `shipped_frontier`.
 
 No in-process agent runs in the app; all execution is in containers started by the coordinator.
+
+## Troubleshooting checklist
+
+Missing frontier / wrong base selected:
+- confirm the project was imported from the intended GitHub URL and ref
+- confirm the project has a current accepted frontier before queueing the ticket
+- inspect the queued job payload for the expected `base_leaf_id` / `base_hash`
+
+Stale attempt / ticket based on old work:
+- verify the latest accepted attempt actually advanced the project's accepted frontier
+- requeue the ticket only after confirming the desired parent leaf is in the accepted frontier
+- avoid treating an old local checkout as authoritative; inspect AgentHub leaf ancestry instead
+
+Missing AgentHub key:
+- verify `AGENTHUB_API_KEY` or `AGENTHUB_API_KEY_PATH` is set in coordinator env
+- if using Compose, confirm the variable is present in the shell or `.env` that started `docker compose`
+- verify the worker container inherited the key/path from the coordinator
+
+Docker worker cannot materialize base leaf:
+- verify `AGENTHUB_URL` resolves from the worker network
+- confirm the requested `BASE_LEAF_ID` exists in AgentHub and belongs to the expected project DAG
+- confirm the worker has GitHub access for the referenced repo/ref when import/fetch is required
+- check for mismatched `REPO_URL`, `BASE_HASH`, or project import state
+
+General execution drift back to local-path workflow:
+- if docs, scripts, or operator habits assume branch sync on a host checkout, treat that as legacy
+- for normal runs, re-center on: GitHub import -> AgentHub DAG -> accepted frontier -> worker materialization -> publish child -> accept advances frontier
 
 ## Operator flow
 

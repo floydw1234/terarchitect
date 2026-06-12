@@ -94,9 +94,9 @@ Details: `docs/PHASE1_WORKER_API.md`.
 |-----------|--------------|---------------|
 | **App** | Flask API + Postgres + React frontend. Stores projects/graph/tickets/logs and enqueues jobs. Does **not** execute the agent. | **Docker Compose** (`postgres`, `backend`, `frontend`) |
 | **Coordinator** | Claims jobs from the API and starts one agent container per job. | **Docker Compose** or **host process** |
-| **Agent image** | Director + Worker (OpenCode, Claude Code, or Codex). Clones or opens the project repo, implements the ticket, publishes an AgentHub attempt, exits. | **Docker container** started by the coordinator |
+| **Agent image** | Director + Worker (OpenCode, Claude Code, or Codex). Materializes the selected AgentHub base leaf, implements the ticket, publishes an AgentHub attempt, exits. | **Docker container** started by the coordinator |
 
-High-level flow: **UI → enqueue → coordinator claims → agent container runs → AgentHub attempt created → accepted `TicketAttempt` → promotion candidate review → `ShipRun` compose/ship → release/export PR or local frontier advance**.
+High-level flow: **GitHub URL/ref import → AgentHub DAG project → accepted frontier selects `base_leaf_id` → UI enqueue → coordinator claims → agent container materializes the base leaf → AgentHub attempt created → accepted `TicketAttempt` → promotion candidate review → `ShipRun` compose/ship → shipped frontier advance**.
 
 The UI is an operator surface, not the primary execution surface. Agents and coordinators do the work; humans review accepted attempts and ship at the promotion boundary. The primary operator workflow is promotion-candidate review followed by `ShipRun` compose/ship. Legacy wave-keyed HTTP routes remain backend compatibility surfaces only.
 
@@ -176,18 +176,33 @@ Full ops notes (systemd, env, verification): see `docs/RUNBOOK.md`.
 
 ## How execution works
 
-1. You create a project (with a GitHub repo URL or local project path), then add intents/tickets.
-2. Moving a ticket to **In Progress** enqueues a job.
-3. The coordinator claims the job and runs:
+### GitHub-first onboarding + AgentHub DAG runtime
+
+Normal execution is **GitHub-first** and **DAG-first**:
+
+1. Import a project from a **GitHub repo URL and ref**. AgentHub ingests that repo state into the project DAG.
+2. The project stores the imported DAG state and tracks the current **accepted frontier**.
+3. When a ticket is queued, Terarchitect records the selected DAG parent as the ticket/job `base_leaf_id` (and compatible `base_hash`).
+4. Moving a ticket to **In Progress** enqueues a job.
+5. The coordinator claims the job and runs:
    - `docker run ... -e REPO_URL=... -e TICKET_ID=... terarchitect-agent`
-4. Inside the container, the agent:
-   - materializes the selected AgentHub base into an isolated worker workspace
-   - checks out the selected AgentHub base/root when one is provided
+6. Inside the container, the agent:
+   - imports or fetches the GitHub source needed for the requested ref/base
+   - materializes the selected AgentHub `base_leaf_id` into an isolated worker workspace
    - runs Director + Worker (OpenCode, Claude Code, or Codex) to implement
-   - commits and publishes an AgentHub attempt
+   - publishes a child attempt/leaf back to AgentHub
    - exits
-5. Terarchitect records the attempt as a `TicketAttempt`; accepted attempts are the inputs to future promotion candidates.
-6. The target Ship Room flow is: review a stable promotion candidate built from accepted attempts whose dependency closure is valid, create a `ShipRun` from that candidate set, then advance the shipped frontier when shipped.
+7. Terarchitect records the attempt as a `TicketAttempt`.
+8. Human acceptance advances the project's **accepted frontier**, which becomes the source of truth for later tickets and shipping.
+9. The Ship Room flow is: review a stable promotion candidate built from accepted attempts whose dependency closure is valid, create a `ShipRun` from that candidate set, then advance the shipped frontier when shipped.
+
+Local project paths still exist only as a **legacy import/debug path**:
+
+- use them to seed/import a repo when GitHub is unavailable
+- use them for local execution-mode debugging on a host
+- do not treat a host checkout or branch-sync workflow as the runtime source of truth for normal swarm execution
+
+For normal Docker/GitHub-first runs, the worker runtime source of truth is the **AgentHub DAG**, not a persistent local branch checkout.
 
 Ticket-level PR review is not part of the swarm-mode MVP path. The human review point is attempt acceptance, and the shipping object is a candidate-backed `ShipRun`. Legacy wave-numbered endpoints may still exist for backend compatibility, but they are not the operator workflow.
 

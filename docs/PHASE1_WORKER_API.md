@@ -30,7 +30,7 @@ Set `TERARCHITECT_WORKER_API_KEY` in the backend’s `.env` (or process env) whe
 | POST | `/api/worker/jobs/<job_id>/complete` | Mark job completed (container exited successfully). |
 | POST | `/api/worker/jobs/<job_id>/fail` | Mark job failed (container exited with failure). |
 
-**Job response (200):** `job_id`, `ticket_id`, `project_id`, `kind` (`ticket`), `repo_url`, `git_mode`, `base_hash`, and `shipped_frontier`. `shipped_frontier` is the canonical already-shipped DAG frontier. `base_hash` is the AgentHub commit the worker should build on when present.
+**Job response (200):** `job_id`, `ticket_id`, `project_id`, `kind` (`ticket`), `repo_url`, `git_mode`, `base_leaf_id`, `base_hash`, and `shipped_frontier`. `shipped_frontier` is the canonical already-shipped DAG frontier. `base_leaf_id` is the DAG parent selected from the accepted frontier for this ticket. `base_hash` is the AgentHub commit the worker should materialize/build on when present.
 
 Phase 1 vocabulary freeze:
 
@@ -62,7 +62,7 @@ cd backend
 TICKET_ID=<uuid> PROJECT_ID=<uuid> TERARCHITECT_API_URL=http://localhost:5000 REPO_URL=https://github.com/owner/repo [GITHUB_TOKEN=...] [TERARCHITECT_WORKER_API_KEY=...] python -m agent_runner ticket
 ```
 
-The runner clones or opens the repo, checks out the provided AgentHub `BASE_HASH` when present, and runs the Director + worker via `MiddleAgent(backend=HttpAgentBackend(...))`. Agent config (Director/Worker LLM URL, keys, etc.) comes from the runner’s environment (e.g. set in coordinator env and forwarded into the container).
+The runner resolves the GitHub repo/ref, materializes the provided AgentHub `BASE_LEAF_ID` / `BASE_HASH` when present, and runs the Director + worker via `MiddleAgent(backend=HttpAgentBackend(...))`. Agent config (Director/Worker LLM URL, keys, etc.) comes from the runner’s environment (e.g. set in coordinator env and forwarded into the container). Local project paths are legacy/debug only, not the normal runtime source of truth.
 
 ---
 
@@ -85,7 +85,7 @@ docker run --rm \
   terarchitect-agent
 ```
 
-**Required env:** `TICKET_ID`, `PROJECT_ID`, `TERARCHITECT_API_URL`, `REPO_URL`. Optional: `GITHUB_TOKEN`, `TERARCHITECT_WORKER_API_KEY`. Swarm/Docker runs also require `AGENTHUB_URL` plus `AGENTHUB_API_KEY` or `AGENTHUB_API_KEY_PATH`, and the coordinator forwards explicit `BASE_LEAF_ID` / `BASE_HASH` for workspace materialization. Agent config (Director/Worker/Codex env such as `DIRECTOR_*`, `WORKER_*`, `OPENROUTER_API_KEY`, `CODEX_EXTRA_FLAGS`) must be set in the environment.
+**Required env:** `TICKET_ID`, `PROJECT_ID`, `TERARCHITECT_API_URL`, `REPO_URL`. Optional: `GITHUB_TOKEN`, `TERARCHITECT_WORKER_API_KEY`. Swarm/Docker runs also require `AGENTHUB_URL` plus `AGENTHUB_API_KEY` or `AGENTHUB_API_KEY_PATH`, and the coordinator forwards explicit `BASE_LEAF_ID` / `BASE_HASH` for workspace materialization from the accepted frontier. Agent config (Director/Worker/Codex env such as `DIRECTOR_*`, `WORKER_*`, `OPENROUTER_API_KEY`, `CODEX_EXTRA_FLAGS`) must be set in the environment.
 
 Workspace in container: `/workspace` (clone and run happen there). Exit 0 = success; non-zero = failure (coordinator uses this to call jobs/complete or jobs/fail). PR-review jobs have been removed; human feedback now flows through AgentHub channels and Ship Room/Workspace actions. The operator contract is candidate review followed by `ShipRun` execution; any remaining wave-keyed ship routes are backend compatibility shims.
 
