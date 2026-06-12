@@ -16,14 +16,16 @@ import {
   InputLabel,
   Select,
   MenuItem,
+  Chip,
 } from '@mui/material';
-import { getProject, updateProject, deleteProject, type Project, type ProjectExecutionMode, type ProjectGitMode } from '../utils/api';
+import { getProject, getTickets, updateProject, deleteProject, type Project, type ProjectExecutionMode, type ProjectGitMode, type Ticket } from '../utils/api';
 import { LineageField } from '../components/LineageField';
 
 const ProjectPage: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const [project, setProject] = useState<Project | null>(null);
+  const [tickets, setTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(true);
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState('');
@@ -45,8 +47,12 @@ const ProjectPage: React.FC = () => {
   const fetchProject = async () => {
     if (!projectId) return;
     try {
-      const data = await getProject(projectId);
-      setProject(data);
+      const [projectData, ticketData] = await Promise.all([
+        getProject(projectId),
+        getTickets(projectId).catch(() => []),
+      ]);
+      setProject(projectData);
+      setTickets(ticketData);
     } catch (error) {
       console.error('Failed to fetch project:', error);
     } finally {
@@ -130,10 +136,14 @@ const ProjectPage: React.FC = () => {
 
   const sourceTypeLabel =
     project.source_type === 'local_path'
-      ? 'Local path (advanced/dev)'
+      ? 'Local path (legacy/optional)'
       : project.source_type === 'github'
-        ? 'GitHub repository'
+        ? 'GitHub (recommended)'
         : project.source_type;
+
+  const latestTicketSummaries = tickets
+    .filter((ticket) => ticket.latest_attempt)
+    .slice(0, 4);
 
   const toolCardSx = {
     display: 'flex',
@@ -208,6 +218,11 @@ const ProjectPage: React.FC = () => {
               Project path: {project.project_path}
             </Typography>
           )}
+          {!project.project_path && (
+            <Typography sx={infoTextSx}>
+              Tickets start from AgentHub frontier. No local project path is configured.
+            </Typography>
+          )}
           {project.github_url && (
             <Typography sx={infoTextSx}>
               GitHub URL: {project.github_url}
@@ -220,7 +235,7 @@ const ProjectPage: React.FC = () => {
           )}
           {project.github_resolved_sha && (
             <Typography sx={infoTextSx}>
-              Resolved SHA: {project.github_resolved_sha}
+              Source SHA: {project.github_resolved_sha}
             </Typography>
           )}
           {typeof project.import_to_agenthub === 'boolean' && (
@@ -228,10 +243,17 @@ const ProjectPage: React.FC = () => {
               Import to AgentHub: {project.import_to_agenthub ? 'Yes' : 'No'}
             </Typography>
           )}
+          <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', pt: 0.5 }}>
+            <Chip label="AgentHub DAG source of truth" size="small" variant="outlined" color="info" />
+            {!project.project_path && <Chip label="No local path mode" size="small" variant="outlined" />}
+          </Box>
           <LineageField
             label="Accepted frontier"
             value={project.accepted_frontier_id ?? project.shipped_frontier}
           />
+          {project.github_resolved_sha && (
+            <LineageField label="Source base" value={project.github_resolved_sha} />
+          )}
           {project.shipped_frontier && project.accepted_frontier_id && project.shipped_frontier !== project.accepted_frontier_id && (
             <LineageField label="Shipped frontier" value={project.shipped_frontier} />
           )}
@@ -242,6 +264,68 @@ const ProjectPage: React.FC = () => {
           )}
         </Stack>
       </Paper>
+
+      {latestTicketSummaries.length > 0 && (
+        <Paper
+          sx={{
+            p: { xs: 2, md: 3 },
+            border: '1px solid rgba(148, 163, 184, 0.45)',
+            boxShadow: 'none',
+            mb: 3,
+          }}
+        >
+          <Typography variant="h6" sx={{ mb: 1 }}>
+            Recent ticket attempts
+          </Typography>
+          <Typography color="text.secondary" sx={{ mb: 2, fontSize: '0.95rem' }}>
+            Tickets start from the current AgentHub frontier.
+          </Typography>
+          <Stack spacing={1.25}>
+            {latestTicketSummaries.map((ticket) => (
+              <Box
+                key={ticket.id}
+                sx={{
+                  p: 1.5,
+                  border: '1px solid rgba(148, 163, 184, 0.25)',
+                  borderRadius: 1.5,
+                }}
+              >
+                <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}>
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography sx={{ fontWeight: 600 }}>
+                      {ticket.title}
+                    </Typography>
+                    <Typography color="text.secondary" sx={{ fontSize: '0.9rem' }}>
+                      Latest attempt: {ticket.latest_attempt?.status}
+                      {ticket.latest_attempt?.short_commit_hash ? ` · ${ticket.latest_attempt.short_commit_hash}` : ''}
+                    </Typography>
+                  </Box>
+                  <Stack direction="row" spacing={0.75} flexWrap="wrap">
+                    {ticket.latest_attempt?.stale === true && (
+                      <Chip label="Stale" size="small" color="warning" variant="outlined" />
+                    )}
+                    {ticket.latest_attempt?.stale === false && (
+                      <Chip label="Current" size="small" color="success" variant="outlined" />
+                    )}
+                    {ticket.latest_attempt?.accepted_frontier_id && (
+                      <Chip
+                        label={`Frontier ${ticket.latest_attempt.accepted_frontier_id.slice(0, 12)}`}
+                        size="small"
+                        variant="outlined"
+                      />
+                    )}
+                  </Stack>
+                </Stack>
+                {ticket.latest_attempt?.stale_reason && (
+                  <Typography color="warning.main" sx={{ fontSize: '0.85rem', mt: 0.75 }}>
+                    {ticket.latest_attempt.stale_reason}
+                  </Typography>
+                )}
+              </Box>
+            ))}
+          </Stack>
+        </Paper>
+      )}
 
       <Typography variant="h5" sx={{ mb: 2 }}>
         Tools

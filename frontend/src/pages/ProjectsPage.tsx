@@ -18,10 +18,21 @@ import {
   MenuItem,
   Checkbox,
   FormControlLabel,
+  Chip,
 } from '@mui/material';
 import { Link } from 'react-router-dom';
 import { getProjects, createProject, deleteProject, getExecutionReady, type Project, type ProjectExecutionMode, type ProjectGitMode, type ProjectSourceType } from '../utils/api';
 import { LineageField } from '../components/LineageField';
+
+function getSourceTypeLabel(sourceType?: string) {
+  if (sourceType === 'local_path') {
+    return 'Local path (legacy/optional)';
+  }
+  if (sourceType === 'github') {
+    return 'GitHub (recommended)';
+  }
+  return sourceType ?? 'Unknown';
+}
 
 const ProjectsPage: React.FC = () => {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -212,9 +223,22 @@ const ProjectsPage: React.FC = () => {
                   {project.execution_mode === 'local' ? 'Local' : 'Docker'}
                   {project.execution_mode === 'local' && project.project_path ? ` · ${project.project_path}` : ''}
                 </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8rem', mb: 0.5 }}>
+                  Source: {getSourceTypeLabel(project.source_type)}
+                </Typography>
                 {project.github_url && (
                   <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8rem' }}>
                     GitHub: {project.github_url}
+                  </Typography>
+                )}
+                {(project.github_ref || project.base_ref) && (
+                  <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8rem' }}>
+                    Ref: {project.github_ref ?? project.base_ref}
+                  </Typography>
+                )}
+                {!project.project_path && (
+                  <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8rem', mt: 0.5 }}>
+                    Tickets start from AgentHub frontier. No local path required.
                   </Typography>
                 )}
                 <Box sx={{ mt: 1 }}>
@@ -223,6 +247,12 @@ const ProjectsPage: React.FC = () => {
                     value={project.accepted_frontier_id ?? project.shipped_frontier}
                   />
                 </Box>
+                {project.accepted_frontier_id && project.github_resolved_sha && (
+                  <Box sx={{ mt: 0.5, display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
+                    <Chip label="AgentHub source of truth" size="small" variant="outlined" color="info" />
+                    <Chip label={`Base ${project.github_resolved_sha.slice(0, 12)}`} size="small" variant="outlined" />
+                  </Box>
+                )}
                 {project.shipped_frontier && project.accepted_frontier_id && project.shipped_frontier !== project.accepted_frontier_id && (
                   <Box sx={{ mt: 0.5 }}>
                     <LineageField label="Shipped frontier" value={project.shipped_frontier} />
@@ -339,8 +369,8 @@ const ProjectsPage: React.FC = () => {
                   }
                 }}
               >
-                <MenuItem value="github">GitHub repository</MenuItem>
-                <MenuItem value="local_path">Local path (advanced/dev)</MenuItem>
+                <MenuItem value="github">GitHub repository (recommended)</MenuItem>
+                <MenuItem value="local_path">Local path (legacy/optional)</MenuItem>
               </Select>
             </FormControl>
             {isGithubSource ? (
@@ -350,7 +380,7 @@ const ProjectsPage: React.FC = () => {
                   value={githubUrl}
                   onChange={(e) => setGithubUrl(e.target.value)}
                   placeholder="https://github.com/owner/repo"
-                  helperText="Primary onboarding path for GitHub-first projects."
+                  helperText="Recommended default. AgentHub frontier becomes the source of truth after import."
                   fullWidth
                   required
                   size="small"
@@ -371,7 +401,7 @@ const ProjectsPage: React.FC = () => {
                       onChange={(e) => setImportToAgenthub(e.target.checked)}
                     />
                   }
-                  label="Import to AgentHub"
+                  label="Import to AgentHub frontier"
                 />
               </>
             ) : (
@@ -380,7 +410,7 @@ const ProjectsPage: React.FC = () => {
                 value={projectPath}
                 onChange={(e) => setProjectPath(e.target.value)}
                 placeholder="/path/to/project/on/host"
-                helperText="Advanced/dev-only path on the coordinator host."
+                helperText="Legacy/advanced mode on the coordinator host. Optional unless you need host-local execution."
                 fullWidth
                 required
                 size="small"
