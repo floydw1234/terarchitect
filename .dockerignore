@@ -1,0 +1,14 @@
+data/
+.git/
+.venv/
+venv/
+node_modules/
+frontend/node_modules/
+frontend/build/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+.env.local
+logs/
+*.log

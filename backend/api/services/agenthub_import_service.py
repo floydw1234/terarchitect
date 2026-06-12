@@ -225,7 +225,8 @@ def _extract_import_frontier(payload: dict[str, Any]) -> tuple[str | None, str |
         or payload.get("accepted_frontier_id")
     )
     resolved_sha = (
-        payload.get("resolved_sha")
+        payload.get("resolved_commit_sha")
+        or payload.get("resolved_sha")
         or payload.get("github_resolved_sha")
         or payload.get("commit_hash")
         or payload.get("hash")
@@ -254,7 +255,7 @@ def import_github_project_to_agenthub(
         response = requests.post(
             f"{base_url}/api/git/import/github",
             headers=_agenthub_headers(api_key),
-            json={"url": repo_url, "ref": ref},
+            json={"repository_url": repo_url, "base_ref": ref},
             timeout=120,
         )
     except requests.RequestException as exc:

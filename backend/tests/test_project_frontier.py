@@ -175,6 +175,50 @@ def test_create_github_project_defaults_ref_to_main_when_missing(client):
     assert import_mock.call_args.kwargs["github_ref"] == "main"
 
 
+def test_agenthub_github_import_uses_repository_url_and_base_ref(app):
+    response = SimpleNamespace(
+        status_code=201,
+        text='{"leaf_id":"a"}',
+        json=lambda: {
+            "leaf_id": "a" * 40,
+            "resolved_commit_sha": "b" * 40,
+            "repository_url": "https://github.com/example/repo",
+            "requested_ref": "main",
+        },
+    )
+
+    with app.app_context():
+        with patch.dict(
+            os.environ,
+            {"AGENTHUB_URL": "http://agenthub:8088", "AGENTHUB_API_KEY": "secret"},
+            clear=False,
+        ):
+            service = import_module("api.services.agenthub_import_service")
+            project = SimpleNamespace(git_mode="swarm")
+            with patch.object(service.requests, "post", return_value=response) as post_mock:
+                result = service.import_github_project_to_agenthub(
+                    project,
+                    github_url="https://github.com/example/repo",
+                    github_ref="main",
+                )
+
+    post_mock.assert_called_once_with(
+        "http://agenthub:8088/api/git/import/github",
+        headers={"Authorization": "Bearer secret"},
+        json={
+            "repository_url": "https://github.com/example/repo",
+            "base_ref": "main",
+        },
+        timeout=120,
+    )
+    assert result["accepted_frontier_id"] == "a" * 40
+    assert result["github_resolved_sha"] == "b" * 40
+    assert project.github_url == "https://github.com/example/repo"
+    assert project.github_ref == "main"
+    assert project.github_resolved_sha == "b" * 40
+    assert project.accepted_frontier_id == "a" * 40
+
+
 def test_project_doctor_reports_github_first_project_without_local_path(client):
     response = client.post(
         "/api/projects",
