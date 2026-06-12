@@ -126,3 +126,32 @@ class TestTicketRunLogging(unittest.TestCase):
         self.assertEqual(receipt["evidence_summary"], "pytest passed")
         self.assertIn("ta ticket logs", " ".join(receipt["next_actions"]))
         self.assertIn("ta ticket attempts", " ".join(receipt["next_actions"]))
+
+    def test_finalize_reports_completion_payload_after_successful_publish(self):
+        agent, backend = _make_agent()
+        ticket = MagicMock()
+        ticket.project_id = uuid.uuid4()
+        ticket.id = uuid.uuid4()
+        ticket.title = "Test ticket"
+
+        with patch("middle_agent.agent.git_backend.swarm_publish", return_value="a" * 40), \
+             patch("os.path.isdir", return_value=True), \
+             patch.dict(os.environ, {
+                 "BASE_LEAF_ID": "leaf_01HZX3BASE0123456789ABCDEFG",
+                 "AGENTHUB_AGENT_ID": "agenthub-worker-7",
+             }, clear=False):
+            agent._finalize(
+                ticket,
+                "sess-2",
+                project_path="/tmp/fakerepo",
+                completion_summary="publish summary",
+            )
+
+        backend.complete.assert_called_once_with(
+            ticket.id,
+            ticket.project_id,
+            summary="publish summary",
+            agenthub_commit_hash="a" * 40,
+            base_hash="leaf_01HZX3BASE0123456789ABCDEFG",
+            agent_id="agenthub-worker-7",
+        )

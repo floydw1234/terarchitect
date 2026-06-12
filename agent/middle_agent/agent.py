@@ -2525,6 +2525,13 @@ Judge the plan.
             commit_message = commit_message[:197] + "..."
 
         commit_hash = None
+        completion_base_hash = (os.environ.get("BASE_LEAF_ID") or "").strip() or (os.environ.get("BASE_HASH") or "").strip() or None
+        completion_agent_id = (
+            (os.environ.get("AGENTHUB_AGENT_ID") or "").strip()
+            or (os.environ.get("AGENT_ID") or "").strip()
+            or (os.environ.get("JOB_ID") or "").strip()
+            or None
+        )
         if project_path and os.path.isdir(project_path):
             commit_hash = git_backend.swarm_publish(
                 project_path,
@@ -2543,8 +2550,8 @@ Judge the plan.
             ticket.project_id,
             summary=(completion_summary or ticket.title or "Implementation").strip()[:500],
             agenthub_commit_hash=commit_hash,
-            base_hash=(os.environ.get("BASE_LEAF_ID") or "").strip() or (os.environ.get("BASE_HASH") or "").strip() or None,
-            agent_id=(os.environ.get("JOB_ID") or "").strip() or None,
+            base_hash=completion_base_hash,
+            agent_id=completion_agent_id,
         )
         self._emit_ticket_run_receipt(
             ticket.project_id,
@@ -2554,7 +2561,7 @@ Judge the plan.
             message="Ticket run succeeded",
             attempt_hash=(commit_hash or "")[:12] or None,
             agenthub_commit_hash=commit_hash,
-            base_hash=(os.environ.get("BASE_LEAF_ID") or "").strip() or (os.environ.get("BASE_HASH") or "").strip() or None,
+            base_hash=completion_base_hash,
             runner_workdir=project_path,
             evidence_summary=completion_summary,
             next_actions=[

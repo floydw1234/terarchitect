@@ -3,7 +3,10 @@ interacting with GitHub — everything PR-per-ticket related has been removed.""
 import os
 import re
 
-from utils.app_settings import get_dashboard_git_env, get_gh_env_for_user
+try:
+    from utils.app_settings import get_dashboard_git_env, get_gh_env_for_user
+except (ModuleNotFoundError, ImportError):
+    from backend.utils.app_settings import get_dashboard_git_env, get_gh_env_for_user
 
 
 def env_for_gh_user():

@@ -698,6 +698,98 @@ def test_ticket_detail_reports_stale_status_against_accepted_frontier(client):
     assert "differs from project.accepted_frontier_id" in payload["stale_reason"]
 
 
+def test_ticket_complete_records_attempt_with_frontier_lineage_and_latest_attempt_not_stale(client):
+    from models.db import Ticket, TicketAttempt, db
+
+    frontier_id = "leaf_01HZX3CURRENTFRONTIER01234567"
+    create_project = client.post(
+        "/api/projects",
+        json={
+            "name": "ticket-complete-current-frontier",
+            "git_mode": "swarm",
+            "accepted_frontier_id": frontier_id,
+            "is_existing_repo": True,
+        },
+    )
+    assert create_project.status_code == 201
+    project_id = create_project.get_json()["id"]
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=project_id,
+            column_id="in_progress",
+            title="Fresh frontier ticket",
+            intent_status="active",
+            base_leaf_id=frontier_id,
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+
+    complete = client.post(
+        f"/api/projects/{project_id}/tickets/{ticket_id}/complete",
+        json={
+            "commit_hash": "a" * 40,
+            "base_hash": frontier_id,
+            "agent_id": "agenthub-worker-1",
+            "summary": "automatic completion",
+        },
+    )
+    assert complete.status_code == 200
+    assert complete.get_json()["attempt_created"] is True
+
+    with client.application.app_context():
+        attempt = TicketAttempt.query.filter_by(ticket_id=ticket_id).one()
+        assert attempt.base_hash == frontier_id
+        assert attempt.agenthub_commit_hash == "a" * 40
+        assert attempt.agent_id == "agenthub-worker-1"
+
+    detail = client.get(f"/api/projects/{project_id}/tickets/{ticket_id}")
+    assert detail.status_code == 200
+    payload = detail.get_json()
+    assert payload["accepted_frontier_id"] == frontier_id
+    assert payload["latest_attempt"]["attempt_num"] == 1
+    assert payload["latest_attempt"]["status"] == "accepted"
+    assert payload["latest_attempt"]["stale"] is False
+    assert payload["latest_attempt"]["stale_reason"] is None
+
+
+def test_ticket_complete_is_idempotent_for_matching_swarm_attempt_payload(client, project):
+    from models.db import Ticket, TicketAttempt, db
+
+    frontier_id = project["accepted_frontier_id"]
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=project["id"],
+            column_id="in_progress",
+            title="Idempotent completion ticket",
+            intent_status="active",
+            base_leaf_id=frontier_id,
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+
+    payload = {
+        "commit_hash": "b" * 40,
+        "base_hash": frontier_id,
+        "agent_id": "agenthub-worker-2",
+        "summary": "automatic completion",
+    }
+    first = client.post(f"/api/projects/{project['id']}/tickets/{ticket_id}/complete", json=payload)
+    second = client.post(f"/api/projects/{project['id']}/tickets/{ticket_id}/complete", json=payload)
+
+    assert first.status_code == 200
+    assert first.get_json()["attempt_created"] is True
+    assert second.status_code == 200
+    assert second.get_json()["attempt_created"] is False
+    assert second.get_json()["attempt_id"] == first.get_json()["attempt_id"]
+
+    with client.application.app_context():
+        attempts = TicketAttempt.query.filter_by(ticket_id=ticket_id).all()
+        assert len(attempts) == 1
+
+
 def test_ticket_rerun_from_current_frontier_updates_base_and_enqueues_job(client):
     from models.db import AgentJob, Ticket, db
 

@@ -12,12 +12,20 @@ from flask import Blueprint, abort, current_app, jsonify, request
 from sqlalchemy import text
 
 from models.db import db, Project, Graph, KanbanBoard, Ticket, Note, ExecutionLog, AgentJob, ShipRun, TicketAttempt, PromotionCandidate, CompositeWorkspace, EvidenceBundle, EvidenceRun
-from utils.embedding_client import embed_single
-from utils.rag import upsert_embedding, delete_embeddings_for_source
-from utils.app_settings import (
-    get_value,
-    check_execution_readiness,
-)
+try:
+    from utils.embedding_client import embed_single
+    from utils.rag import upsert_embedding, delete_embeddings_for_source
+    from utils.app_settings import (
+        get_value,
+        check_execution_readiness,
+    )
+except (ModuleNotFoundError, ImportError):
+    from backend.utils.embedding_client import embed_single
+    from backend.utils.rag import upsert_embedding, delete_embeddings_for_source
+    from backend.utils.app_settings import (
+        get_value,
+        check_execution_readiness,
+    )
 
 from .services.graph_service import (
     generate_architecture_graph as _generate_architecture_graph,
@@ -1905,10 +1913,9 @@ def ticket_complete(project_id, ticket_id):
     if err is not None:
         return err, status
     ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
-    if ticket.column_id != "in_progress":
-        return jsonify({"error": "Ticket is not in_progress; cannot mark complete"}), 409
     data = request.json or {}
     summary = (data.get("summary") or "").strip() or ""
+    summary_or_none = summary or None
     commit_hash = (data.get("commit_hash") or "").strip() or None
     requested_base_hash = (data.get("base_hash") or "").strip() or None
     agent_id_val = (data.get("agent_id") or "").strip() or None
@@ -1925,44 +1932,61 @@ def ticket_complete(project_id, ticket_id):
             return jsonify({"error": "publish base_hash does not match ticket.base_leaf_id"}), 409
         base_hash = ticket_base_leaf_id
 
+    matching_attempt = None
+    if is_swarm:
+        matching_attempt = (
+            TicketAttempt.query
+            .filter_by(
+                project_id=project_id,
+                ticket_id=ticket.id,
+                agenthub_commit_hash=commit_hash,
+                base_hash=base_hash,
+                agent_id=agent_id_val,
+                summary=summary_or_none,
+            )
+            .order_by(TicketAttempt.attempt_num.desc())
+            .first()
+        )
+
+    if ticket.column_id != "in_progress":
+        if (
+            is_swarm
+            and ticket.column_id == "done"
+            and ticket.status == "completed"
+            and matching_attempt is not None
+        ):
+            return jsonify({
+                "message": "Complete",
+                "ticket_id": str(ticket.id),
+                "attempt_id": str(matching_attempt.id),
+                "attempt_created": False,
+            })
+        return jsonify({"error": "Ticket is not in_progress; cannot mark complete"}), 409
+
     ticket.status = "completed"
     ticket.column_id = "done"
     ticket.intent_status = "active"
 
     attempt = None
+    attempt_created = False
     if is_swarm:
-        attempt = _create_attempt(
-            project_id=project_id,
-            ticket_id=ticket.id,
-            commit_hash=commit_hash,
-            base_hash=base_hash,
-            agent_id=agent_id_val,
-            summary=summary or None,
-            initial_status="proposed",
-        )
-        _post_event(
-            _ticket_channel(str(ticket_id)),
-            _event_content(
-                "validation_started",
-                f"Validation started for attempt #{attempt.attempt_num}",
-                {
-                    "attempt_id": str(attempt.id),
-                    "attempt_num": attempt.attempt_num,
-                    "commit_hash": commit_hash,
-                    "base_hash": base_hash,
-                    "wave_num": attempt.wave_num,
-                },
-            ),
-        )
-        # Validate immediately: check commit exists in AgentHub
-        _validate_attempt(attempt)
-        # Post validation result to ticket channel
-        if attempt.status == "accepted":
+        attempt = matching_attempt
+        if attempt is None:
+            attempt = _create_attempt(
+                project_id=project_id,
+                ticket_id=ticket.id,
+                commit_hash=commit_hash,
+                base_hash=base_hash,
+                agent_id=agent_id_val,
+                summary=summary_or_none,
+                initial_status="proposed",
+            )
+            attempt_created = True
             _post_event(
                 _ticket_channel(str(ticket_id)),
                 _event_content(
-                    "validation_passed",
-                    f"Validation passed for attempt #{attempt.attempt_num}",
+                    "validation_started",
+                    f"Validation started for attempt #{attempt.attempt_num}",
                     {
                         "attempt_id": str(attempt.id),
                         "attempt_num": attempt.attempt_num,
@@ -1972,48 +1996,70 @@ def ticket_complete(project_id, ticket_id):
                     },
                 ),
             )
-            _post_event(
-                _ticket_channel(str(ticket_id)),
-                _event_content(
-                    "attempt_published",
-                    f"Attempt #{attempt.attempt_num} published"
-                    + (f" at {commit_hash[:12]}" if commit_hash else ""),
-                    {
-                        "attempt_id": str(attempt.id),
-                        "attempt_num": attempt.attempt_num,
-                        "commit_hash": commit_hash,
-                        "base_hash": base_hash,
-                        "wave_num": attempt.wave_num,
-                        "status": attempt.status,
-                    },
-                ),
-            )
-        else:
-            _post_event(
-                _ticket_channel(str(ticket_id)),
-                _event_content(
-                    "validation_failed",
-                    attempt.validation_error or "Attempt validation failed",
-                    {
-                        "attempt_id": str(attempt.id),
-                        "attempt_num": attempt.attempt_num,
-                        "commit_hash": commit_hash,
-                        "base_hash": base_hash,
-                        "wave_num": attempt.wave_num,
-                        "status": attempt.status,
-                    },
-                ),
-            )
+            # Validate immediately: check commit exists in AgentHub
+            _validate_attempt(attempt)
+            # Post validation result to ticket channel
+            if attempt.status == "accepted":
+                _post_event(
+                    _ticket_channel(str(ticket_id)),
+                    _event_content(
+                        "validation_passed",
+                        f"Validation passed for attempt #{attempt.attempt_num}",
+                        {
+                            "attempt_id": str(attempt.id),
+                            "attempt_num": attempt.attempt_num,
+                            "commit_hash": commit_hash,
+                            "base_hash": base_hash,
+                            "wave_num": attempt.wave_num,
+                        },
+                    ),
+                )
+                _post_event(
+                    _ticket_channel(str(ticket_id)),
+                    _event_content(
+                        "attempt_published",
+                        f"Attempt #{attempt.attempt_num} published"
+                        + (f" at {commit_hash[:12]}" if commit_hash else ""),
+                        {
+                            "attempt_id": str(attempt.id),
+                            "attempt_num": attempt.attempt_num,
+                            "commit_hash": commit_hash,
+                            "base_hash": base_hash,
+                            "wave_num": attempt.wave_num,
+                            "status": attempt.status,
+                        },
+                    ),
+                )
+            else:
+                _post_event(
+                    _ticket_channel(str(ticket_id)),
+                    _event_content(
+                        "validation_failed",
+                        attempt.validation_error or "Attempt validation failed",
+                        {
+                            "attempt_id": str(attempt.id),
+                            "attempt_num": attempt.attempt_num,
+                            "commit_hash": commit_hash,
+                            "base_hash": base_hash,
+                            "wave_num": attempt.wave_num,
+                            "status": attempt.status,
+                        },
+                    ),
+                )
 
     db.session.commit()
 
-    if is_swarm:
+    if is_swarm and attempt_created:
         try:
             _dispatch_unblocked_queued(project_id)
         except Exception as exc:
             current_app.logger.warning("Dispatch queued failed: %s", exc)
 
-    return jsonify({"message": "Complete", "ticket_id": str(ticket.id)})
+    response = {"message": "Complete", "ticket_id": str(ticket.id)}
+    if attempt is not None:
+        response["attempt_id"] = str(attempt.id)
+        response["attempt_created"] = attempt_created
+    return jsonify(response)
 
 
 @api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/attempts", methods=["GET"])

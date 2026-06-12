@@ -7,7 +7,10 @@ from uuid import UUID
 from flask import current_app
 
 from models.db import db, RAGEmbedding
-from utils.embedding_client import embed_single
+try:
+    from utils.embedding_client import embed_single
+except (ModuleNotFoundError, ImportError):
+    from backend.utils.embedding_client import embed_single
 
 
 def upsert_embedding(project_id: UUID, source_type: str, source_id: UUID, content: str) -> None:

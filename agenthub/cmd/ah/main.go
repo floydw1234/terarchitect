@@ -162,6 +162,16 @@ func incrementalBundleBaseCandidates() []string {
 	return candidates
 }
 
+func bundleCreateArgsForHead(bundlePath string, resolve func(string) bool) []string {
+	args := []string{"bundle", "create", bundlePath, "HEAD"}
+	for _, candidate := range incrementalBundleBaseCandidates() {
+		if resolve(candidate) {
+			return []string{"bundle", "create", bundlePath, "HEAD", "^" + candidate}
+		}
+	}
+	return args
+}
+
 func cmdJoin(args []string) {
 	fs := flag.NewFlagSet("join", flag.ExitOnError)
 	serverFlag := fs.String("server", "", "server URL")
@@ -233,13 +243,10 @@ func cmdPush(args []string) {
 	// Only bundle commits not already present in AgentHub (incremental push).
 	// AgentHub-materialized workspaces often have no origin refs, so prefer the
 	// explicit DAG base env passed by Terarchitect before falling back to origin.
-	bundleArgs := []string{"bundle", "create", tmpFile.Name(), "HEAD"}
-	for _, candidate := range incrementalBundleBaseCandidates() {
-		if _, err := gitOutput("rev-parse", "--verify", candidate); err == nil {
-			bundleArgs = []string{"bundle", "create", tmpFile.Name(), "HEAD", "^" + candidate}
-			break
-		}
-	}
+	bundleArgs := bundleCreateArgsForHead(tmpFile.Name(), func(candidate string) bool {
+		_, err := gitOutput("rev-parse", "--verify", candidate)
+		return err == nil
+	})
 	if err := gitRun(bundleArgs...); err != nil {
 		fatal("create bundle: %v", err)
 	}

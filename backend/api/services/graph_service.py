@@ -11,8 +11,12 @@ import requests
 from flask import abort, current_app, jsonify
 
 from models.db import db, Graph, Project, RAGEmbedding
-from utils.app_settings import get_frontend_llm_settings, get_github_token
-from utils.rag import upsert_embedding
+try:
+    from utils.app_settings import get_frontend_llm_settings, get_github_token
+    from utils.rag import upsert_embedding
+except (ModuleNotFoundError, ImportError):
+    from backend.utils.app_settings import get_frontend_llm_settings, get_github_token
+    from backend.utils.rag import upsert_embedding
 
 
 def update_graph_embeddings(project_id, graph) -> None:

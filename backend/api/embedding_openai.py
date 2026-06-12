@@ -10,7 +10,10 @@ Configure via environment variables:
 """
 from flask import Blueprint, request, jsonify
 
-from utils.embedding_client import embed, _default_model
+try:
+    from utils.embedding_client import embed, _default_model
+except (ModuleNotFoundError, ImportError):
+    from backend.utils.embedding_client import embed, _default_model
 
 embedding_bp = Blueprint("embedding_openai", __name__, url_prefix="/v1")
 
