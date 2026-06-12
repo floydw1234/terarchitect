@@ -113,7 +113,7 @@ _COORDINATOR_AGENT_ENV_KEYS = (
     "TERARCHITECT_WORKER_API_KEY",
     "OPENCODE_SERVER_URL", "OPENCODE_SERVER_USERNAME", "OPENCODE_SERVER_PASSWORD",
     "AGENTHUB_URL", "AGENTHUB_API_KEY", "AGENTHUB_AGENT_ID",
-    "BASE_LEAF_ID", "BASE_HASH", "AGENTHUB_ROOT_HASH",
+    "BASE_LEAF_ID", "BASE_HASH", "AGENTHUB_ROOT_HASH", "ACCEPTED_FRONTIER_ID",
 )
 
 def _headers() -> dict:
@@ -160,6 +160,9 @@ def claim_job(base_url: str, project_id: Optional[str] = None) -> Optional[dict]
             timeout=30,
         )
         if r.status_code == 204:
+            return None
+        if r.status_code == 409:
+            print(f"[coordinator] claim job rejected: {r.text[:400]}", file=sys.stderr)
             return None
         r.raise_for_status()
         return r.json()
@@ -383,11 +386,14 @@ def job_to_env(job: dict, for_docker: bool = False) -> dict:
     env["TICKET_ID"] = str(job.get("ticket_id", ""))
     env["PROJECT_ID"] = str(job.get("project_id", ""))
     env["REPO_URL"] = str(job.get("repo_url", ""))
+    env["GITHUB_URL"] = str(job.get("github_url") or job.get("repo_url") or "")
     env["JOB_ID"] = str(job.get("job_id", ""))
     env["JOB_KIND"] = str(job.get("kind", "ticket"))
     env["TERARCHITECT_MODE"] = "swarm"
     if job.get("base_leaf_id"):
         env["BASE_LEAF_ID"] = str(job["base_leaf_id"])
+    if job.get("accepted_frontier_id"):
+        env["ACCEPTED_FRONTIER_ID"] = str(job["accepted_frontier_id"])
     # AgentHub DAG selection: ticket jobs always receive an explicit base commit
     # and the current shipped root without any wave-derived meaning.
     if job.get("base_hash"):

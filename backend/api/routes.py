@@ -71,6 +71,7 @@ from .services.agenthub_import_service import (
 )
 from .services.ticket_service import (
     dispatch_unblocked_queued as _dispatch_unblocked_queued,
+    ensure_ticket_base_leaf_id as _ensure_ticket_base_leaf_id,
     enqueue_ticket_job as _enqueue_ticket_job,
     resolve_ticket_base_leaf_id as _resolve_ticket_base_leaf_id,
     ticket_to_json as _ticket_to_json,
@@ -1710,8 +1711,8 @@ def ticket_detail(project_id, ticket_id):
             project = db.session.get(Project, project_id)
             if not project:
                 return jsonify({"error": "Project not found"}), 404
-            valid, error = _validate_ticket_base_leaf(project, getattr(ticket, "base_leaf_id", None))
-            if not valid:
+            _, error = _ensure_ticket_base_leaf_id(ticket, project, persist=True)
+            if error:
                 return jsonify({"error": error}), 400
             execution_mode = getattr(project, "execution_mode", None) or "docker"
             if execution_mode == "local":
@@ -2322,9 +2323,14 @@ def worker_jobs_start():
 
     if not job:
         return "", 204
+    try:
+        payload = _job_to_response(job)
+    except ValueError as exc:
+        current_app.logger.warning("worker_jobs_start rejected job %s: %s", job.id, exc)
+        return jsonify({"error": str(exc), "job_id": str(job.id)}), 409
     job.status = "running"
     db.session.commit()
-    return jsonify(_job_to_response(job)), 200
+    return jsonify(payload), 200
 
 
 @api_bp.route("/worker/jobs/<uuid:job_id>/complete", methods=["POST"])

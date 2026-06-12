@@ -4,6 +4,7 @@ from flask import current_app
 
 from models.db import db, Project, Ticket, AgentJob, TicketAttempt
 from .attempt_service import SATISFIED_STATUSES as _SATISFIED_STATUSES
+from .project_service import get_project_frontier_id as _get_project_frontier_id
 
 
 def occupied_nodes_edges(project_id) -> tuple:
@@ -187,25 +188,41 @@ def job_to_response(job):
     execution_mode = getattr(project, "execution_mode", None) or "docker" if project else "docker"
     git_mode = getattr(project, "git_mode", None) or "swarm" if project else "swarm"
     shipped_frontier = (getattr(project, "shipped_frontier", None) or None) if project else None
+    accepted_frontier_id = _get_project_frontier_id(project) if project else None
+
+    source_metadata = {
+        "source_type": getattr(project, "source_type", None) or "local_path" if project else None,
+        "github_url": repo_url or None,
+        "github_ref": getattr(project, "github_ref", None) if project else None,
+        "github_resolved_sha": getattr(project, "github_resolved_sha", None) if project else None,
+    }
 
     base_context = {}
     base_leaf_id = None
     base_hash = None
     if ticket and project and git_mode == "swarm":
-        base_leaf_id = (getattr(ticket, "base_leaf_id", None) or "").strip() or None
+        ticket_base_leaf_id = (getattr(ticket, "base_leaf_id", None) or "").strip() or None
+        base_leaf_id = ticket_base_leaf_id or accepted_frontier_id
+        if base_leaf_id is None:
+            raise ValueError(
+                "Cannot dispatch swarm ticket job: ticket.base_leaf_id is not set "
+                "and project.accepted_frontier_id is not set."
+            )
         base_hash = base_leaf_id
         base_context = {
             "base_hash": base_hash,
             "base_leaf_id": base_leaf_id,
-            "base_source": "ticket_base_leaf",
+            "accepted_frontier_id": accepted_frontier_id,
+            "base_source": "ticket_base_leaf" if ticket_base_leaf_id else "project_accepted_frontier",
             "blocked": False,
             "blocked_reason": None,
         }
         current_app.logger.info(
-            "base_selection project=%s ticket=%s base_leaf=%s source=%s frontier=%s deps=%s",
+            "base_selection project=%s ticket=%s base_leaf=%s source=%s accepted_frontier=%s frontier=%s deps=%s",
             job.project_id, job.ticket_id,
             (base_leaf_id or "")[:12] or "none",
             base_context.get("base_source"),
+            (accepted_frontier_id or "")[:12] or "none",
             (shipped_frontier or "")[:12] or "none",
             ticket.depends_on_ticket_ids or [],
         )
@@ -216,13 +233,19 @@ def job_to_response(job):
         "project_id": str(job.project_id),
         "kind": job.kind,
         "repo_url": repo_url,
+        "github_url": repo_url or None,
         "execution_mode": execution_mode,
         "git_mode": git_mode,
-        "project_path": (project.project_path or "").strip() or None if project else None,
         "base_leaf_id": base_leaf_id,
         "base_hash": base_hash,
+        "accepted_frontier_id": accepted_frontier_id,
         "shipped_frontier": shipped_frontier,
         "agenthub_root_hash": base_hash,
         "base_selection": base_context,
+        "source_type": source_metadata["source_type"],
+        "source_metadata": source_metadata,
     }
+    project_path = (project.project_path or "").strip() if project else ""
+    if project_path:
+        out["project_path"] = project_path
     return out

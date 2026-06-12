@@ -659,7 +659,7 @@ def test_run_ticket_fails_clearly_when_swarm_ticket_has_no_base_leaf_id(client):
         )
 
     assert response.status_code == 400
-    assert "base_leaf_id is required for swarm projects" in response.get_json()["error"]
+    assert "No AgentHub frontier/base available for ticket dispatch" in response.get_json()["error"]
 
 
 def test_ticket_detail_reports_stale_status_against_accepted_frontier(client):

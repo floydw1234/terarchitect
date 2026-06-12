@@ -1020,6 +1020,101 @@ def test_shipped_dependency_ticket_dispatches_from_current_frontier(client, proj
     assert payload["base_selection"]["blocked"] is False
 
 
+def test_github_first_job_payload_uses_project_frontier_without_project_path(client):
+    from models.db import AgentJob, Ticket, db
+
+    create_project = client.post(
+        "/api/projects",
+        json={
+            "name": "github-first-payload",
+            "git_mode": "swarm",
+            "source_type": "github",
+            "github_url": "https://github.com/example/repo",
+            "github_ref": "main",
+            "accepted_frontier_id": "leaf_01HZX3GITHUBFIRST012345678",
+            "is_existing_repo": True,
+        },
+    )
+    assert create_project.status_code == 201
+    project = create_project.get_json()
+    pid = project["id"]
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="queued",
+            title="GitHub source ticket",
+            intent_status="ready",
+            base_leaf_id=None,
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+
+    from api.services.ticket_service import dispatch_unblocked_queued
+    with client.application.app_context():
+        dispatch_unblocked_queued(pid)
+        stored_ticket = db.session.get(Ticket, ticket_id)
+        assert stored_ticket.base_leaf_id == "leaf_01HZX3GITHUBFIRST012345678"
+        assert AgentJob.query.filter_by(ticket_id=ticket_id).count() == 1
+
+    resp = client.post("/api/worker/jobs/start", json={"project_id": pid})
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["project_id"] == pid
+    assert payload["ticket_id"] == ticket_id
+    assert payload["job_id"]
+    assert payload["base_leaf_id"] == "leaf_01HZX3GITHUBFIRST012345678"
+    assert payload["accepted_frontier_id"] == "leaf_01HZX3GITHUBFIRST012345678"
+    assert payload["github_url"] == "https://github.com/example/repo"
+    assert payload["source_metadata"]["github_url"] == "https://github.com/example/repo"
+    assert payload["source_metadata"]["github_ref"] == "main"
+    assert payload["source_metadata"]["source_type"] == "github"
+    assert "project_path" not in payload
+    assert payload["base_selection"]["base_source"] == "ticket_base_leaf"
+
+
+def test_worker_job_claim_fails_clearly_when_no_frontier_base_exists(client):
+    from models.db import AgentJob, Project, Ticket, db
+
+    with client.application.app_context():
+        project = Project(
+            name="broken-github-project",
+            git_mode="swarm",
+            source_type="github",
+            github_url="https://github.com/example/repo",
+            execution_mode="docker",
+            accepted_frontier_id=None,
+        )
+        db.session.add(project)
+        db.session.flush()
+        ticket = Ticket(
+            project_id=project.id,
+            column_id="in_progress",
+            title="Missing frontier base",
+            intent_status="active",
+            base_leaf_id=None,
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        job = AgentJob(
+            ticket_id=ticket.id,
+            project_id=project.id,
+            kind="ticket",
+            status="pending",
+        )
+        db.session.add(job)
+        db.session.commit()
+        project_id = str(project.id)
+        job_id = str(job.id)
+
+    resp = client.post("/api/worker/jobs/start", json={"project_id": project_id})
+    assert resp.status_code == 409
+    payload = resp.get_json()
+    assert payload["job_id"] == job_id
+    assert "ticket.base_leaf_id is not set and project.accepted_frontier_id is not set" in payload["error"]
+
+
 def test_multi_dependency_ticket_stays_queued_in_mvp(client, project):
     """Multiple accepted unshipped dependencies remain blocked in the MVP path."""
     from models.db import db, Project, Ticket, TicketAttempt, AgentJob

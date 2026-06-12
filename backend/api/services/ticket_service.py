@@ -57,6 +57,40 @@ def validate_ticket_base_leaf(project: Project | None, base_leaf_id) -> tuple[bo
     return False, (error or "base_leaf_id is invalid").replace("accepted_frontier_id", "base_leaf_id")
 
 
+def ensure_ticket_base_leaf_id(
+    ticket: Ticket | None,
+    project: Project | None,
+    *,
+    persist: bool = False,
+) -> tuple[str | None, str | None]:
+    """Resolve and optionally persist the base leaf used for swarm ticket execution."""
+    if not ticket:
+        return None, "Ticket not found"
+
+    git_mode = (getattr(project, "git_mode", None) or "swarm").strip().lower() if project else "swarm"
+    current_value = _normalize_frontier_id(getattr(ticket, "base_leaf_id", None))
+    if git_mode != "swarm":
+        return current_value, None
+
+    resolved = current_value or _get_project_frontier_id(project)
+    if resolved is None:
+        return (
+            None,
+            "No AgentHub frontier/base available for ticket dispatch: "
+            "ticket.base_leaf_id is not set and project.accepted_frontier_id is not set.",
+        )
+
+    if current_value != resolved:
+        ticket.base_leaf_id = resolved
+        if persist:
+            db.session.flush()
+
+    valid, error = validate_ticket_base_leaf(project, resolved)
+    if not valid:
+        return None, error
+    return resolved, None
+
+
 def ticket_stale_status(ticket: Ticket, project: Project | None) -> tuple[Optional[bool], Optional[str]]:
     accepted_frontier_id = _get_project_frontier_id(project) if project else None
     return _compare_base_to_accepted_frontier(
@@ -290,8 +324,8 @@ def enqueue_ticket_job(ticket_id):
 
     is_swarm = (getattr(project, "git_mode", None) or "swarm") == "swarm"
     if is_swarm:
-        valid, error = validate_ticket_base_leaf(project, getattr(ticket, "base_leaf_id", None))
-        if not valid:
+        _, error = ensure_ticket_base_leaf_id(ticket, project, persist=True)
+        if error:
             current_app.logger.info("Skipping enqueue: ticket %s invalid base leaf: %s", ticket_id, error)
             return
     if is_swarm:
@@ -354,8 +388,8 @@ def dispatch_unblocked_queued(project_id):
         if dep_ids and not all(_has_accepted_attempt(d) for d in dep_ids):
             continue
         if is_swarm:
-            valid, error = validate_ticket_base_leaf(project, getattr(t, "base_leaf_id", None))
-            if not valid:
+            _, error = ensure_ticket_base_leaf_id(t, project, persist=True)
+            if error:
                 current_app.logger.info(
                     "dispatch waiting ticket=%s invalid_base_leaf=%s",
                     t.id,

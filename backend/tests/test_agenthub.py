@@ -422,6 +422,7 @@ def test_coordinator_job_to_env_forwards_base_leaf_id():
             "base_leaf_id": "leaf_01HZX3BASE0123456789ABCDEFG",
             "base_hash": "b" * 40,
             "agenthub_root_hash": "f" * 40,
+            "accepted_frontier_id": "leaf_01HZX3FRONTIER0123456789ABC",
         },
         for_docker=False,
     )
@@ -429,6 +430,7 @@ def test_coordinator_job_to_env_forwards_base_leaf_id():
     assert env["BASE_LEAF_ID"] == "leaf_01HZX3BASE0123456789ABCDEFG"
     assert env["BASE_HASH"] == "b" * 40
     assert env["AGENTHUB_ROOT_HASH"] == "f" * 40
+    assert env["ACCEPTED_FRONTIER_ID"] == "leaf_01HZX3FRONTIER0123456789ABC"
 
 
 def test_coordinator_job_to_env_does_not_use_project_path_for_local_swarm_jobs():
