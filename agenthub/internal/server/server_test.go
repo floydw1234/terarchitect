@@ -197,6 +197,97 @@ func TestSeedEndpointReturnsExplicitNotSupported(t *testing.T) {
 	}
 }
 
+func TestGitHubImportEndpointImportsLocalFixtureBundle(t *testing.T) {
+	srv, database, authHeader, _ := newTestServer(t)
+	remoteURL, hashes := newImportFixtureRepo(t)
+
+	body := bytes.NewBufferString(fmt.Sprintf(`{"github_url":%q,"base_ref":"main"}`, remoteURL))
+	req := httptest.NewRequest(http.MethodPost, "/api/git/import/github", body)
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("unexpected status %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode import payload: %v", err)
+	}
+	if payload["leaf_id"] != hashes.child {
+		t.Fatalf("expected leaf_id %s, got %#v", hashes.child, payload["leaf_id"])
+	}
+	if payload["source"] != "github" {
+		t.Fatalf("unexpected source %#v", payload["source"])
+	}
+	if payload["resolved_commit_sha"] != hashes.child {
+		t.Fatalf("expected resolved sha %s, got %#v", hashes.child, payload["resolved_commit_sha"])
+	}
+
+	leaf, err := database.GetCommit(hashes.child)
+	if err != nil {
+		t.Fatalf("get imported leaf: %v", err)
+	}
+	if leaf == nil {
+		t.Fatalf("expected imported leaf to be indexed")
+	}
+	if leaf.AgentID != "agent-1" {
+		t.Fatalf("expected leaf agent-1, got %q", leaf.AgentID)
+	}
+
+	parent, err := database.GetCommit(hashes.root)
+	if err != nil {
+		t.Fatalf("get imported parent: %v", err)
+	}
+	if parent == nil {
+		t.Fatalf("expected imported parent to be indexed")
+	}
+	if parent.AgentID != "" {
+		t.Fatalf("expected parent agent to be empty, got %q", parent.AgentID)
+	}
+}
+
+func TestGitHubImportEndpointRejectsInvalidURL(t *testing.T) {
+	srv, _, authHeader, _ := newTestServer(t)
+
+	body := bytes.NewBufferString(`{"repository_url":"https://example.com/not-github/repo","ref":"main"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/git/import/github", body)
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected status %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGitHubImportEndpointRejectsBadRef(t *testing.T) {
+	srv, _, authHeader, _ := newTestServer(t)
+	remoteURL, _ := newImportFixtureRepo(t)
+
+	body := bytes.NewBufferString(fmt.Sprintf(`{"repository_url":%q,"ref":"does-not-exist"}`, remoteURL))
+	req := httptest.NewRequest(http.MethodPost, "/api/git/import/github", body)
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected status %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode error payload: %v", err)
+	}
+	if payload["error"] != "requested ref was not found" {
+		t.Fatalf("unexpected payload %#v", payload)
+	}
+}
+
 type testHashes struct {
 	root  string
 	child string
@@ -267,6 +358,39 @@ func newPopulatedRepo(t *testing.T, rootDir string) (*gitrepo.Repo, testHashes) 
 	runGit(t, worktree, "push", "origin", "HEAD:refs/heads/main")
 
 	return repo, testHashes{root: rootHash, child: childHash}
+}
+
+func newImportFixtureRepo(t *testing.T) (string, testHashes) {
+	t.Helper()
+
+	rootDir := t.TempDir()
+	remotePath := filepath.Join(rootDir, "remote.git")
+	runGit(t, rootDir, "init", "--bare", remotePath)
+
+	worktree := filepath.Join(rootDir, "worktree")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	runGit(t, worktree, "init")
+	runGit(t, worktree, "config", "user.name", "Import Test")
+	runGit(t, worktree, "config", "user.email", "import@example.com")
+	if err := os.WriteFile(filepath.Join(worktree, "fixture.txt"), []byte("root\n"), 0o644); err != nil {
+		t.Fatalf("write root fixture: %v", err)
+	}
+	runGit(t, worktree, "add", "fixture.txt")
+	runGit(t, worktree, "commit", "-m", "fixture root")
+	rootHash := strings.TrimSpace(runGitOutput(t, worktree, "rev-parse", "HEAD"))
+
+	if err := os.WriteFile(filepath.Join(worktree, "fixture.txt"), []byte("child\n"), 0o644); err != nil {
+		t.Fatalf("write child fixture: %v", err)
+	}
+	runGit(t, worktree, "commit", "-am", "fixture child")
+	childHash := strings.TrimSpace(runGitOutput(t, worktree, "rev-parse", "HEAD"))
+
+	runGit(t, worktree, "remote", "add", "origin", remotePath)
+	runGit(t, worktree, "push", "origin", "HEAD:refs/heads/main")
+
+	return "file://" + remotePath, testHashes{root: rootHash, child: childHash}
 }
 
 func runGit(t *testing.T, dir string, args ...string) {

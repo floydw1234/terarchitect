@@ -147,9 +147,13 @@ func (d *DB) GetAgentByID(id string) (*Agent, error) {
 // --- Commits ---
 
 func (d *DB) InsertCommit(hash, parentHash, agentID, message string) error {
+	var agentValue any
+	if agentID != "" {
+		agentValue = agentID
+	}
 	_, err := d.db.Exec(
 		"INSERT INTO commits (hash, parent_hash, agent_id, message) VALUES (?, ?, ?, ?)",
-		hash, parentHash, agentID, message,
+		hash, parentHash, agentValue, message,
 	)
 	return err
 }
@@ -157,14 +161,18 @@ func (d *DB) InsertCommit(hash, parentHash, agentID, message string) error {
 func (d *DB) GetCommit(hash string) (*Commit, error) {
 	var c Commit
 	var parentHash sql.NullString
+	var agentID sql.NullString
 	err := d.db.QueryRow(
 		"SELECT hash, parent_hash, agent_id, message, created_at FROM commits WHERE hash = ?", hash,
-	).Scan(&c.Hash, &parentHash, &c.AgentID, &c.Message, &c.CreatedAt)
+	).Scan(&c.Hash, &parentHash, &agentID, &c.Message, &c.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if parentHash.Valid {
 		c.ParentHash = parentHash.String
+	}
+	if agentID.Valid {
+		c.AgentID = agentID.String
 	}
 	return &c, err
 }
@@ -242,11 +250,15 @@ func scanCommits(rows *sql.Rows) ([]Commit, error) {
 	for rows.Next() {
 		var c Commit
 		var parentHash sql.NullString
-		if err := rows.Scan(&c.Hash, &parentHash, &c.AgentID, &c.Message, &c.CreatedAt); err != nil {
+		var agentID sql.NullString
+		if err := rows.Scan(&c.Hash, &parentHash, &agentID, &c.Message, &c.CreatedAt); err != nil {
 			return nil, err
 		}
 		if parentHash.Valid {
 			c.ParentHash = parentHash.String
+		}
+		if agentID.Valid {
+			c.AgentID = agentID.String
 		}
 		commits = append(commits, c)
 	}

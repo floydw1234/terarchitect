@@ -45,6 +45,7 @@ func (s *Server) setupRoutes() {
 	// Git endpoints
 	s.mux.Handle("POST /api/git/push", authMw(http.HandlerFunc(s.handleGitPush)))
 	s.mux.Handle("POST /api/git/seed", authMw(http.HandlerFunc(s.handleGitSeed)))
+	s.mux.Handle("POST /api/git/import/github", authMw(http.HandlerFunc(s.handleGitImportGitHub)))
 	s.mux.Handle("GET /api/git/fetch/{hash}", authMw(http.HandlerFunc(s.handleGitFetch)))
 	s.mux.Handle("GET /api/git/commits", authMw(http.HandlerFunc(s.handleListCommits)))
 	s.mux.Handle("GET /api/git/commits/{hash}", authMw(http.HandlerFunc(s.handleGetCommit)))

@@ -50,47 +50,10 @@ func (s *Server) handleGitPush(w http.ResponseWriter, r *http.Request) {
 	tmpFile.Close()
 
 	// Unbundle into bare repo
-	hashes, err := s.repo.Unbundle(tmpFile.Name())
+	indexed, err := s.importBundle(tmpFile.Name(), agent.ID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid bundle: "+err.Error())
 		return
-	}
-
-	// Index each new commit in the database
-	var indexed []string
-	for _, hash := range hashes {
-		// Skip if already indexed
-		existing, _ := s.db.GetCommit(hash)
-		if existing != nil {
-			indexed = append(indexed, hash)
-			continue
-		}
-
-		parentHash, message, err := s.repo.GetCommitInfo(hash)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to read commit info")
-			return
-		}
-
-		// Validate parent exists (unless root commit)
-		if parentHash != "" && !s.repo.CommitExists(parentHash) {
-			writeError(w, http.StatusBadRequest, "parent commit not found: "+parentHash)
-			return
-		}
-
-		// Also index the parent if it's not in DB yet (e.g. seed repo commits)
-		if parentHash != "" {
-			if pc, _ := s.db.GetCommit(parentHash); pc == nil {
-				pParent, pMsg, _ := s.repo.GetCommitInfo(parentHash)
-				s.db.InsertCommit(parentHash, pParent, "", pMsg)
-			}
-		}
-
-		if err := s.db.InsertCommit(hash, parentHash, agent.ID, message); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to index commit")
-			return
-		}
-		indexed = append(indexed, hash)
 	}
 
 	// Increment rate limit
@@ -99,6 +62,54 @@ func (s *Server) handleGitPush(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"hashes": indexed,
 	})
+}
+
+func (s *Server) importBundle(bundlePath, agentID string) ([]string, error) {
+	hashes, err := s.repo.Unbundle(bundlePath)
+	if err != nil {
+		return nil, err
+	}
+
+	indexed := make([]string, 0, len(hashes))
+	for _, hash := range hashes {
+		if err := s.indexCommitLineage(hash, agentID, true); err != nil {
+			return nil, err
+		}
+		indexed = append(indexed, hash)
+	}
+	return indexed, nil
+}
+
+func (s *Server) indexCommitLineage(hash, agentID string, assignAgent bool) error {
+	existing, err := s.db.GetCommit(hash)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		return nil
+	}
+
+	parentHash, message, err := s.repo.GetCommitInfo(hash)
+	if err != nil {
+		return fmt.Errorf("failed to read commit info: %w", err)
+	}
+	if parentHash != "" && !s.repo.CommitExists(parentHash) {
+		return fmt.Errorf("parent commit not found: %s", parentHash)
+	}
+	if parentHash != "" {
+		if err := s.indexCommitLineage(parentHash, "", false); err != nil {
+			return err
+		}
+	}
+
+	commitAgentID := ""
+	if assignAgent {
+		commitAgentID = agentID
+	}
+	if err := s.db.InsertCommit(hash, parentHash, commitAgentID, message); err != nil {
+		return fmt.Errorf("failed to index commit: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) handleGetCommitReceipt(w http.ResponseWriter, r *http.Request) {
