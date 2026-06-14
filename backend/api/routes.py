@@ -1454,6 +1454,7 @@ def worker_workspace_get(workspace_id):
             "id": str(project.id) if project else None,
             "name": project.name if project else "",
             "project_path": project.project_path if project else None,
+            "github_url": project.github_url if project else None,
         },
         "leaf_hashes": ws.selected_leaf_hashes or [],
     })
@@ -1485,7 +1486,11 @@ def worker_workspace_composed(workspace_id):
             _dispatch_unblocked_queued(ws.project_id)
         except Exception as exc:
             current_app.logger.warning("Dependency base dispatch failed for workspace %s: %s", workspace_id, exc)
-    return jsonify(_workspace_to_json(ws))
+    result = _workspace_to_json(ws)
+    runtime = _workspace_runtime_payload(data)
+    if runtime is not None:
+        result["runtime"] = runtime
+    return jsonify(result)
 
 
 @api_bp.route("/worker/workspaces/<uuid:workspace_id>/fail", methods=["POST"])
@@ -1506,7 +1511,11 @@ def worker_workspace_fail(workspace_id):
     if data.get("composed_commit_hash"):
         ws.composed_commit_hash = data["composed_commit_hash"]
     db.session.commit()
-    return jsonify(_workspace_to_json(ws))
+    result = _workspace_to_json(ws)
+    runtime = _workspace_runtime_payload(data)
+    if runtime is not None:
+        result["runtime"] = runtime
+    return jsonify(result)
 
 
 @api_bp.route("/worker/workspaces/reset-stale", methods=["POST"])
@@ -2962,6 +2971,26 @@ def _ship_run_detail_payload(run: ShipRun) -> dict:
     payload["evidence_summary"] = _ship_run_evidence_summary(run)
     return payload
 
+
+def _ship_run_runtime_payload(data: dict) -> dict | None:
+    runtime = data.get("runtime")
+    if not isinstance(runtime, dict):
+        return None
+    payload = {
+        "project_path": (runtime.get("project_path") or "").strip() or None,
+        "requested_project_path": (runtime.get("requested_project_path") or "").strip() or None,
+        "repo_source": (runtime.get("repo_source") or "").strip() or None,
+        "cache_source": (runtime.get("cache_source") or "").strip() or None,
+        "ephemeral_repo": bool(runtime.get("ephemeral_repo")),
+    }
+    if any(value is not None for value in payload.values()):
+        return payload
+    return None
+
+
+def _workspace_runtime_payload(data: dict) -> dict | None:
+    return _ship_run_runtime_payload(data)
+
 def _wave_next_actions(*, wave_num: int, blockers: list[str], all_done: bool, ship_run, can_compose: bool, can_ship: bool) -> list[str]:
     actions: list[str] = []
     if blockers:
@@ -4061,7 +4090,11 @@ def worker_ship_run_composed(run_id):
                 },
             ),
         )
-    return jsonify(_ship_run_detail_payload(run))
+    result = _ship_run_detail_payload(run)
+    runtime = _ship_run_runtime_payload(data)
+    if runtime is not None:
+        result["runtime"] = runtime
+    return jsonify(result)
 
 
 @api_bp.route("/worker/ship-run/<uuid:run_id>/fail", methods=["POST"])
@@ -4115,6 +4148,9 @@ def worker_ship_run_fail(run_id):
         fix_ticket_id = str(fix.id)
 
     result = _ship_run_detail_payload(run)
+    runtime = _ship_run_runtime_payload(data)
+    if runtime is not None:
+        result["runtime"] = runtime
     if fix_ticket_id:
         result["fix_ticket_id"] = fix_ticket_id
     return jsonify(result)

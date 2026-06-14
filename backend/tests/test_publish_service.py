@@ -85,18 +85,19 @@ def test_publish_project_dry_run_uses_latest_accepted_attempt(app, tmp_path):
     assert result["pushed"] is False
 
 
-def test_publish_project_clones_missing_github_repo_before_preflight(app, tmp_path):
+def test_publish_project_clones_missing_github_repo_into_ephemeral_repo_before_preflight(app, tmp_path):
     missing_repo = tmp_path / "projects" / "demo"
     project_id, _first_attempt_id, second_attempt_id = _create_project_with_attempts(
         app,
         tmp_path,
         project_path=str(missing_repo),
     )
+    ephemeral_repo = tmp_path / "repo"
 
     def fake_run(args, **kwargs):
         git_args = args[1:]
-        if git_args == ["clone", "https://github.com/example/demo", str(missing_repo)]:
-            missing_repo.mkdir(parents=True, exist_ok=True)
+        if git_args == ["clone", "https://github.com/example/demo", str(ephemeral_repo)]:
+            ephemeral_repo.mkdir(parents=True, exist_ok=True)
             return _mk_result(args)
         if git_args == ["rev-parse", "--git-dir"]:
             return _mk_result(args, stdout=".git\n")
@@ -120,16 +121,71 @@ def test_publish_project_clones_missing_github_repo_before_preflight(app, tmp_pa
 
     with app.app_context():
         project = db.session.get(Project, project_id)
-        with patch("backend.api.services.publish_service.subprocess.run", side_effect=fake_run):
-            result = publish_project(project)
+        with patch("backend.api.services.publish_service.tempfile.TemporaryDirectory") as tempdir:
+            tempdir.return_value.__enter__.return_value = str(tmp_path)
+            tempdir.return_value.__exit__.return_value = False
+            with patch("backend.api.services.publish_service.subprocess.run", side_effect=fake_run):
+                result = publish_project(project)
 
     assert result["selected_attempt_id"] == second_attempt_id
-    assert result["project_path"] == str(missing_repo)
-    assert result["commands"][0]["cmd"] == ["git", "clone", "https://github.com/example/demo", str(missing_repo)]
-    assert result["commands"][0]["cwd"] == str(missing_repo.parent)
+    assert result["project_path"] == str(ephemeral_repo)
+    assert result["requested_project_path"] == str(missing_repo)
+    assert result["ephemeral_repo"] is True
+    assert result["repo_source"] == "github_ephemeral_clone"
+    assert result["commands"][0]["cmd"] == ["git", "clone", "https://github.com/example/demo", str(ephemeral_repo)]
+    assert result["commands"][0]["cwd"] == str(tmp_path)
     assert result["commands"][0]["returncode"] == 0
     assert result["fast_forward"] is True
     assert result["pushed"] is False
+
+
+def test_publish_project_clones_blank_project_path_into_ephemeral_repo(app, tmp_path):
+    project_id, _first_attempt_id, _second_attempt_id = _create_project_with_attempts(
+        app,
+        tmp_path,
+        project_path="",
+    )
+    ephemeral_repo = tmp_path / "repo"
+
+    def fake_run(args, **kwargs):
+        git_args = args[1:]
+        if git_args == ["clone", "https://github.com/example/demo", str(ephemeral_repo)]:
+            ephemeral_repo.mkdir(parents=True, exist_ok=True)
+            return _mk_result(args)
+        if git_args == ["rev-parse", "--git-dir"]:
+            return _mk_result(args, stdout=".git\n")
+        if git_args == ["remote", "get-url", "origin"]:
+            return _mk_result(args, stdout="https://github.com/example/demo.git\n")
+        if git_args == ["status", "--porcelain", "--untracked-files=normal"]:
+            return _mk_result(args)
+        if git_args == ["cat-file", "-e", "c" * 40 + "^{commit}"]:
+            return _mk_result(args)
+        if git_args == ["fetch", "origin", "main"]:
+            return _mk_result(args)
+        if git_args == ["rev-parse", "refs/remotes/origin/main"]:
+            return _mk_result(args, stdout="1" * 40 + "\n")
+        if git_args == ["merge-base", "--is-ancestor", "1" * 40, "c" * 40]:
+            return _mk_result(args)
+        if git_args == ["branch", "--show-current"]:
+            return _mk_result(args, stdout="feature\n")
+        if git_args == ["rev-parse", "--verify", "main"]:
+            return _mk_result(args, stdout="2" * 40 + "\n")
+        raise AssertionError(f"Unexpected git command: {git_args}")
+
+    with app.app_context():
+        project = db.session.get(Project, project_id)
+        project.project_path = None
+        db.session.commit()
+        with patch("backend.api.services.publish_service.tempfile.TemporaryDirectory") as tempdir:
+            tempdir.return_value.__enter__.return_value = str(tmp_path)
+            tempdir.return_value.__exit__.return_value = False
+            with patch("backend.api.services.publish_service.subprocess.run", side_effect=fake_run):
+                result = publish_project(project)
+
+    assert result["project_path"] == str(ephemeral_repo)
+    assert result["requested_project_path"] is None
+    assert result["ephemeral_repo"] is True
+    assert result["cache_source"] == "github_url"
 
 
 def test_publish_project_refuses_dirty_repo(app, tmp_path):

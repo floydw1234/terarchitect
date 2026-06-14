@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -129,68 +130,6 @@ def _resolve_branch(project: Project, repo_path: str, commands: list[dict[str, A
     return "main"
 
 
-def _ensure_local_repo(project: Project) -> str:
-    repo_path = os.path.abspath((project.project_path or "").strip())
-    if not repo_path:
-        raise PublishError(
-            "project_path is required for publish",
-            status_code=409,
-            phase="project",
-            hint="Set project.project_path before publishing.",
-        )
-    return repo_path
-
-
-def _clone_missing_github_repo(
-    project: Project,
-    repo_path: str,
-    commands: list[dict[str, Any]],
-) -> str:
-    if os.path.isdir(repo_path):
-        return repo_path
-
-    github_url = _ensure_remote_target(project)
-    parent_path = os.path.dirname(repo_path)
-    if not parent_path:
-        raise PublishError(
-            f"project_path has no parent directory: {repo_path}",
-            status_code=409,
-            phase="project",
-        )
-    if os.path.exists(parent_path) and not os.path.isdir(parent_path):
-        raise PublishError(
-            f"project_path parent is not a directory: {parent_path}",
-            status_code=409,
-            phase="project",
-        )
-    os.makedirs(parent_path, exist_ok=True)
-
-    result = subprocess.run(
-        ["git", "clone", github_url, repo_path],
-        capture_output=True,
-        text=True,
-        timeout=300,
-        env=_env_for_publish_git(),
-    )
-    commands.append(_serialize_result(result, cmd=["git", "clone", github_url, repo_path], cwd=parent_path))
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip() or "git clone failed"
-        raise PublishError(
-            "Failed to clone missing project_path from GitHub",
-            status_code=502,
-            detail=detail[:1000],
-            phase="project",
-        )
-    if not os.path.isdir(repo_path):
-        raise PublishError(
-            "git clone completed but project_path is still unavailable",
-            status_code=502,
-            detail=repo_path,
-            phase="project",
-        )
-    return repo_path
-
-
 def _ensure_remote_target(project: Project) -> str:
     github_url = (project.github_url or "").strip()
     if not github_url:
@@ -201,6 +140,57 @@ def _ensure_remote_target(project: Project) -> str:
             hint="Set project.github_url before publishing.",
         )
     return github_url
+
+
+@contextmanager
+def _prepare_publish_repo(
+    project: Project,
+    commands: list[dict[str, Any]],
+):
+    requested_project_path = os.path.abspath((project.project_path or "").strip()) if (project.project_path or "").strip() else None
+    if requested_project_path and os.path.isdir(requested_project_path):
+        yield {
+            "repo_path": requested_project_path,
+            "requested_project_path": requested_project_path,
+            "ephemeral_repo": False,
+            "repo_source": "project_path",
+            "cache_source": "project_path",
+        }
+        return
+
+    github_url = _ensure_remote_target(project)
+    with tempfile.TemporaryDirectory(prefix="terarchitect-publish-repo-") as tmp_dir:
+        repo_path = os.path.join(tmp_dir, "repo")
+        result = subprocess.run(
+            ["git", "clone", github_url, repo_path],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=_env_for_publish_git(),
+        )
+        commands.append(_serialize_result(result, cmd=["git", "clone", github_url, repo_path], cwd=tmp_dir))
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip() or "git clone failed"
+            raise PublishError(
+                "Failed to clone ephemeral GitHub repo for publish",
+                status_code=502,
+                detail=detail[:1000],
+                phase="project",
+            )
+        if not os.path.isdir(repo_path):
+            raise PublishError(
+                "git clone completed but ephemeral publish repo is unavailable",
+                status_code=502,
+                detail=repo_path,
+                phase="project",
+            )
+        yield {
+            "repo_path": repo_path,
+            "requested_project_path": requested_project_path,
+            "ephemeral_repo": True,
+            "repo_source": "github_ephemeral_clone",
+            "cache_source": "github_url",
+        }
 
 
 def _latest_satisfied_attempt(project_id) -> TicketAttempt | None:
@@ -385,93 +375,95 @@ class GitHubPublisher:
         push: bool,
         force: bool,
     ) -> dict[str, Any]:
-        repo_path = _ensure_local_repo(project)
         remote_url = _ensure_remote_target(project)
         commands: list[dict[str, Any]] = []
-        if not os.path.isdir(repo_path):
-            repo_path = _clone_missing_github_repo(project, repo_path, commands)
+        with _prepare_publish_repo(project, commands) as repo_info:
+            repo_path = repo_info["repo_path"]
+            git_dir = _run_git(commands, repo_path, ["rev-parse", "--git-dir"], check=False)
+            if git_dir.returncode != 0:
+                raise PublishError(
+                    "Publish repo is not a readable git repository",
+                    status_code=409,
+                    phase="project",
+                    detail=(git_dir.stderr or git_dir.stdout or "").strip()[:1000],
+                )
+            remote_url = _verify_origin_matches_project_remote(project, repo_path, commands)
+            _require_clean_repo(repo_path, commands)
+            target_branch = _resolve_branch(project, repo_path, commands, branch)
+            _ensure_commit_materialized(repo_path, selection.commit_hash, commands)
+            _run_git(commands, repo_path, ["fetch", "origin", target_branch], check=False, timeout=120)
 
-        git_dir = _run_git(commands, repo_path, ["rev-parse", "--git-dir"], check=False)
-        if git_dir.returncode != 0:
-            raise PublishError(
-                "project_path is not a readable git repository",
-                status_code=409,
-                phase="project",
-                detail=(git_dir.stderr or git_dir.stdout or "").strip()[:1000],
+            remote_ref = f"refs/remotes/origin/{target_branch}"
+            remote_tip_result = _run_git(commands, repo_path, ["rev-parse", remote_ref], check=False)
+            remote_tip = (remote_tip_result.stdout or "").strip()
+            if remote_tip_result.returncode != 0 or not remote_tip:
+                raise PublishError(
+                    "Remote target branch is not available locally",
+                    status_code=409,
+                    phase="preflight",
+                    detail=f"remote=origin branch={target_branch}",
+                )
+
+            ff_check = _run_git(
+                commands,
+                repo_path,
+                ["merge-base", "--is-ancestor", remote_tip, selection.commit_hash],
+                check=False,
             )
-        remote_url = _verify_origin_matches_project_remote(project, repo_path, commands)
-        _require_clean_repo(repo_path, commands)
-        target_branch = _resolve_branch(project, repo_path, commands, branch)
-        _ensure_commit_materialized(repo_path, selection.commit_hash, commands)
-        _run_git(commands, repo_path, ["fetch", "origin", target_branch], check=False, timeout=120)
+            fast_forward = ff_check.returncode == 0
+            if not fast_forward and not force:
+                raise PublishError(
+                    "Publish would not be a fast-forward update",
+                    status_code=409,
+                    phase="preflight",
+                    detail=f"remote_tip={remote_tip} selected_commit={selection.commit_hash}",
+                    hint="Re-run with --force only after verifying the remote branch should be replaced.",
+                )
 
-        remote_ref = f"refs/remotes/origin/{target_branch}"
-        remote_tip_result = _run_git(commands, repo_path, ["rev-parse", remote_ref], check=False)
-        remote_tip = (remote_tip_result.stdout or "").strip()
-        if remote_tip_result.returncode != 0 or not remote_tip:
-            raise PublishError(
-                "Remote target branch is not available locally",
-                status_code=409,
-                phase="preflight",
-                detail=f"remote=origin branch={target_branch}",
-            )
+            current_branch_result = _run_git(commands, repo_path, ["branch", "--show-current"], check=False)
+            current_branch = (current_branch_result.stdout or "").strip() or None
+            local_tip_result = _run_git(commands, repo_path, ["rev-parse", "--verify", target_branch], check=False)
+            local_tip = (local_tip_result.stdout or "").strip() or None
+            pushed = False
 
-        ff_check = _run_git(
-            commands,
-            repo_path,
-            ["merge-base", "--is-ancestor", remote_tip, selection.commit_hash],
-            check=False,
-        )
-        fast_forward = ff_check.returncode == 0
-        if not fast_forward and not force:
-            raise PublishError(
-                "Publish would not be a fast-forward update",
-                status_code=409,
-                phase="preflight",
-                detail=f"remote_tip={remote_tip} selected_commit={selection.commit_hash}",
-                hint="Re-run with --force only after verifying the remote branch should be replaced.",
-            )
+            if push:
+                _run_git(commands, repo_path, ["checkout", "-B", target_branch, remote_ref], timeout=120)
+                if fast_forward:
+                    _run_git(commands, repo_path, ["merge", "--ff-only", selection.commit_hash], timeout=120)
+                else:
+                    _run_git(commands, repo_path, ["reset", "--hard", selection.commit_hash], timeout=120)
+                push_args = ["push"]
+                if force:
+                    push_args.append(f"--force-with-lease={target_branch}:{remote_tip}")
+                push_args.extend(["origin", f"HEAD:refs/heads/{target_branch}"])
+                _run_git(commands, repo_path, push_args, timeout=120)
+                pushed = True
 
-        current_branch_result = _run_git(commands, repo_path, ["branch", "--show-current"], check=False)
-        current_branch = (current_branch_result.stdout or "").strip() or None
-        local_tip_result = _run_git(commands, repo_path, ["rev-parse", "--verify", target_branch], check=False)
-        local_tip = (local_tip_result.stdout or "").strip() or None
-        pushed = False
-
-        if push:
-            _run_git(commands, repo_path, ["checkout", "-B", target_branch, remote_ref], timeout=120)
-            if fast_forward:
-                _run_git(commands, repo_path, ["merge", "--ff-only", selection.commit_hash], timeout=120)
-            else:
-                _run_git(commands, repo_path, ["reset", "--hard", selection.commit_hash], timeout=120)
-            push_args = ["push"]
-            if force:
-                push_args.append(f"--force-with-lease={target_branch}:{remote_tip}")
-            push_args.extend(["origin", f"HEAD:refs/heads/{target_branch}"])
-            _run_git(commands, repo_path, push_args, timeout=120)
-            pushed = True
-
-        return {
-            "target": self.target,
-            "publish_target": self.target,
-            "remote": "origin",
-            "remote_url": remote_url,
-            "branch": target_branch,
-            "local_branch": target_branch,
-            "current_branch": current_branch,
-            "selected_commit": selection.commit_hash,
-            "selected_attempt_id": str(selection.attempt.id) if selection.attempt else None,
-            "selected_source": selection.source,
-            "accepted_frontier_id": (project.accepted_frontier_id or "").strip() or None,
-            "project_path": repo_path,
-            "remote_tip": remote_tip,
-            "local_tip_before": local_tip,
-            "fast_forward": fast_forward,
-            "force": force,
-            "dry_run": not push,
-            "pushed": pushed,
-            "commands": commands,
-        }
+            return {
+                "target": self.target,
+                "publish_target": self.target,
+                "remote": "origin",
+                "remote_url": remote_url,
+                "branch": target_branch,
+                "local_branch": target_branch,
+                "current_branch": current_branch,
+                "selected_commit": selection.commit_hash,
+                "selected_attempt_id": str(selection.attempt.id) if selection.attempt else None,
+                "selected_source": selection.source,
+                "accepted_frontier_id": (project.accepted_frontier_id or "").strip() or None,
+                "project_path": repo_path,
+                "requested_project_path": repo_info["requested_project_path"],
+                "ephemeral_repo": repo_info["ephemeral_repo"],
+                "repo_source": repo_info["repo_source"],
+                "cache_source": repo_info["cache_source"],
+                "remote_tip": remote_tip,
+                "local_tip_before": local_tip,
+                "fast_forward": fast_forward,
+                "force": force,
+                "dry_run": not push,
+                "pushed": pushed,
+                "commands": commands,
+            }
 
 
 PUBLISHERS: dict[str, Publisher] = {

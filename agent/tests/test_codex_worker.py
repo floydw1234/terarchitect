@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from io import StringIO
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -85,6 +86,17 @@ class TestPromptStack(unittest.TestCase):
         self.assertIn("prefer OS-assigned/free dynamic localhost ports".lower(), prompt.lower())
         self.assertIn("inject BASE_URL/PORT", prompt)
         self.assertIn("unique compose project name", prompt)
+
+    def test_task_plan_path_falls_back_without_project_path(self):
+        from middle_agent.agent import _get_task_plan_path
+
+        ticket_id = "12345678-1234-5678-1234-567812345678"
+        path = _get_task_plan_path(None, ticket_id)
+
+        self.assertEqual(
+            path,
+            os.path.join(tempfile.gettempdir(), "terarchitect-middle-agent", "plan", f"{ticket_id}_task_plan.md"),
+        )
 
 
 

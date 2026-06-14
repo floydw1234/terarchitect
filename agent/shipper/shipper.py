@@ -34,6 +34,7 @@ import subprocess
 import sys
 import tempfile
 from typing import Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -185,6 +186,38 @@ def _ensure_commit(commit_hash: str, project_path: str, tmp_dir: str) -> bool:
         cwd=project_path, capture_output=True, text=True, timeout=60,
     )
     return r2.returncode == 0
+
+
+def _clone_repo(github_url: str, repo_path: str) -> None:
+    parent = os.path.dirname(repo_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    result = _git(["clone", github_url, repo_path], cwd=parent or None, check=False, timeout=300)
+    if result.returncode != 0 or not os.path.isdir(repo_path):
+        detail = (result.stderr or result.stdout or "").strip() or "git clone failed"
+        raise ComposeError(f"Failed to clone ephemeral repo from GitHub: {detail[:1000]}")
+
+
+def _prepare_runtime_repo(project_path: str, github_url: str, tmp_dir: str) -> tuple[str, dict]:
+    requested_project_path = project_path or None
+    if project_path and os.path.isdir(project_path):
+        return project_path, {
+            "requested_project_path": requested_project_path,
+            "repo_source": "project_path",
+            "cache_source": "project_path",
+            "ephemeral_repo": False,
+        }
+    if not github_url:
+        missing = requested_project_path or ""
+        raise ComposeError(f"project_path not found: {missing!r} and github_url is unavailable for ephemeral clone")
+    repo_path = os.path.join(tmp_dir, "repo")
+    _clone_repo(github_url, repo_path)
+    return repo_path, {
+        "requested_project_path": requested_project_path,
+        "repo_source": "github_ephemeral_clone",
+        "cache_source": "github_url",
+        "ephemeral_repo": True,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -384,7 +417,6 @@ def run_once() -> bool:
     slug = None
     github_url = (project.get("github_url") or "").strip()
     if github_url and "github.com" in github_url:
-        from urllib.parse import urlparse
         p = urlparse(github_url.rstrip("/"))
         parts = p.path.strip("/").split("/")
         if len(parts) >= 2:
@@ -413,13 +445,6 @@ def run_once() -> bool:
         })
         return True
 
-    if not project_path or not os.path.isdir(project_path):
-        _api_post(f"/api/worker/ship-run/{run_id}/fail", {
-            "error": f"project_path not found: {project_path!r}",
-            "compose_failed": True,
-        })
-        return True
-
     if not slug:
         _api_post(f"/api/worker/ship-run/{run_id}/fail", {
             "error": "Project has no parseable GitHub URL — cannot open release PR.",
@@ -430,6 +455,21 @@ def run_once() -> bool:
     run_short_id = run_id.replace("-", "")[:8]
 
     with tempfile.TemporaryDirectory() as tmp_dir:
+        try:
+            runtime_repo_path, runtime_repo = _prepare_runtime_repo(project_path, github_url, tmp_dir)
+        except ComposeError as e:
+            _api_post(f"/api/worker/ship-run/{run_id}/fail", {
+                "error": str(e),
+                "compose_failed": True,
+                "runtime": {
+                    "requested_project_path": project_path or None,
+                    "repo_source": "unavailable",
+                    "cache_source": "none",
+                    "ephemeral_repo": False,
+                },
+            })
+            return True
+
         # --- Compose release branch ---
         _post_to_channel(
             wave_ch,
@@ -446,7 +486,7 @@ def run_once() -> bool:
         )
         try:
             branch, base_main_hash = _compose_release_branch(
-                commit_hashes, project_path, wave_num, run_short_id, tmp_dir
+                commit_hashes, runtime_repo_path, wave_num, run_short_id, tmp_dir
             )
         except ComposeError as e:
             print(f"[shipper] Compose conflict: {e}", file=sys.stderr)
@@ -466,6 +506,7 @@ def run_once() -> bool:
             _api_post(f"/api/worker/ship-run/{run_id}/fail", {
                 "error": str(e),
                 "compose_failed": True,
+                "runtime": runtime_repo,
                 "fix_ticket_title": f"[wave-{wave_num}] Resolve merge conflicts in release composition",
                 "fix_ticket_description":
                     f"The shipper encountered conflicts composing wave {wave_num}.\n\nDetails:\n{str(e)[:2000]}",
@@ -473,7 +514,7 @@ def run_once() -> bool:
             return True
 
         # --- Run tests ---
-        test_status, test_output = _run_tests(project_path)
+        test_status, test_output = _run_tests(runtime_repo_path)
         if test_status == "failed":
             _post_to_channel(
                 wave_ch,
@@ -491,6 +532,7 @@ def run_once() -> bool:
             _api_post(f"/api/worker/ship-run/{run_id}/fail", {
                 "error": f"Tests failed after composition:\n{test_output[:2000]}",
                 "compose_failed": True,
+                "runtime": runtime_repo,
                 "fix_ticket_title": f"[wave-{wave_num}] Fix test failures after release composition",
                 "fix_ticket_description":
                     f"Tests failed after composing wave {wave_num}.\n\nOutput:\n{test_output[:2000]}",
@@ -498,31 +540,32 @@ def run_once() -> bool:
             return True
 
         # --- Get composed commit hash and changed files ---
-        head_r = _git(["rev-parse", "HEAD"], cwd=project_path, check=False)
+        head_r = _git(["rev-parse", "HEAD"], cwd=runtime_repo_path, check=False)
         composed_commit_hash = head_r.stdout.strip() if head_r.returncode == 0 else None
 
         default_branch = "main"
-        r_check = subprocess.run(["git", "rev-parse", "origin/main"], cwd=project_path, capture_output=True)
+        r_check = subprocess.run(["git", "rev-parse", "origin/main"], cwd=runtime_repo_path, capture_output=True)
         if r_check.returncode != 0:
             default_branch = "master"
-        changed_files = _get_changed_files(project_path, default_branch)
+        changed_files = _get_changed_files(runtime_repo_path, default_branch)
 
         # --- Push release branch ---
         push_r = _git(
             ["push", "-u", "origin", branch, "--force-with-lease"],
-            cwd=project_path, check=False,
+            cwd=runtime_repo_path, check=False,
         )
         if push_r.returncode != 0:
             print(f"[shipper] Push failed: {push_r.stderr[:300]}", file=sys.stderr)
             _api_post(f"/api/worker/ship-run/{run_id}/fail", {
                 "error": f"Failed to push release branch {branch!r}: {push_r.stderr[:1000]}",
                 "compose_failed": True,
+                "runtime": runtime_repo,
             })
             return True
 
         # --- Open release PR ---
         pr_url, pr_number = _open_release_pr(
-            project_path, slug, branch, wave_num,
+            runtime_repo_path, slug, branch, wave_num,
             commit_hashes, changed_files, test_status, test_output,
         )
 
@@ -554,6 +597,10 @@ def run_once() -> bool:
             "test_status": test_status,
             "test_output": test_output[-4000:] if test_output else "",
             "changed_files": changed_files,
+            "runtime": {
+                **runtime_repo,
+                "project_path": runtime_repo_path,
+            },
         })
         print(
             f"[shipper] Wave {wave_num} composed. branch={branch!r} "

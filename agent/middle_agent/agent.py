@@ -7,6 +7,7 @@ import sys
 import json
 import queue as _queue_mod
 import subprocess
+import tempfile
 import threading
 import uuid
 from datetime import datetime
@@ -141,9 +142,12 @@ def _get_task_plan_path(project_path: Optional[str], ticket_id: Optional[uuid.UU
     """Path to ticket-specific plan file: plan/<ticket_id>_task_plan.md. Raises ValueError if ticket_id is None."""
     if ticket_id is None:
         raise ValueError("ticket_id is required for task plan path")
-    if not project_path:
-        raise ValueError("project_path is required for task plan path")
-    return os.path.join(project_path, "plan", f"{ticket_id}_task_plan.md")
+    if project_path:
+        base_dir = os.path.join(project_path, "plan")
+    else:
+        base_dir = os.path.join(tempfile.gettempdir(), "terarchitect-middle-agent", "plan")
+    os.makedirs(base_dir, exist_ok=True)
+    return os.path.join(base_dir, f"{ticket_id}_task_plan.md")
 
 
 def _worker_lineage_env() -> dict[str, str]:
