@@ -1476,8 +1476,14 @@ const TicketCard: React.FC<TicketCardProps> = ({
   onDelete,
 }) => {
   const [running, setRunning] = useState(false);
-  const [rerunning, setRerunning] = useState(false);
   const [rerunError, setRerunError] = useState<string | null>(null);
+  const [rerunResult, setRerunResult] = useState<string | null>(null);
+  const [competeDialogOpen, setCompeteDialogOpen] = useState(false);
+  const [rerunAttemptCount, setRerunAttemptCount] = useState<number | null>(null);
+
+  const latestAttemptCount = ticket.attempts_count ?? ticket.latest_attempt?.attempt_num ?? null;
+  const ticketChannel = ticketChannelName(ticket.id);
+  const rerunPending = rerunAttemptCount !== null;
 
   const handleRun = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1489,18 +1495,45 @@ const TicketCard: React.FC<TicketCardProps> = ({
     }
   };
 
-  const handleRerun = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setRerunning(true);
+  const startRerun = async (attemptCount: number) => {
+    setRerunAttemptCount(attemptCount);
     setRerunError(null);
+    setRerunResult(null);
     try {
-      const updated = await rerunTicketFromCurrentFrontier(projectId, ticket.id);
+      const updated = await rerunTicketFromCurrentFrontier(
+        projectId,
+        ticket.id,
+        attemptCount > 1 ? { attemptCount } : undefined,
+      );
       onTicketUpdated(updated);
-    } catch (error: any) {
-      setRerunError(error.message);
+      setRerunResult(
+        attemptCount > 1
+          ? `Queued ${attemptCount} competing attempts from current frontier.`
+          : "Queued rerun from current frontier.",
+      );
+      setCompeteDialogOpen(false);
+    } catch (error) {
+      setRerunError(error instanceof Error ? error.message : 'Failed to rerun ticket from frontier');
     } finally {
-      setRerunning(false);
+      setRerunAttemptCount(null);
     }
+  };
+
+  const handleRerun = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    void startRerun(1);
+  };
+
+  const handleOpenCompetingAttempts = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRerunError(null);
+    setRerunResult(null);
+    setCompeteDialogOpen(true);
+  };
+
+  const handleCloseCompetingAttempts = () => {
+    if (rerunPending) return;
+    setCompeteDialogOpen(false);
   };
 
   return (
@@ -1578,6 +1611,14 @@ const TicketCard: React.FC<TicketCardProps> = ({
               sx={{ height: 16, fontSize: '0.6rem' }}
             />
           )}
+          {latestAttemptCount !== null && latestAttemptCount !== undefined && latestAttemptCount > 0 && (
+            <Chip
+              label={`${latestAttemptCount} attempt${latestAttemptCount === 1 ? '' : 's'}`}
+              size="small"
+              variant="outlined"
+              sx={{ height: 16, fontSize: '0.6rem' }}
+            />
+          )}
           {ticket.latest_attempt && (
             <Chip
               label={`${ticket.latest_attempt.status}${ticket.latest_attempt.short_commit_hash ? ' · ' + ticket.latest_attempt.short_commit_hash : ''}`}
@@ -1602,8 +1643,8 @@ const TicketCard: React.FC<TicketCardProps> = ({
               wave {ticket.latest_attempt.wave_num}
             </Typography>
           )}
-          {AGENTHUB_URL && (
-            <Tooltip title={`AgentHub channel: ${ticketChannelName(ticket.id)}`}>
+          {AGENTHUB_URL && ticketChannel && (
+            <Tooltip title={`AgentHub channel: ${ticketChannel}`}>
               <Typography
                 component="a"
                 href={`${AGENTHUB_URL}`}
@@ -1613,7 +1654,7 @@ const TicketCard: React.FC<TicketCardProps> = ({
                 onClick={(e: React.MouseEvent) => e.stopPropagation()}
                 sx={{ color: 'primary.dark', textDecoration: 'none', fontSize: '0.6rem' }}
               >
-                #{ticketChannelName(ticket.id).slice(0, 14)}…
+                #{ticketChannel.slice(0, 14)}…
               </Typography>
             </Tooltip>
           )}
@@ -1623,6 +1664,11 @@ const TicketCard: React.FC<TicketCardProps> = ({
           {ticket.stale_reason && (
             <Typography variant="caption" color="warning.main">
               {ticket.stale_reason}
+            </Typography>
+          )}
+          {rerunResult && (
+            <Typography variant="caption" color="success.main">
+              {rerunResult}
             </Typography>
           )}
           {rerunError && (
@@ -1668,14 +1714,61 @@ const TicketCard: React.FC<TicketCardProps> = ({
           })()}
         </Box>
         {(ticket.stale || ticket.latest_attempt?.stale) && (
-          <Button
-            size="small"
-            color="warning"
-            onClick={handleRerun}
-            disabled={rerunning}
-          >
-            {rerunning ? 'Starting…' : 'Rerun from frontier'}
-          </Button>
+          <>
+            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <Button
+                size="small"
+                color="warning"
+                onClick={handleRerun}
+                disabled={rerunPending}
+              >
+                {rerunAttemptCount === 1 ? 'Starting…' : 'Rerun from frontier'}
+              </Button>
+              <Button
+                size="small"
+                color="warning"
+                variant="outlined"
+                onClick={handleOpenCompetingAttempts}
+                disabled={rerunPending}
+              >
+                Run competing attempts
+              </Button>
+            </Box>
+            <Dialog
+              open={competeDialogOpen}
+              onClose={handleCloseCompetingAttempts}
+              maxWidth="xs"
+              fullWidth
+            >
+              <DialogTitle>Run competing attempts</DialogTitle>
+              <DialogContent>
+                <Typography variant="body2" color="text.secondary" sx={{ pt: 1 }}>
+                  Start 2 or 3 fresh attempts from the current frontier for this ticket.
+                </Typography>
+                {rerunError && (
+                  <Alert severity="error" sx={{ mt: 2 }}>
+                    {rerunError}
+                  </Alert>
+                )}
+              </DialogContent>
+              <DialogActions>
+                <Button onClick={handleCloseCompetingAttempts} disabled={rerunPending}>
+                  Cancel
+                </Button>
+                <Button onClick={() => void startRerun(2)} color="warning" disabled={rerunPending}>
+                  {rerunAttemptCount === 2 ? 'Starting…' : 'Start 2 attempts'}
+                </Button>
+                <Button
+                  onClick={() => void startRerun(3)}
+                  color="warning"
+                  variant="contained"
+                  disabled={rerunPending}
+                >
+                  {rerunAttemptCount === 3 ? 'Starting…' : 'Start 3 attempts'}
+                </Button>
+              </DialogActions>
+            </Dialog>
+          </>
         )}
       </CardActions>
     </Card>

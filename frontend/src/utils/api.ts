@@ -111,6 +111,7 @@ export interface Ticket {
   priority: string;
   status: string;
   failed_count?: number;
+  attempts_count?: number | null;
   depends_on_ticket_ids?: string[];
   is_running?: boolean;
   stale?: boolean | null;
@@ -595,11 +596,24 @@ export async function deleteTicket(projectId: string, ticketId: string) {
   return checkResponse(response);
 }
 
-export async function rerunTicketFromCurrentFrontier(projectId: string, ticketId: string): Promise<Ticket> {
+export interface RerunTicketFromCurrentFrontierOptions {
+  attemptCount?: number;
+  attempt_count?: number;
+}
+
+export async function rerunTicketFromCurrentFrontier(
+  projectId: string,
+  ticketId: string,
+  options?: RerunTicketFromCurrentFrontierOptions,
+): Promise<Ticket> {
+  const attemptCount = options?.attemptCount ?? options?.attempt_count;
+  const body = typeof attemptCount === 'number' && attemptCount > 0
+    ? { attempt_count: attemptCount }
+    : {};
   const response = await fetch(`${API_URL}/api/projects/${projectId}/tickets/${ticketId}/rerun-from-current-frontier`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({}),
+    body: JSON.stringify(body),
   });
   return checkResponse<Ticket>(response);
 }
