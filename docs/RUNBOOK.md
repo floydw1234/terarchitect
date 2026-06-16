@@ -234,6 +234,10 @@ Worker container:
 
 No in-process agent runs in the app; all execution is in containers started by the coordinator.
 
+## Attempt inspection vs. competing attempts
+
+Normal execution already gives you inspectable `TicketAttempt` records through the ticket/project attempt APIs and the attempt detail UI. Explicit competing attempts are a separate operator choice for one ticket: rerun from the current frontier with `attempt_count > 1`, inspect each sibling attempt, then accept one verified winner. See `docs/COMPETING_ATTEMPTS.md` for the request body, limits, lifecycle, and caveats.
+
 ## Troubleshooting checklist
 
 Missing frontier / wrong base selected:

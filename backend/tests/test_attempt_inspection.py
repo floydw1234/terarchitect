@@ -42,6 +42,36 @@ def _make_local_repo(tmp_path: Path) -> tuple[Path, str, str]:
     return repo, base_hash, attempt_hash
 
 
+def _make_competing_attempt_repo(tmp_path: Path) -> tuple[Path, str, str, str]:
+    repo = tmp_path / "competing-attempt-repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.name", "Test User")
+    _git(repo, "config", "user.email", "test@example.com")
+
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "base")
+    base_hash = _git(repo, "rev-parse", "HEAD")
+
+    _git(repo, "checkout", "-b", "attempt-one")
+    (repo / "README.md").write_text("base\nattempt one\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "attempt one")
+    attempt_one_hash = _git(repo, "rev-parse", "HEAD")
+
+    _git(repo, "checkout", base_hash)
+    _git(repo, "checkout", "-b", "attempt-two")
+    src_dir = repo / "src"
+    src_dir.mkdir()
+    (repo / "README.md").write_text("base\nattempt two\n", encoding="utf-8")
+    (src_dir / "alt.py").write_text("print('attempt two')\n", encoding="utf-8")
+    _git(repo, "add", "README.md", "src/alt.py")
+    _git(repo, "commit", "-m", "attempt two")
+    attempt_two_hash = _git(repo, "rev-parse", "HEAD")
+    return repo, base_hash, attempt_one_hash, attempt_two_hash
+
+
 def _create_local_project(client, repo: Path) -> dict:
     resp = client.post(
         "/api/projects",
@@ -206,6 +236,68 @@ def test_project_attempt_files_and_diff_return_git_inspection(client, tmp_path):
     truncated_data = truncated.get_json()
     assert truncated_data["truncated"] is True
     assert truncated_data["bytes"] == 32
+
+
+def test_project_attempt_list_keeps_same_ticket_sibling_attempts_visible(client, tmp_path):
+    from models.db import Project, Ticket, TicketAttempt, db
+
+    repo, base_hash, attempt_one_hash, attempt_two_hash = _make_competing_attempt_repo(tmp_path)
+    project = _create_local_project(client, repo)
+    pid = project["id"]
+
+    with client.application.app_context():
+        proj = db.session.get(Project, pid)
+        proj.shipped_frontier = base_hash
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Competing attempt ticket",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        first = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash=attempt_one_hash,
+            base_hash=base_hash,
+            wave_num=0,
+            attempt_num=1,
+            status="proposed",
+            summary="first sibling",
+        )
+        second = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash=attempt_two_hash,
+            base_hash=base_hash,
+            wave_num=0,
+            attempt_num=2,
+            status="proposed",
+            summary="second sibling",
+        )
+        db.session.add_all([first, second])
+        db.session.commit()
+        ticket_id = str(ticket.id)
+        attempt_ids = [str(second.id), str(first.id)]
+
+    ticket_attempts = client.get(f"/api/projects/{pid}/tickets/{ticket_id}/attempts")
+    assert ticket_attempts.status_code == 200
+    ticket_data = ticket_attempts.get_json()
+    assert [row["id"] for row in ticket_data] == attempt_ids
+    assert [row["base_hash"] for row in ticket_data] == [base_hash, base_hash]
+
+    project_attempts = client.get(
+        f"/api/projects/{pid}/attempts",
+        query_string={"ticket_id": ticket_id},
+    )
+    assert project_attempts.status_code == 200
+    project_data = project_attempts.get_json()
+    assert [row["attempt_id"] for row in project_data] == attempt_ids
+    assert [row["base_hash"] for row in project_data] == [base_hash, base_hash]
+    assert [row["ticket_id"] for row in project_data] == [ticket_id, ticket_id]
+    assert all(row["commit_available"] is True for row in project_data)
+    assert all(row["changed_files"] for row in project_data)
 
 
 def test_project_attempt_inspection_handles_unavailable_commit(client, tmp_path):

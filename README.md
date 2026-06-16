@@ -102,6 +102,8 @@ High-level flow: **GitHub URL/ref import → AgentHub DAG project → accepted f
 
 The UI is an operator surface, not the primary execution surface. Agents and coordinators do the work; humans review accepted attempts and ship at the promotion boundary. The primary operator workflow is promotion-candidate review followed by `ShipRun` compose/ship. Legacy wave-keyed HTTP routes remain backend compatibility surfaces only.
 
+Attempt inspection is already first-class: normal worker completions create `TicketAttempt` rows that can be listed, inspected, diffed, accepted, or rejected. Explicit competing attempts are a narrower opt-in rerun flow for one ticket from the same current frontier; they still materialize as ordinary `TicketAttempt`s rather than a separate review object. See `docs/COMPETING_ATTEMPTS.md`.
+
 ---
 
 ## Quick start (local dev)
@@ -197,6 +199,8 @@ Normal execution is **GitHub-first** and **DAG-first**:
 7. Terarchitect records the attempt as a `TicketAttempt`.
 8. Human acceptance advances the project's **accepted frontier**, which becomes the source of truth for later tickets and shipping.
 9. The Ship Room flow is: review a stable promotion candidate built from accepted attempts whose dependency closure is valid, create a `ShipRun` from that candidate set, then advance the shipped frontier when shipped.
+
+If one ticket needs deliberate alternatives, explicit competing attempts rerun that same ticket from the current accepted frontier and create multiple sibling `TicketAttempt`s for later comparison. That does not change the promotion model: operators still inspect the attempts, accept one winner, then continue through Ship Room. See `docs/COMPETING_ATTEMPTS.md`.
 
 Local project paths still exist only as a **legacy import/debug path**:
 

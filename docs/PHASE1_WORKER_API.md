@@ -32,6 +32,8 @@ Set `TERARCHITECT_WORKER_API_KEY` in the backend’s `.env` (or process env) whe
 
 **Job response (200):** `job_id`, `ticket_id`, `project_id`, `kind` (`ticket`), `repo_url`, `git_mode`, `base_leaf_id`, `base_hash`, and `shipped_frontier`. `shipped_frontier` is the canonical already-shipped DAG frontier. `base_leaf_id` is the DAG parent selected from the accepted frontier for this ticket. `base_hash` is the AgentHub commit the worker should materialize/build on when present.
 
+Inspectable attempts and explicit competing attempts are separate ideas. Normal worker completion still writes one ordinary `TicketAttempt` record. When the explicit competing-attempt rerun path is used, the worker may see multiple jobs for the same ticket from the same current frontier, but each completion still lands as a normal `TicketAttempt`, not a new attempt type.
+
 Phase 1 vocabulary freeze:
 
 - accepted `TicketAttempt`: the accepted implementation record for one ticket
