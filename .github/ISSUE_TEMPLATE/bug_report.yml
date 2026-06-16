@@ -1,0 +1,64 @@
+name: Bug report
+description: Report reproducible Terarchitect behavior that looks broken
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please redact tokens, repository secrets, private source snippets, and customer data from logs.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start services with ...
+        2. Import project ...
+        3. Queue ticket ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Frontend/UI
+        - Backend/API
+        - Coordinator
+        - Agent worker
+        - AgentHub
+        - Ship Room
+        - CLI
+        - Docs/quickstart
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: Docker Compose, OS, branch/commit, browser, worker mode, relevant env settings with secrets redacted
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or screenshots
+      description: Redact secrets before pasting.

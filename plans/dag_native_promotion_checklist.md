@@ -79,7 +79,7 @@ Legacy wave string inventory to replace in later phases:
 Verification:
 
 ```bash
-cd /home/william/Documents/codingProj/terarchitect
+cd <terarchitect-repo>
 rg -n "\bwave\b|Ship Room|ShipRun|base_hash|shipped_frontier" README.md docs backend/api/routes.py cli/commands/ship.py coordinator/coordinator.py
 python3 -m py_compile backend/models/db.py backend/api/routes.py
 ```
@@ -112,7 +112,7 @@ Tasks:
 Verification:
 
 ```bash
-cd /home/william/Documents/codingProj/terarchitect
+cd <terarchitect-repo>
 pytest backend/tests/test_agenthub.py backend/tests/test_integration.py -q
 python3 -m py_compile backend/api/services/job_service.py backend/api/services/attempt_service.py backend/api/routes.py coordinator/coordinator.py
 ```
@@ -152,7 +152,7 @@ Tasks:
 Verification:
 
 ```bash
-cd /home/william/Documents/codingProj/terarchitect
+cd <terarchitect-repo>
 pytest backend/tests/test_unit.py backend/tests/test_agenthub.py backend/tests/test_e2e.py -q
 python3 -m py_compile backend/models/db.py backend/api/services/merge_service.py backend/api/routes.py
 ```
@@ -192,7 +192,7 @@ Tasks:
 Verification:
 
 ```bash
-cd /home/william/Documents/codingProj/terarchitect
+cd <terarchitect-repo>
 pytest backend/tests/test_e2e.py backend/tests/test_integration.py -q
 python3 -m py_compile backend/api/routes.py backend/api/services/merge_service.py coordinator/coordinator.py agent/shipper.py
 ```
@@ -227,7 +227,7 @@ Tasks:
 Verification:
 
 ```bash
-cd /home/william/Documents/codingProj/terarchitect
+cd <terarchitect-repo>
 python3 -m py_compile cli/commands/ship.py cli/commands/ticket.py cli/commands/attempt.py cli/commands/workspace.py
 cd frontend && npm test -- --runInBand ShipRoom
 ```
@@ -257,7 +257,7 @@ Tasks:
 Verification:
 
 ```bash
-cd /home/william/Documents/codingProj/terarchitect
+cd <terarchitect-repo>
 rg -n "\bwave\b|compute_waves|analyze_wave_dependencies|ship_wave_|/ship/waves" backend cli docs README.md plans
 pytest backend/tests/test_unit.py backend/tests/test_agenthub.py backend/tests/test_integration.py backend/tests/test_e2e.py -q
 ```

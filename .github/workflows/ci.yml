@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  python-smoke:
+    name: Python smoke/unit checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            agent/requirements.txt
+            coordinator/requirements.txt
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt -r agent/requirements.txt -r coordinator/requirements.txt
+      - name: Run focused Python checks
+        env:
+          PYTHONPATH: backend:agent
+        run: |
+          python -m pytest -q \
+            tests/test_cli_output.py \
+            tests/test_cli_api_errors.py \
+            backend/tests/test_unit.py \
+            agent/tests/test_director_request_payload.py \
+            coordinator/tests/test_fetch_max_concurrent.py
+
+  agenthub-go:
+    name: AgentHub Go tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agenthub
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agenthub/go.mod
+          cache-dependency-path: agenthub/go.sum
+      - name: Run Go tests
+        run: go test ./...
+
+  frontend:
+    name: Frontend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Run React tests
+        run: npm test -- --watchAll=false --runInBand --silent

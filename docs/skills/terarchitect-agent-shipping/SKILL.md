@@ -21,7 +21,7 @@ This is an operations skill, not an implementation-plan skill. The deliverable i
 Keep a mirrored copy of this skill in the Terarchitect repository at:
 
 ```text
-/home/william/Documents/codingProj/terarchitect/docs/skills/terarchitect-agent-shipping/SKILL.md
+<terarchitect-repo>/docs/skills/terarchitect-agent-shipping/SKILL.md
 ```
 
 When updating this skill, update the repo mirror in the same turn. Treat the user-local skill as the runtime copy Hermes loads, and the repo mirror as the project-owned source William can inspect, diff, and version.
@@ -31,7 +31,7 @@ When updating this skill, update the repo mirror in the same turn. Treat the use
 William's normal Terarchitect checkout is:
 
 ```bash
-cd /home/william/Documents/codingProj/terarchitect
+cd <terarchitect-repo>
 ```
 
 Default service topology:
@@ -67,7 +67,7 @@ Secrets must stay in the ignored repo `.env`, not in tracked docs or examples. R
 - `github_agent_token` or `GITHUB_TOKEN`/`GH_TOKEN`/`GITHUB_AGENT_TOKEN` with repo scope for GitHub import/push/Ship Room actions
 - `AGENTHUB_API_KEY` for backend/coordinator service calls to AgentHub
 - `OPENROUTER_API_KEY` for the default Director setup, unless `DIRECTOR_API_KEY` is set directly
-- Worker credentials only when the selected worker mode needs them; Codex normally uses William's mounted `/home/william/.codex` in the coordinator/agent flow
+- Worker credentials only when the selected worker mode needs them; Codex normally uses a mounted Codex config directory in the coordinator/agent flow
 
 ## Starting and health-checking the system
 

@@ -10,6 +10,8 @@ Terarchitect is an agent-first, CLI-first SDLC orchestrator: model your system a
 
 If you’ve ever wanted architecture-aware agent swarms with a clear human shipping boundary, this is it.
 
+> **Alpha status:** Terarchitect is working, dogfooded alpha software. The core loop — GitHub import, AgentHub DAG attempts, human acceptance, Ship Room composition, and GitHub export — is real, but APIs, deployment defaults, and UX details may change quickly.
+
 <p align="center">
   <img src="pictures/project_view.png" alt="Terarchitect UI (project view)" width="960" />
 </p>
@@ -236,9 +238,38 @@ No mixing with your project’s Dockerfile. The agent image is built once and re
 - **Promotion-boundary review**: accept attempts first, then inspect one `ShipRun` created from a stable candidate set before the final ship/merge step.
 - **Cancelable runs**: worker-facing cancel flag + polling endpoint so you can stop a run cleanly.
 - **Per-project execution mode**: run jobs in Docker (clone in container) or Local (run at a configured host path).
-- **Env-only config**: each service (backend, coordinator) uses a simple `.env` that fits its needs; no shared settings store. See `example.env`.
+- **Env-only config**: each service (backend, coordinator) uses a simple `.env` that fits its needs; no shared settings store. See `.env.example`.
 - **Vector search + safety**: pgvector-backed embeddings with an ORM-safe approach (avoids accidentally selecting vector columns).
 - **Operator-friendly debugging**: scripts for requeueing tickets, dumping logs/memory, and smoke-testing OpenCode server/CLI.
+
+---
+
+## Alpha limitations
+
+Terarchitect is ready for builders who are comfortable operating alpha infrastructure, not for unreviewed production automation.
+
+- Public APIs and UI flows may change between alpha releases.
+- GitHub App integration and hardened secret management are still future work; today, deployments are environment/token driven.
+- Multi-tenant SaaS isolation is intentionally out of scope for now. Use single-tenant deployments when working with private/customer repositories.
+- Worker containers may require Docker privileges depending on execution mode.
+- Some recovery paths are operator/runbook driven instead of fully polished UI flows.
+
+---
+
+## Managed single-tenant installs
+
+The preferred commercial path is **open source + managed single-tenant installs**, not a shared multi-tenant SaaS on day one.
+
+For teams that want Terarchitect without operating the stack themselves, the practical deployment model is:
+
+- one isolated Terarchitect app per customer/team
+- one Postgres database
+- one AgentHub instance or namespace
+- one worker/coordinator runtime
+- repo-scoped GitHub credentials
+- customer-specific backups, monitoring, and support
+
+This keeps source code, AgentHub DAG state, logs, and credentials isolated while the project matures.
 
 ---
 

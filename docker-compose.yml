@@ -76,7 +76,8 @@ services:
         condition: service_started
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /home/william/.codex:/root/.codex
+      # Optional Codex CLI auth/config for WORKER_MODE=codex. Override CODEX_CONFIG_DIR in .env.
+      - ${CODEX_CONFIG_DIR:-${HOME}/.codex}:/root/.codex:ro
       - coordinator-state:/data/coordinator
     restart: unless-stopped
 

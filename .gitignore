@@ -32,10 +32,17 @@ env/
 
 # Environment variables
 .env
+.env.*
+!.env.example
 .env.local
+**/testenv
 
-# Coordinator debug (contains env/tokens)
+# Local assistant/editor settings
+.claude/settings.local.json
+
+# Coordinator debug/output (can contain env/tokens or private ticket context)
 coordinator/run_command.txt
+coordinator/error.txt
 
 # Database
 data/
@@ -43,9 +50,10 @@ data/
 *.sqlite
 *.sqlite3
 
-# IDE
+# IDE / local agent settings
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 

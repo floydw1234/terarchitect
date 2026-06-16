@@ -91,11 +91,11 @@ class TestClaudeCodeWorkerDispatch(unittest.TestCase):
             mock_cc.assert_not_called()
 
     def test_claude_code_passes_anthropic_api_key(self):
-        agent = self._make_claude_agent(api_key="sk-ant-real")
+        agent = self._make_claude_agent(api_key="test-anthropic-key")
         with patch("subprocess.Popen", return_value=_mock_success_popen()) as mock_popen:
             agent._call_claude_code_worker("do the thing", "sess1", project_path=None, resume=False)
             call_env = mock_popen.call_args.kwargs.get("env") or mock_popen.call_args[1].get("env", {})
-            self.assertEqual(call_env.get("ANTHROPIC_API_KEY"), "sk-ant-real")
+            self.assertEqual(call_env.get("ANTHROPIC_API_KEY"), "test-anthropic-key")
 
     def test_claude_code_dummy_key_not_passed(self):
         """When WORKER_API_KEY is 'dummy' (the default placeholder), don't overwrite ANTHROPIC_API_KEY."""
