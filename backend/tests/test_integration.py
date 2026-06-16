@@ -150,6 +150,75 @@ def test_ticket_complete_creates_no_pr_row(client, project):
     assert not hasattr(models_module, "PR"), "PR model should not exist — removed in Phase 11"
 
 
+def test_ticket_complete_allows_parallel_attempt_completion_after_first_attempt(client, project):
+    from models.db import AgentJob, Ticket, TicketAttempt, db
+
+    frontier_id = project["accepted_frontier_id"]
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=project["id"],
+            column_id="in_progress",
+            title="Parallel completion ticket",
+            intent_status="active",
+            base_leaf_id=frontier_id,
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        db.session.add_all([
+            AgentJob(
+                ticket_id=ticket.id,
+                project_id=project["id"],
+                kind="ticket",
+                status="running",
+            ),
+            AgentJob(
+                ticket_id=ticket.id,
+                project_id=project["id"],
+                kind="ticket",
+                status="pending",
+            ),
+        ])
+        db.session.commit()
+        ticket_id = str(ticket.id)
+
+    first = client.post(
+        f"/api/projects/{project['id']}/tickets/{ticket_id}/complete",
+        json={
+            "commit_hash": "c" * 40,
+            "base_hash": frontier_id,
+            "agent_id": "parallel-agent-1",
+            "summary": "first competing attempt",
+        },
+    )
+    assert first.status_code == 200
+    assert first.get_json()["attempt_created"] is True
+
+    second = client.post(
+        f"/api/projects/{project['id']}/tickets/{ticket_id}/complete",
+        json={
+            "commit_hash": "d" * 40,
+            "base_hash": frontier_id,
+            "agent_id": "parallel-agent-2",
+            "summary": "second competing attempt",
+        },
+    )
+    assert second.status_code == 200
+    assert second.get_json()["attempt_created"] is True
+
+    with client.application.app_context():
+        attempts = (
+            TicketAttempt.query
+            .filter_by(ticket_id=ticket_id)
+            .order_by(TicketAttempt.attempt_num.asc())
+            .all()
+        )
+        assert [attempt.attempt_num for attempt in attempts] == [1, 2]
+        assert [attempt.agent_id for attempt in attempts] == [
+            "parallel-agent-1",
+            "parallel-agent-2",
+        ]
+
+
 # ---------------------------------------------------------------------------
 # 12.2b  Ship wave detail lists accepted attempts
 # ---------------------------------------------------------------------------
@@ -1145,6 +1214,91 @@ def test_worker_job_claim_fails_invalid_pending_job_without_blocking_queue(clien
         assert invalid_ticket.failed_count == 1
         assert claimed_job is not None
         assert claimed_job.status == "running"
+
+
+def test_worker_job_claim_allows_parallel_same_ticket_jobs_with_graph_overlap(client, project):
+    from models.db import AgentJob, Ticket, db
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=project["id"],
+            column_id="in_progress",
+            title="Parallel same-ticket claim",
+            intent_status="active",
+            base_leaf_id=project["accepted_frontier_id"],
+            associated_node_ids=["node-1"],
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        db.session.add_all([
+            AgentJob(
+                ticket_id=ticket.id,
+                project_id=project["id"],
+                kind="ticket",
+                status="pending",
+            ),
+            AgentJob(
+                ticket_id=ticket.id,
+                project_id=project["id"],
+                kind="ticket",
+                status="pending",
+            ),
+        ])
+        db.session.commit()
+        ticket_id = str(ticket.id)
+
+    first = client.post("/api/worker/jobs/start", json={"project_id": project["id"]})
+    assert first.status_code == 200
+    first_payload = first.get_json()
+    assert first_payload["ticket_id"] == ticket_id
+    assert first_payload["parallel_attempt_count"] == 2
+
+    second = client.post("/api/worker/jobs/start", json={"project_id": project["id"]})
+    assert second.status_code == 200
+    second_payload = second.get_json()
+    assert second_payload["ticket_id"] == ticket_id
+    assert second_payload["parallel_attempt_count"] == 2
+    assert second_payload["job_id"] != first_payload["job_id"]
+
+
+def test_worker_job_fail_keeps_ticket_in_progress_when_parallel_attempts_remain(client, project):
+    from models.db import AgentJob, Ticket, db
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=project["id"],
+            column_id="in_progress",
+            title="Parallel fail handling",
+            intent_status="active",
+            base_leaf_id=project["accepted_frontier_id"],
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        running_job = AgentJob(
+            ticket_id=ticket.id,
+            project_id=project["id"],
+            kind="ticket",
+            status="running",
+        )
+        pending_job = AgentJob(
+            ticket_id=ticket.id,
+            project_id=project["id"],
+            kind="ticket",
+            status="pending",
+        )
+        db.session.add_all([running_job, pending_job])
+        db.session.commit()
+        running_job_id = str(running_job.id)
+        ticket_id = str(ticket.id)
+
+    resp = client.post(f"/api/worker/jobs/{running_job_id}/fail", json={})
+    assert resp.status_code == 200
+
+    with client.application.app_context():
+        stored_ticket = db.session.get(Ticket, ticket_id)
+        assert stored_ticket is not None
+        assert stored_ticket.column_id == "in_progress"
+        assert stored_ticket.failed_count == 1
 
 
 def test_multi_dependency_ticket_stays_queued_in_mvp(client, project):

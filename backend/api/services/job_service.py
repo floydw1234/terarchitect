@@ -34,8 +34,10 @@ def claim_swarm_job(project_id):
       - Otherwise: skip if any of the ticket's node_ids or edge_ids are occupied.
     """
     occ_nodes, occ_edges = occupied_nodes_edges(project_id)
+    running_jobs = AgentJob.query.filter_by(project_id=project_id, status="running").all()
+    running_ticket_ids = {job.ticket_id for job in running_jobs}
     has_running = bool(occ_nodes or occ_edges or
-                       AgentJob.query.filter_by(project_id=project_id, status="running").first())
+                       running_jobs)
 
     pending_jobs = (
         AgentJob.query.filter_by(project_id=project_id, status="pending")
@@ -50,9 +52,12 @@ def claim_swarm_job(project_id):
 
         ticket_nodes = set(ticket.associated_node_ids or [])
         ticket_edges = set(ticket.associated_edge_ids or [])
+        same_ticket_running = ticket.id in running_ticket_ids
 
+        if same_ticket_running:
+            pass
         # Unconstrained ticket — always runnable
-        if not ticket_nodes and not ticket_edges:
+        elif not ticket_nodes and not ticket_edges:
             pass  # fall through to claim
 
         # Wildcard ticket: must wait for all others to finish first
@@ -247,6 +252,21 @@ def job_to_response(job):
             ticket.depends_on_ticket_ids or [],
         )
 
+    active_jobs = (
+        AgentJob.query
+        .filter(
+            AgentJob.ticket_id == job.ticket_id,
+            AgentJob.status.in_(["pending", "running"]),
+        )
+        .order_by(AgentJob.created_at.asc(), AgentJob.id.asc())
+        .all()
+    )
+    parallel_attempt_count = len(active_jobs)
+    parallel_attempt_index = next(
+        (index for index, sibling in enumerate(active_jobs, start=1) if sibling.id == job.id),
+        1,
+    )
+
     out = {
         "job_id": str(job.id),
         "ticket_id": str(job.ticket_id),
@@ -264,6 +284,8 @@ def job_to_response(job):
         "base_selection": base_context,
         "source_type": source_metadata["source_type"],
         "source_metadata": source_metadata,
+        "parallel_attempt_count": parallel_attempt_count,
+        "parallel_attempt_index": parallel_attempt_index,
     }
     project_path = (project.project_path or "").strip() if project else ""
     if project_path:

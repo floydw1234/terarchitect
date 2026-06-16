@@ -22,6 +22,8 @@ from .channel_service import (
 from .job_service import mvp_dependency_base_context as _mvp_dependency_base_context
 
 
+MAX_PARALLEL_ATTEMPTS = 5
+
 def _has_accepted_attempt(ticket_id) -> bool:
     """True if the ticket has an accepted (or better) attempt."""
     return TicketAttempt.query.filter_by(ticket_id=ticket_id).filter(
@@ -293,23 +295,23 @@ def ticket_to_json(t: Ticket) -> dict:
 # Enqueueing and dispatch
 # ---------------------------------------------------------------------------
 
-def enqueue_ticket_job(ticket_id):
-    """Enqueue a ticket job to agent_jobs. Skip if project missing URL/path or already pending/running."""
+def _prepare_ticket_enqueue(ticket_id) -> tuple[Ticket | None, Project | None]:
+    """Return enqueueable ticket/project pair, or (None, None) when dispatch should be skipped."""
     ticket = db.session.get(Ticket, ticket_id)
     if not ticket:
-        return
+        return None, None
     project = db.session.get(Project, ticket.project_id)
     if not project:
-        return
+        return None, None
     execution_mode = getattr(project, "execution_mode", None) or "docker"
     if execution_mode == "local":
         if not (project.project_path or "").strip():
             current_app.logger.info("Skipping enqueue: ticket %s project has no project path", ticket_id)
-            return
+            return None, None
     else:
         if not (project.github_url or "").strip():
             current_app.logger.info("Skipping enqueue: ticket %s project has no GitHub URL", ticket_id)
-            return
+            return None, None
 
     # Dependency check: a dep is satisfied when it has an accepted attempt
     dep_ids = ticket.depends_on_ticket_ids or []
@@ -320,14 +322,14 @@ def enqueue_ticket_job(ticket_id):
                 "Skipping enqueue: ticket %s blocked by dep %s (%s) — no accepted attempt yet",
                 ticket_id, dep_id, dep.title if dep else "?",
             )
-            return
+            return None, None
 
     is_swarm = (getattr(project, "git_mode", None) or "swarm") == "swarm"
     if is_swarm:
         _, error = ensure_ticket_base_leaf_id(ticket, project, persist=True)
         if error:
             current_app.logger.info("Skipping enqueue: ticket %s invalid base leaf: %s", ticket_id, error)
-            return
+            return None, None
     if is_swarm:
         base_context = _mvp_dependency_base_context(ticket, project)
         if base_context.get("blocked") and not base_context.get("base_hash"):
@@ -340,7 +342,31 @@ def enqueue_ticket_job(ticket_id):
                 ticket.column_id = "queued"
                 ticket.intent_status = "ready"
                 db.session.commit()
-            return
+            return None, None
+
+    return ticket, project
+
+
+def _create_ticket_jobs(ticket: Ticket, *, count: int) -> list[AgentJob]:
+    jobs = [
+        AgentJob(
+            ticket_id=ticket.id,
+            project_id=ticket.project_id,
+            kind="ticket",
+            status="pending",
+        )
+        for _ in range(count)
+    ]
+    db.session.add_all(jobs)
+    db.session.commit()
+    return jobs
+
+
+def enqueue_ticket_job(ticket_id):
+    """Enqueue one ticket job. Skip if project missing URL/path or already pending/running."""
+    ticket, _ = _prepare_ticket_enqueue(ticket_id)
+    if not ticket:
+        return None
 
     existing = AgentJob.query.filter(
         AgentJob.ticket_id == ticket_id,
@@ -348,15 +374,9 @@ def enqueue_ticket_job(ticket_id):
     ).with_for_update(skip_locked=True).first()
     if existing:
         current_app.logger.info("Skipping enqueue: ticket %s already has job %s", ticket_id, existing.id)
-        return
+        return None
 
-    db.session.add(AgentJob(
-        ticket_id=ticket_id,
-        project_id=ticket.project_id,
-        kind="ticket",
-        status="pending",
-    ))
-    db.session.commit()
+    jobs = _create_ticket_jobs(ticket, count=1)
     current_app.logger.info("Enqueued ticket job for ticket %s", ticket_id)
     _post_event(
         _ticket_channel(str(ticket_id)),
@@ -366,6 +386,39 @@ def enqueue_ticket_job(ticket_id):
             {"ticket_id": str(ticket_id), "project_id": str(ticket.project_id)},
         ),
     )
+    return jobs[0]
+
+
+def enqueue_parallel_ticket_jobs(ticket_id, attempt_count: int) -> list[AgentJob]:
+    """Enqueue an explicit competing-attempt batch for one ticket.
+
+    AgentJob currently has no metadata/json column, so these rows are only
+    distinguishable by creation order and job ID. The worker claim payload
+    exposes a best-effort slot index derived from the active sibling jobs.
+    """
+    ticket, _ = _prepare_ticket_enqueue(ticket_id)
+    if not ticket:
+        return []
+
+    jobs = _create_ticket_jobs(ticket, count=attempt_count)
+    current_app.logger.info(
+        "Enqueued %s competing ticket jobs for ticket %s",
+        attempt_count,
+        ticket_id,
+    )
+    _post_event(
+        _ticket_channel(str(ticket_id)),
+        _event_content(
+            "ticket_assigned",
+            f"Ticket assigned: {ticket.title[:200]}",
+            {
+                "ticket_id": str(ticket_id),
+                "project_id": str(ticket.project_id),
+                "attempt_count": attempt_count,
+            },
+        ),
+    )
+    return jobs
 
 
 def dispatch_unblocked_queued(project_id):

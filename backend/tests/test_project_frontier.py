@@ -945,12 +945,154 @@ def test_ticket_rerun_from_current_frontier_updates_base_and_enqueues_job(client
     assert payload["column_id"] == "in_progress"
     assert payload["intent_status"] == "active"
     assert payload["stale"] is False
+    assert payload["attempt_count"] == 1
+    assert payload["job_count"] == 1
+    assert len(payload["job_ids"]) == 1
 
     with client.application.app_context():
         stored_ticket = db.session.get(Ticket, ticket_id)
         jobs = AgentJob.query.filter_by(ticket_id=ticket_id).all()
         assert stored_ticket.base_leaf_id == "leaf_01HZX3CURRENTFRONTIER01234567"
         assert stored_ticket.column_id == "in_progress"
+        assert len(jobs) == 1
+        assert jobs[0].status == "pending"
+
+
+def test_ticket_rerun_from_current_frontier_enqueues_explicit_parallel_jobs(client):
+    from models.db import AgentJob, Ticket, db
+
+    create_project = client.post(
+        "/api/projects",
+        json={
+            "name": "ticket-rerun-parallel-frontier",
+            "git_mode": "swarm",
+            "github_url": "https://github.com/example/repo",
+            "accepted_frontier_id": "leaf_01HZX3PARALLELFRONTIER123456",
+            "is_existing_repo": True,
+        },
+    )
+    assert create_project.status_code == 201
+    project_id = create_project.get_json()["id"]
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=project_id,
+            column_id="done",
+            title="Needs parallel rerun",
+            intent_status="active",
+            base_leaf_id="leaf_01HZX3OLDTICKETBASE0123456789",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+
+    response = client.post(
+        f"/api/projects/{project_id}/tickets/{ticket_id}/rerun-from-current-frontier",
+        json={"attempt_count": 3},
+    )
+
+    assert response.status_code == 202
+    payload = response.get_json()
+    assert payload["base_leaf_id"] == "leaf_01HZX3PARALLELFRONTIER123456"
+    assert payload["attempt_count"] == 3
+    assert payload["job_count"] == 3
+    assert len(payload["job_ids"]) == 3
+    assert "competing attempts" in payload["message"]
+
+    with client.application.app_context():
+        jobs = AgentJob.query.filter_by(ticket_id=ticket_id).order_by(AgentJob.created_at.asc()).all()
+        assert len(jobs) == 3
+        assert all(job.status == "pending" for job in jobs)
+
+
+def test_ticket_rerun_from_current_frontier_validates_attempt_count(client):
+    from api.services.ticket_service import MAX_PARALLEL_ATTEMPTS
+    from models.db import Ticket, db
+
+    create_project = client.post(
+        "/api/projects",
+        json={
+            "name": "ticket-rerun-invalid-attempt-count",
+            "git_mode": "swarm",
+            "github_url": "https://github.com/example/repo",
+            "accepted_frontier_id": "leaf_01HZX3INVALIDCOUNT123456789",
+            "is_existing_repo": True,
+        },
+    )
+    assert create_project.status_code == 201
+    project_id = create_project.get_json()["id"]
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=project_id,
+            column_id="done",
+            title="Bad attempt count",
+            intent_status="active",
+            base_leaf_id="leaf_01HZX3OLDTICKETBASE0123456789",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+
+    too_small = client.post(
+        f"/api/projects/{project_id}/tickets/{ticket_id}/rerun-from-current-frontier",
+        json={"attempt_count": 0},
+    )
+    assert too_small.status_code == 400
+    assert too_small.get_json()["error"] == "attempt_count must be at least 1"
+
+    too_large = client.post(
+        f"/api/projects/{project_id}/tickets/{ticket_id}/rerun-from-current-frontier",
+        json={"attempt_count": MAX_PARALLEL_ATTEMPTS + 1},
+    )
+    assert too_large.status_code == 400
+    assert too_large.get_json()["error"] == (
+        f"attempt_count must be at most {MAX_PARALLEL_ATTEMPTS}"
+    )
+
+    not_integer = client.post(
+        f"/api/projects/{project_id}/tickets/{ticket_id}/rerun-from-current-frontier",
+        json={"attempt_count": 1.5},
+    )
+    assert not_integer.status_code == 400
+    assert not_integer.get_json()["error"] == "attempt_count must be an integer"
+
+
+def test_enqueue_ticket_job_duplicate_guard_still_skips_existing_pending_job(client):
+    from api.services.ticket_service import enqueue_ticket_job
+    from models.db import AgentJob, Ticket, db
+
+    create_project = client.post(
+        "/api/projects",
+        json={
+            "name": "duplicate-guard-project",
+            "git_mode": "swarm",
+            "github_url": "https://github.com/example/repo",
+            "accepted_frontier_id": "leaf_01HZX3DUPLICATEGUARD1234567",
+            "is_existing_repo": True,
+        },
+    )
+    assert create_project.status_code == 201
+    project_id = create_project.get_json()["id"]
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=project_id,
+            column_id="in_progress",
+            title="Duplicate guard ticket",
+            intent_status="active",
+            base_leaf_id="leaf_01HZX3DUPLICATEGUARD1234567",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        ticket_id = ticket.id
+
+        first_job = enqueue_ticket_job(ticket_id)
+        second_job = enqueue_ticket_job(ticket_id)
+
+        jobs = AgentJob.query.filter_by(ticket_id=ticket_id).all()
+        assert first_job is not None
+        assert second_job is None
         assert len(jobs) == 1
         assert jobs[0].status == "pending"
 

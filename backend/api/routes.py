@@ -87,6 +87,8 @@ from .services.ticket_service import (
     dispatch_unblocked_queued as _dispatch_unblocked_queued,
     ensure_ticket_base_leaf_id as _ensure_ticket_base_leaf_id,
     enqueue_ticket_job as _enqueue_ticket_job,
+    enqueue_parallel_ticket_jobs as _enqueue_parallel_ticket_jobs,
+    MAX_PARALLEL_ATTEMPTS as _MAX_PARALLEL_ATTEMPTS,
     resolve_ticket_base_leaf_id as _resolve_ticket_base_leaf_id,
     ticket_to_json as _ticket_to_json,
     validate_ticket_base_leaf as _validate_ticket_base_leaf,
@@ -160,6 +162,26 @@ def _get_project_or_404(project_id):
     return project
 
 
+def _parse_attempt_count(raw_value) -> tuple[int | None, str | None]:
+    if raw_value is None:
+        return 1, None
+    if isinstance(raw_value, bool):
+        return None, "attempt_count must be an integer"
+    if isinstance(raw_value, float):
+        if not raw_value.is_integer():
+            return None, "attempt_count must be an integer"
+        raw_value = int(raw_value)
+    try:
+        attempt_count = int(raw_value)
+    except (TypeError, ValueError):
+        return None, "attempt_count must be an integer"
+    if attempt_count < 1:
+        return None, "attempt_count must be at least 1"
+    if attempt_count > _MAX_PARALLEL_ATTEMPTS:
+        return None, f"attempt_count must be at most {_MAX_PARALLEL_ATTEMPTS}"
+    return attempt_count, None
+
+
 def _fail_job_with_ticket_recovery(job, *, reset_column_id: str = "queued") -> None:
     """Apply the worker-failure side effects consistently across endpoints."""
     job.status = "failed"
@@ -168,7 +190,12 @@ def _fail_job_with_ticket_recovery(job, *, reset_column_id: str = "queued") -> N
     ticket = Ticket.query.filter_by(id=job.ticket_id).first()
     if not ticket:
         return
-    if ticket.column_id == "in_progress":
+    has_other_active_jobs = AgentJob.query.filter(
+        AgentJob.ticket_id == job.ticket_id,
+        AgentJob.id != job.id,
+        AgentJob.status.in_(["pending", "running"]),
+    ).first() is not None
+    if ticket.column_id == "in_progress" and not has_other_active_jobs:
         ticket.column_id = reset_column_id
     ticket.failed_count = (ticket.failed_count or 0) + 1
 
@@ -2010,6 +2037,17 @@ def ticket_complete(project_id, ticket_id):
             .first()
         )
 
+    has_active_jobs = AgentJob.query.filter(
+        AgentJob.ticket_id == ticket.id,
+        AgentJob.status.in_(["pending", "running"]),
+    ).first() is not None
+    allow_parallel_completion = (
+        is_swarm
+        and ticket.column_id == "done"
+        and ticket.status == "completed"
+        and has_active_jobs
+    )
+
     if ticket.column_id != "in_progress":
         if (
             is_swarm
@@ -2023,11 +2061,13 @@ def ticket_complete(project_id, ticket_id):
                 "attempt_id": str(matching_attempt.id),
                 "attempt_created": False,
             })
-        return jsonify({"error": "Ticket is not in_progress; cannot mark complete"}), 409
+        if not allow_parallel_completion:
+            return jsonify({"error": "Ticket is not in_progress; cannot mark complete"}), 409
 
-    ticket.status = "completed"
-    ticket.column_id = "done"
-    ticket.intent_status = "active"
+    if ticket.column_id == "in_progress":
+        ticket.status = "completed"
+        ticket.column_id = "done"
+        ticket.intent_status = "active"
 
     attempt = None
     attempt_created = False
@@ -2315,17 +2355,24 @@ def ticket_rerun_from_current_frontier(project_id, ticket_id):
     """Explicitly update a ticket to the current accepted frontier and enqueue it again."""
     project = _get_project_or_404(project_id)
     ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
+    data = request.json or {}
+    attempt_count, attempt_count_error = _parse_attempt_count(data.get("attempt_count"))
+    if attempt_count_error:
+        return jsonify({"error": attempt_count_error}), 400
 
     current_frontier = _get_project_frontier_id(project)
     if not current_frontier:
         return jsonify({"error": "Cannot rerun from current frontier: project.accepted_frontier_id is not set."}), 409
 
-    existing = AgentJob.query.filter(
+    active_jobs = AgentJob.query.filter(
         AgentJob.ticket_id == ticket_id,
         AgentJob.status.in_(["pending", "running"]),
-    ).first()
-    if existing:
-        return jsonify({"error": "Ticket already has a pending or running job."}), 409
+    ).all()
+    if active_jobs:
+        return jsonify({
+            "error": "Ticket already has pending or running jobs; wait for them to finish or cancel them before rerunning.",
+            "active_job_count": len(active_jobs),
+        }), 409
 
     ticket.base_leaf_id = current_frontier
     valid, error = _validate_ticket_base_leaf(project, ticket.base_leaf_id)
@@ -2336,11 +2383,23 @@ def ticket_rerun_from_current_frontier(project_id, ticket_id):
     ticket.column_id = "in_progress"
     ticket.intent_status = "active"
     db.session.commit()
-    _enqueue_ticket_job(ticket.id)
 
+    if attempt_count == 1:
+        jobs = [_enqueue_ticket_job(ticket.id)]
+    else:
+        jobs = _enqueue_parallel_ticket_jobs(ticket.id, attempt_count)
+
+    enqueued_jobs = [job for job in jobs if job is not None]
     refreshed = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
     payload = _ticket_to_json(refreshed)
-    payload["message"] = "Ticket rerun enqueued from current frontier."
+    payload["attempt_count"] = attempt_count
+    payload["job_count"] = len(enqueued_jobs)
+    payload["job_ids"] = [str(job.id) for job in enqueued_jobs]
+    payload["message"] = (
+        "Ticket rerun enqueued from current frontier."
+        if attempt_count == 1
+        else f"Ticket rerun enqueued from current frontier with {attempt_count} competing attempts."
+    )
     return jsonify(payload), 202
 
 
