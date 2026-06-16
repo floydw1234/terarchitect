@@ -14,6 +14,7 @@ AGENT_DOCKER_MODE: "dind" (default) — run --privileged with an isolated docker
 import json
 import os
 import platform
+import re
 import shlex
 import subprocess
 import sys
@@ -364,7 +365,7 @@ def post_failure_log(
     job_id = str(job.get("job_id", ""))
     if not project_id or not ticket_id:
         return
-    summary = f"Execution failed ({reason})"
+    summary = f"Execution failed{_job_attempt_suffix(job)} ({reason})"
     if exit_code is not None:
         summary += f" (exit {exit_code})"
     session_id = f"coordinator-{job_id}"
@@ -388,6 +389,89 @@ def post_failure_log(
             print(f"[coordinator] could not post failure log: {r.status_code} {r.text[:200]}", file=sys.stderr)
     except Exception as e:
         print(f"[coordinator] post failure log error: {e}", file=sys.stderr)
+
+
+
+def _job_attempt_metadata(job: dict) -> Dict[str, str]:
+    """Extract optional competing-attempt metadata from a job payload."""
+    sources = [job]
+    for key in (
+        "attempt",
+        "parallel_attempt",
+        "attempt_metadata",
+        "parallel_attempt_metadata",
+        "metadata",
+        "job_metadata",
+    ):
+        value = job.get(key)
+        if isinstance(value, dict):
+            sources.append(value)
+
+    aliases = {
+        "attempt_slot": ("attempt_slot", "parallel_attempt_slot", "slot"),
+        "attempt_index": ("attempt_index", "parallel_attempt_index", "index"),
+        "attempt_count": ("attempt_count", "parallel_attempt_count", "count"),
+    }
+    metadata: Dict[str, str] = {}
+    for field, names in aliases.items():
+        for source in sources:
+            for name in names:
+                value = source.get(name)
+                if value is None:
+                    continue
+                text_value = str(value).strip()
+                if text_value:
+                    metadata[field] = text_value
+                    break
+            if field in metadata:
+                break
+    return metadata
+
+
+def _job_attempt_suffix(job: dict) -> str:
+    metadata = _job_attempt_metadata(job)
+    if not metadata:
+        return ""
+    parts = []
+    if metadata.get("attempt_slot"):
+        parts.append(f"slot={metadata['attempt_slot']}")
+    if metadata.get("attempt_index"):
+        parts.append(f"index={metadata['attempt_index']}")
+    if metadata.get("attempt_count"):
+        parts.append(f"count={metadata['attempt_count']}")
+    return f" [{' '.join(parts)}]"
+
+
+def _slugify_name_part(value: str, *, default: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", (value or "").strip().lower()).strip("-")
+    return (slug or default)[:24]
+
+
+def _job_attempt_slug(job: dict) -> str:
+    metadata = _job_attempt_metadata(job)
+    if not metadata:
+        return ""
+    parts = []
+    if metadata.get("attempt_slot"):
+        parts.append(f"slot-{_slugify_name_part(metadata['attempt_slot'], default='slot')}")
+    if metadata.get("attempt_index"):
+        parts.append(f"idx-{_slugify_name_part(metadata['attempt_index'], default='idx')}")
+    if metadata.get("attempt_count"):
+        parts.append(f"of-{_slugify_name_part(metadata['attempt_count'], default='count')}")
+    return "-".join(parts)
+
+
+def _job_runtime_name(job: dict) -> str:
+    parts = [
+        "terarchitect",
+        "job",
+        _slugify_name_part(str(job.get("job_id", "")), default="job"),
+        _slugify_name_part(str(job.get("ticket_id", "")), default="ticket"),
+    ]
+    attempt_slug = _job_attempt_slug(job)
+    if attempt_slug:
+        parts.append(attempt_slug)
+    return "-".join(parts)[:120].rstrip("-")
 
 
 def job_to_env(job: dict, for_docker: bool = False) -> dict:
@@ -416,6 +500,8 @@ def job_to_env(job: dict, for_docker: bool = False) -> dict:
     root_hash = job.get("agenthub_root_hash") or job.get("base_leaf_id") or job.get("base_hash")
     if root_hash:
         env["AGENTHUB_ROOT_HASH"] = str(root_hash)
+    for field, value in _job_attempt_metadata(job).items():
+        env[field.upper()] = value
     # Explicit workspace paths are only for local debug/import paths, not DAG-backed swarm jobs.
     workspace_path = (job.get("workspace_path") or "").strip()
     if workspace_path:
@@ -460,10 +546,19 @@ _SECRET_ENV_KEYS = frozenset({
     "AGENTHUB_API_KEY", "AGENTHUB_API_KEY_PATH",
 })
 
-_RUN_COMMAND_FILE = Path("/tmp") / "terarchitect_run_command.txt"
+_RUN_COMMAND_LATEST_FILE = Path("/tmp") / "terarchitect_run_command.txt"
 
 
-def _write_run_command(job_id: str, mode: str, *, docker_args: Optional[List[str]] = None, local_cmd: Optional[List[str]] = None, local_env: Optional[Dict[str, str]] = None, cwd: Optional[str] = None) -> None:
+def _run_command_file(job_id: str, job: Optional[dict] = None) -> Path:
+    base = f"terarchitect_run_command_{_slugify_name_part(job_id, default='job')}"
+    if job:
+        attempt_slug = _job_attempt_slug(job)
+        if attempt_slug:
+            base += f"_{attempt_slug}"
+    return Path("/tmp") / f"{base}.txt"
+
+
+def _write_run_command(job_id: str, mode: str, *, job: Optional[dict] = None, docker_args: Optional[List[str]] = None, local_cmd: Optional[List[str]] = None, local_env: Optional[Dict[str, str]] = None, cwd: Optional[str] = None) -> None:
     """Write the exact command (and env for local) to coordinator/run_command.txt for debugging/repro."""
     lines = [
         f"# Coordinator run command (job_id={job_id}, mode={mode})",
@@ -501,8 +596,11 @@ def _write_run_command(job_id: str, mode: str, *, docker_args: Optional[List[str
     else:
         return
     try:
-        _RUN_COMMAND_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        print(f"[coordinator] wrote run command to {_RUN_COMMAND_FILE}", flush=True)
+        contents = "\n".join(lines) + "\n"
+        target = _run_command_file(job_id, job)
+        target.write_text(contents, encoding="utf-8")
+        _RUN_COMMAND_LATEST_FILE.write_text(contents, encoding="utf-8")
+        print(f"[coordinator] wrote run command to {target}", flush=True)
     except Exception as e:
         print(f"[coordinator] could not write run command file: {e}", file=sys.stderr, flush=True)
 
@@ -564,6 +662,7 @@ def _docker_run_args(image: str, job: dict) -> tuple:
         args.append("--privileged")
     elif _env("AGENT_MOUNT_DOCKER_SOCKET", "1") != "0":
         args.extend(["-v", "/var/run/docker.sock:/var/run/docker.sock"])
+    args.extend(["--name", _job_runtime_name(job)])
     network = _env("DOCKER_NETWORK")
     if network:
         args.extend(["--network", network])
@@ -588,7 +687,7 @@ def _run_agent_direct(job: dict, docker_error: str, base_url: str, job_id: str =
     full_env["PYTHONPATH"] = _runtime_pythonpath(full_env.get("PYTHONPATH"))
     cmd = [sys.executable, "-m", "agent.agent_runner", "ticket"]
     if job_id:
-        _write_run_command(job_id, "local", local_cmd=cmd, local_env=full_env, cwd=str(repo_root))
+        _write_run_command(job_id, "local", job=job, local_cmd=cmd, local_env=full_env, cwd=str(repo_root))
     timeout_sec_raw = _env("WORKER_TIMEOUT_SEC", "")
     timeout_sec: Optional[float] = float(timeout_sec_raw) if timeout_sec_raw else None
     try:
@@ -625,6 +724,7 @@ def _print_docker_error(combined: str, max_chars: int = 4000) -> None:
 def _run_job(base_url: str, job_id: str, job: dict, default_image: str, project_images: Dict[str, str]) -> None:
     """Run job: if execution_mode=local run agent on host only; else try docker, then fallback to host on failure."""
     project_id = str(job.get("project_id", ""))
+    attempt_suffix = _job_attempt_suffix(job)
     if job.get("execution_mode") == "local":
         # Local: run agent on host only (AGENT_WORKSPACE set in job_to_env)
         try:
@@ -633,12 +733,12 @@ def _run_job(base_url: str, job_id: str, job: dict, default_image: str, project_
             message = f"Local swarm preflight failed: {exc}"
             post_failure_log(base_url, job, message, reason="agenthub_preflight")
             mark_fail(base_url, job_id)
-            print(f"[coordinator] job {job_id} failed preflight: {exc}", file=sys.stderr, flush=True)
+            print(f"[coordinator] job {job_id}{attempt_suffix} failed preflight: {exc}", file=sys.stderr, flush=True)
             return
         code = _run_agent_direct(job, "", base_url, job_id=job_id)
         if code == 0:
             mark_complete(base_url, job_id)
-            print(f"[coordinator] job {job_id} completed (local)")
+            print(f"[coordinator] job {job_id}{attempt_suffix} completed (local)")
         else:
             post_failure_log(
                 base_url, job,
@@ -646,11 +746,11 @@ def _run_job(base_url: str, job_id: str, job: dict, default_image: str, project_
                 exit_code=code, reason="local",
             )
             mark_fail(base_url, job_id)
-            print(f"[coordinator] job {job_id} failed (local exit {code})")
+            print(f"[coordinator] job {job_id}{attempt_suffix} failed (local exit {code})")
         return
     image = project_images.get(project_id) or default_image
     args, secret_env_path = _docker_run_args(image, job)
-    _write_run_command(job_id, "docker", docker_args=args)
+    _write_run_command(job_id, "docker", job=job, docker_args=args)
     try:
         result = subprocess.run(args, capture_output=True, text=True, timeout=None)
         out = (result.stdout or "").strip()
@@ -659,10 +759,10 @@ def _run_job(base_url: str, job_id: str, job: dict, default_image: str, project_
         if result.returncode == 0:
             _save_project_image(project_id, image)
             mark_complete(base_url, job_id)
-            print(f"[coordinator] job {job_id} completed (docker)")
+            print(f"[coordinator] job {job_id}{attempt_suffix} completed (docker)")
             return
         # Docker run failed; post failure to ticket so user sees stacktrace in UI, then mark job failed
-        print(f"[coordinator] job {job_id} docker failed (exit {result.returncode})", flush=True)
+        print(f"[coordinator] job {job_id}{attempt_suffix} docker failed (exit {result.returncode})", flush=True)
         _print_docker_error(combined)
         post_failure_log(base_url, job, combined, exit_code=result.returncode, reason="docker")
         mark_fail(base_url, job_id)
@@ -673,10 +773,10 @@ def _run_job(base_url: str, job_id: str, job: dict, default_image: str, project_
             reason="docker_timeout",
         )
         mark_fail(base_url, job_id)
-        print(f"[coordinator] job {job_id} failed (docker timeout)", file=sys.stderr, flush=True)
+        print(f"[coordinator] job {job_id}{attempt_suffix} failed (docker timeout)", file=sys.stderr, flush=True)
     except Exception as e:
         err_msg = str(e)
-        print(f"[coordinator] job {job_id} docker error: {e}", file=sys.stderr, flush=True)
+        print(f"[coordinator] job {job_id}{attempt_suffix} docker error: {e}", file=sys.stderr, flush=True)
         _print_docker_error(err_msg)
         post_failure_log(base_url, job, f"Coordinator error starting or running container:\n{err_msg}", reason="coordinator_error")
         mark_fail(base_url, job_id)
@@ -784,7 +884,11 @@ def main() -> None:
             if job is None:
                 break
             job_id = job.get("job_id", "")
-            print(f"[coordinator] claimed job {job_id} (ticket={job.get('ticket_id')}, kind={job.get('kind')})", flush=True)
+            print(
+                f"[coordinator] claimed job {job_id}{_job_attempt_suffix(job)} "
+                f"(ticket={job.get('ticket_id')}, kind={job.get('kind')})",
+                flush=True,
+            )
             project_images = _load_project_images()
             t = threading.Thread(
                 target=_run_job,

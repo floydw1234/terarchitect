@@ -23,6 +23,31 @@ def occupied_nodes_edges(project_id) -> tuple:
             occupied_edges.add(e)
     return occupied_nodes, occupied_edges
 
+def occupied_nodes_edges_for_other_tickets(project_id, ticket_id) -> tuple[set, set, int]:
+    """Return occupied nodes/edges from running jobs excluding the given ticket.
+
+    Explicit competing attempts for the same ticket should not block each other,
+    but conflicts from other tickets must still be respected.
+    """
+    running_jobs = (
+        AgentJob.query
+        .filter_by(project_id=project_id, status="running")
+        .filter(AgentJob.ticket_id != ticket_id)
+        .all()
+    )
+    occupied_nodes: set = set()
+    occupied_edges: set = set()
+    for rj in running_jobs:
+        ticket = db.session.get(Ticket, rj.ticket_id)
+        if not ticket:
+            continue
+        for n in (ticket.associated_node_ids or []):
+            occupied_nodes.add(n)
+        for e in (ticket.associated_edge_ids or []):
+            occupied_edges.add(e)
+    return occupied_nodes, occupied_edges, len(running_jobs)
+
+
 
 def claim_swarm_job(project_id):
     """Claim the first pending swarm job whose ticket's nodes/edges don't conflict
@@ -32,13 +57,11 @@ def claim_swarm_job(project_id):
       - A ticket with no associated nodes/edges is always dispatchable (no constraint).
       - A ticket with ["*"] (wildcard) may only run when nothing else is running.
       - Otherwise: skip if any of the ticket's node_ids or edge_ids are occupied.
-    """
-    occ_nodes, occ_edges = occupied_nodes_edges(project_id)
-    running_jobs = AgentJob.query.filter_by(project_id=project_id, status="running").all()
-    running_ticket_ids = {job.ticket_id for job in running_jobs}
-    has_running = bool(occ_nodes or occ_edges or
-                       running_jobs)
 
+    Same-ticket competing attempts are allowed to run together when they were
+    explicitly enqueued, so claim checks ignore occupancy from already-running
+    jobs on that same ticket.
+    """
     pending_jobs = (
         AgentJob.query.filter_by(project_id=project_id, status="pending")
         .order_by(AgentJob.created_at.asc())
@@ -52,17 +75,19 @@ def claim_swarm_job(project_id):
 
         ticket_nodes = set(ticket.associated_node_ids or [])
         ticket_edges = set(ticket.associated_edge_ids or [])
-        same_ticket_running = ticket.id in running_ticket_ids
+        occ_nodes, occ_edges, other_running_jobs = occupied_nodes_edges_for_other_tickets(
+            project_id,
+            job.ticket_id,
+        )
+        has_other_running = other_running_jobs > 0
 
-        if same_ticket_running:
-            pass
         # Unconstrained ticket — always runnable
-        elif not ticket_nodes and not ticket_edges:
+        if not ticket_nodes and not ticket_edges:
             pass  # fall through to claim
 
         # Wildcard ticket: must wait for all others to finish first
         elif "*" in ticket_nodes:
-            if has_running:
+            if has_other_running:
                 continue
 
         # Normal ticket: skip if any overlap with currently occupied nodes/edges
@@ -205,6 +230,35 @@ def _attempt_hashes(attempts: list[TicketAttempt]) -> list[str]:
     return [attempt.agenthub_commit_hash for attempt in attempts if attempt.agenthub_commit_hash]
 
 
+
+def _optional_attempt_metadata(job) -> dict:
+    """Pass through optional competing-attempt metadata when present on the job."""
+    sources = [job]
+    for attr in ("attempt", "parallel_attempt", "attempt_metadata", "parallel_attempt_metadata"):
+        value = getattr(job, attr, None)
+        if isinstance(value, dict):
+            sources.append(value)
+
+    aliases = {
+        "attempt_slot": ("attempt_slot", "parallel_attempt_slot", "slot"),
+        "attempt_index": ("attempt_index", "parallel_attempt_index", "index"),
+        "attempt_count": ("attempt_count", "parallel_attempt_count", "count"),
+    }
+    out = {}
+    for field, names in aliases.items():
+        for source in sources:
+            for name in names:
+                value = getattr(source, name, None) if source is job else source.get(name)
+                if value is None:
+                    continue
+                text_value = str(value).strip()
+                if text_value:
+                    out[field] = text_value
+                    break
+            if field in out:
+                break
+    return out
+
 def job_to_response(job):
     """Build JSON payload for a claimed job. Includes the explicit AgentHub base leaf."""
     project = db.session.get(Project, job.project_id)
@@ -290,4 +344,5 @@ def job_to_response(job):
     project_path = (project.project_path or "").strip() if project else ""
     if project_path:
         out["project_path"] = project_path
+    out.update(_optional_attempt_metadata(job))
     return out

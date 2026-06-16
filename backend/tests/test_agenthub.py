@@ -549,6 +549,126 @@ def test_job_to_response_uses_ticket_base_leaf_for_swarm_jobs(app, tmp_path):
     assert payload["project_path"] == str(repo)
 
 
+def test_claim_swarm_job_allows_same_ticket_competing_attempts(app):
+    from api.services.job_service import claim_swarm_job
+    from models.db import AgentJob, Project, Ticket, db
+
+    with app.app_context():
+        project = Project(
+            name="same-ticket-claims",
+            git_mode="swarm",
+            github_url="https://github.com/example/repo",
+            accepted_frontier_id="leaf_01HZX3SAME0123456789ABCDE",
+        )
+        db.session.add(project)
+        db.session.flush()
+        ticket = Ticket(
+            project_id=project.id,
+            column_id="in_progress",
+            title="Competing attempt ticket",
+            intent_status="active",
+            associated_node_ids=["node-a"],
+            base_leaf_id="leaf_01HZX3SAME0123456789ABCDE",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        running = AgentJob(ticket_id=ticket.id, project_id=project.id, kind="ticket", status="running")
+        pending = AgentJob(ticket_id=ticket.id, project_id=project.id, kind="ticket", status="pending")
+        db.session.add_all([running, pending])
+        db.session.commit()
+
+        claimed = claim_swarm_job(project.id)
+
+        assert claimed is not None
+        assert str(claimed.id) == str(pending.id)
+
+
+def test_claim_swarm_job_still_skips_conflicting_other_tickets(app):
+    from api.services.job_service import claim_swarm_job
+    from models.db import AgentJob, Project, Ticket, db
+
+    with app.app_context():
+        project = Project(
+            name="cross-ticket-conflicts",
+            git_mode="swarm",
+            github_url="https://github.com/example/repo",
+            accepted_frontier_id="leaf_01HZX3OTHER0123456789ABCD",
+        )
+        db.session.add(project)
+        db.session.flush()
+        running_ticket = Ticket(
+            project_id=project.id,
+            column_id="in_progress",
+            title="Running",
+            intent_status="active",
+            associated_node_ids=["node-a"],
+            base_leaf_id="leaf_01HZX3OTHER0123456789ABCD",
+        )
+        conflict_ticket = Ticket(
+            project_id=project.id,
+            column_id="queued",
+            title="Blocked",
+            intent_status="ready",
+            associated_node_ids=["node-a"],
+            base_leaf_id="leaf_01HZX3OTHER0123456789ABCD",
+        )
+        clear_ticket = Ticket(
+            project_id=project.id,
+            column_id="queued",
+            title="Runnable",
+            intent_status="ready",
+            associated_node_ids=["node-b"],
+            base_leaf_id="leaf_01HZX3OTHER0123456789ABCD",
+        )
+        db.session.add_all([running_ticket, conflict_ticket, clear_ticket])
+        db.session.flush()
+        running = AgentJob(ticket_id=running_ticket.id, project_id=project.id, kind="ticket", status="running")
+        blocked = AgentJob(ticket_id=conflict_ticket.id, project_id=project.id, kind="ticket", status="pending")
+        runnable = AgentJob(ticket_id=clear_ticket.id, project_id=project.id, kind="ticket", status="pending")
+        db.session.add_all([running, blocked, runnable])
+        db.session.commit()
+
+        claimed = claim_swarm_job(project.id)
+
+        assert claimed is not None
+        assert str(claimed.id) == str(runnable.id)
+
+
+def test_job_to_response_includes_optional_attempt_metadata(app):
+    from api.services.job_service import job_to_response
+    from models.db import AgentJob, Project, Ticket, db
+
+    with app.app_context():
+        project = Project(
+            name="job-metadata-project",
+            execution_mode="docker",
+            git_mode="swarm",
+            github_url="https://github.com/example/repo",
+            accepted_frontier_id="leaf_01HZX3META0123456789ABCDE",
+        )
+        db.session.add(project)
+        db.session.flush()
+        ticket = Ticket(
+            project_id=project.id,
+            column_id="queued",
+            title="Job metadata ticket",
+            intent_status="ready",
+            base_leaf_id="leaf_01HZX3META0123456789ABCDE",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        job = AgentJob(ticket_id=ticket.id, project_id=project.id, kind="ticket", status="pending")
+        job.attempt_metadata = {"slot": "blue", "index": 2, "count": 4}
+        db.session.add(job)
+        db.session.commit()
+
+        payload = job_to_response(job)
+
+    assert payload["attempt_slot"] == "blue"
+    assert payload["attempt_index"] == "2"
+    assert payload["attempt_count"] == "4"
+
+
 def test_prepare_local_job_refuses_shipped_frontier_fallback():
     from agenthub_preflight import AgenthubPreflightError, prepare_local_job
 

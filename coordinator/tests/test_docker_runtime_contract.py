@@ -14,9 +14,10 @@ class TestDockerRuntimeContract(unittest.TestCase):
     def test_runtime_pythonpath_includes_repo_and_agent_roots(self):
         pythonpath = _runtime_pythonpath("/tmp/custom")
         parts = pythonpath.split(os.pathsep)
+        repo_root = os.path.dirname(_COORDINATOR_PARENT)
         self.assertIn("/tmp/custom", parts)
-        self.assertTrue(any(part.endswith("/terarchitect") for part in parts))
-        self.assertTrue(any(part.endswith("/terarchitect/agent") for part in parts))
+        self.assertIn(repo_root, parts)
+        self.assertIn(os.path.join(repo_root, "agent"), parts)
 
     def test_job_to_env_rewrites_host_urls_and_forwards_swarm_env(self):
         job = {
@@ -52,6 +53,24 @@ class TestDockerRuntimeContract(unittest.TestCase):
         self.assertEqual(env["CODEX_EXTRA_FLAGS"], "--max-turns,50")
         self.assertEqual(env["CODEX_SANDBOX"], "workspace-write")
 
+    def test_job_to_env_forwards_optional_attempt_metadata(self):
+        env = job_to_env(
+            {
+                "ticket_id": "ticket-1",
+                "project_id": "project-1",
+                "job_id": "job-1",
+                "kind": "ticket",
+                "repo_url": "https://github.com/example/repo",
+                "execution_mode": "docker",
+                "metadata": {"attempt_slot": "blue", "attempt_index": 2, "attempt_count": 4},
+            },
+            for_docker=False,
+        )
+
+        self.assertEqual(env["ATTEMPT_SLOT"], "blue")
+        self.assertEqual(env["ATTEMPT_INDEX"], "2")
+        self.assertEqual(env["ATTEMPT_COUNT"], "4")
+
     def test_docker_run_args_use_env_file_for_secrets_and_attach_compose_network(self):
         job = {
             "ticket_id": "ticket-1",
@@ -61,6 +80,7 @@ class TestDockerRuntimeContract(unittest.TestCase):
             "repo_url": "https://github.com/example/repo",
             "execution_mode": "docker",
             "base_leaf_id": "leaf_123",
+            "attempt_metadata": {"slot": "blue", "index": 2, "count": 4},
         }
         env_overrides = {
             "TERARCHITECT_API_URL": "http://backend:5010",
@@ -78,6 +98,7 @@ class TestDockerRuntimeContract(unittest.TestCase):
                 self.assertIn("--network", args)
                 self.assertIn("terarchitect_default", args)
                 self.assertIn("--privileged", args)
+                self.assertIn("--name", args)
                 self.assertIn("--env-file", args)
                 self.assertEqual(args[-1], "terarchitect-agent")
 
@@ -86,6 +107,10 @@ class TestDockerRuntimeContract(unittest.TestCase):
                 self.assertNotIn("WORKER_API_KEY=worker-secret", joined_args)
                 self.assertNotIn("OPENROUTER_API_KEY=openrouter-secret", joined_args)
                 self.assertIn("-e AGENTHUB_URL=http://agenthub:8080", joined_args)
+                self.assertIn("-e ATTEMPT_SLOT=blue", joined_args)
+                self.assertIn("-e ATTEMPT_INDEX=2", joined_args)
+                self.assertIn("-e ATTEMPT_COUNT=4", joined_args)
+                self.assertIn("slot-blue", args[args.index("--name") + 1])
                 self.assertIsNotNone(secret_env_path)
 
                 with open(secret_env_path, encoding="utf-8") as handle:
