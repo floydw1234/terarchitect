@@ -28,7 +28,7 @@ Canonical lifecycle:
 6. The worker uses `REPO_URL`, `AGENTHUB_URL`, and `BASE_LEAF_ID`/`BASE_HASH` to materialize the requested base leaf into the workspace.
 7. The worker runs Director + worker backend, then publishes a child leaf/attempt to AgentHub.
 8. Terarchitect stores that result as a `TicketAttempt`.
-9. Human acceptance advances the project's accepted frontier; future tickets should base from that frontier.
+9. Candidate validation does not change the frontier by itself. Only the winner that is explicitly accepted/integrated advances the project's accepted frontier, and future tickets should base from that frontier.
 
 Operational rule: a host repo path is **not** the runtime source of truth for normal GitHub-first execution. Local paths exist only for legacy import, local-mode debugging, or recovery workflows.
 
@@ -131,7 +131,7 @@ See comments in `coordinator/terarchitect-coordinator.service` for details.
 - **PROJECT_ID** or **PROJECT_IDS** — Optional. Comma-separated UUIDs to restrict which projects this coordinator serves. If unset, the coordinator fetches all project IDs from `GET /api/worker/projects` at startup (or claims from any project if the fetch fails).
 - **GITHUB_TOKEN** — Passed to the container for GitHub clone access and for Ship Room release/export PR creation when using GitHub as the export boundary.
 - **AGENT_IMAGE** — Default `terarchitect-agent`. Override if you use a different tag.
-- **MAX_CONCURRENT_AGENTS** — Default 1. Increase to run multiple jobs in parallel.
+- **MAX_CONCURRENT_AGENTS** — Default 1. Global worker cap across all tickets and all same-ticket competing attempts. Same-ticket fan-out may consume multiple slots inside this cap; unrelated graph-conflicting tickets still remain blocked.
 - **POLL_INTERVAL_SEC** — Default 10.
 - **AGENT_CACHE_VOLUME** — Default `terarchitect-agent-cache`. Named volume mounted at `/cache` in the agent so pip and npm reuse packages across runs. Set to empty to disable.
 - **AGENT_DOCKER_MODE** — Default `dind`. `dind`: each agent container runs its own isolated Docker daemon (requires kernel support for nested containers; coordinator adds `--privileged`). `dood`: mount host socket (legacy, shared daemon, unsafe for parallel jobs).
@@ -196,6 +196,14 @@ OpenCode worker env (`WORKER_LLM_URL`, `WORKER_MODEL`, `WORKER_API_KEY`) must be
 
 See **docs/PHASE1_WORKER_API.md** → Phase 5 for OpenCode and required env. Agent config is not sent by the app; set it in the coordinator env so it is forwarded to the worker container. Docker-mode worker contract includes `TERARCHITECT_API_URL`, `AGENTHUB_URL`, `AGENTHUB_API_KEY` or `AGENTHUB_API_KEY_PATH`, explicit `BASE_LEAF_ID`/`BASE_HASH`, and the Director/Worker/Codex env required for the selected backend.
 
+For competing attempts, also expect attempt metadata such as `ATTEMPT_SLOT`, `ATTEMPT_INDEX`, and `ATTEMPT_COUNT`. Target-design strategy metadata should map one of five operator-visible strategies into both job metadata and worker env:
+
+1. `minimal-patch`
+2. `root-cause-debugger`
+3. `test-first`
+4. `refactor-forward`
+5. `systems-explorer`
+
 ### Environment/config by component
 
 Backend/app:
@@ -227,16 +235,17 @@ Worker container:
 1. **App:** Open http://localhost:3000, create a project, add a ticket, move it to In Progress. A row should appear in `agent_jobs` with `status=pending`.
 2. **Coordinator:** Run the coordinator with that project’s `PROJECT_ID`. It should claim the job, start a container, and after the run call complete or fail.
 3. **Logs and attempts:** Ticket logs and the resulting AgentHub attempt appear in the UI via the API; the agent posts logs and completion through the worker API.
-4. **Accept attempt:** A human accepts the `TicketAttempt` that should move forward. Ticket-level PR review is not part of swarm mode.
-5. **Promotion candidate review:** The target operator concept is a stable promotion candidate built from accepted attempts whose dependency closure is valid against `shipped_frontier`.
-6. **Inspect ShipRun:** A `ShipRun` should be created from that stable candidate set, then reviewed for composed commit, test output, and ship readiness.
-7. **Ship/merge final boundary:** When the `ShipRun` is `ready_to_ship`, shipping advances `shipped_frontier`.
+4. **Review candidates, then choose a winner:** worker completions create validated candidates. Operators compare sibling attempts, choose a winner, and may still leave that winner unintegrated temporarily.
+5. **Accept/integrate winner:** only the chosen winner that advances `accepted_frontier_id` unblocks downstream dependencies. Ticket-level PR review is not part of swarm mode.
+6. **Promotion candidate review:** the target operator concept is a stable promotion candidate built from accepted/integrated attempts whose dependency closure is valid against `shipped_frontier`.
+7. **Inspect ShipRun:** A `ShipRun` should be created from that stable candidate set, then reviewed for composed commit, test output, and ship readiness.
+8. **Ship/merge final boundary:** When the `ShipRun` is `ready_to_ship`, shipping advances `shipped_frontier`.
 
 No in-process agent runs in the app; all execution is in containers started by the coordinator.
 
 ## Attempt inspection vs. competing attempts
 
-Normal execution already gives you inspectable `TicketAttempt` records through the ticket/project attempt APIs and the attempt detail UI. Explicit competing attempts are a separate operator choice for one ticket: rerun from the current frontier with `attempt_count > 1`, inspect each sibling attempt, then accept one verified winner. See `docs/COMPETING_ATTEMPTS.md` for the request body, limits, lifecycle, and caveats.
+Normal execution already gives you inspectable `TicketAttempt` records through the ticket/project attempt APIs and the attempt detail UI. Explicit competing attempts are a separate operator choice for one ticket: rerun from the current frontier, usually with the product default of `3` attempts, inspect each sibling candidate, choose one winner, and only then accept/integrate that winner if you want to unblock dependents. See `docs/COMPETING_ATTEMPTS.md` for the request body, limits, lifecycle, concurrency rules, and caveats.
 
 ## Troubleshooting checklist
 

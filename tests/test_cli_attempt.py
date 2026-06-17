@@ -100,6 +100,10 @@ def test_ticket_parser_supports_attempt_aliases():
     assert args.ticket_cmd == "attempts"
     assert args.json is True
 
+    args = parser.parse_args(["ticket", "rerun-current-frontier", "proj", "ticket-1", "--attempt-count", "5"])
+    assert args.ticket_cmd == "rerun-current-frontier"
+    assert args.attempt_count == 5
+
     args = parser.parse_args(["ticket", "reject-attempt", "proj", "ticket-1", "attempt-1", "--reason", "needs work"])
     assert args.ticket_cmd == "reject-attempt"
     assert args.reason == "needs work"

@@ -32,12 +32,33 @@ Set `TERARCHITECT_WORKER_API_KEY` in the backend’s `.env` (or process env) whe
 
 **Job response (200):** `job_id`, `ticket_id`, `project_id`, `kind` (`ticket`), `repo_url`, `git_mode`, `base_leaf_id`, `base_hash`, and `shipped_frontier`. `shipped_frontier` is the canonical already-shipped DAG frontier. `base_leaf_id` is the DAG parent selected from the accepted frontier for this ticket. `base_hash` is the AgentHub commit the worker should materialize/build on when present.
 
+Competing-attempt metadata may also be present when one ticket is fanned out deliberately:
+
+- payload fields such as `attempt_index`, `attempt_count`, `attempt_slot`
+- compatibility aliases such as `parallel_attempt_count`
+- target-design strategy fields such as `strategy_id`, `strategy_label`, `strategy_index`, `strategy_count`
+
+Operator default:
+
+- competing reruns should usually dispatch `3` attempts for one ticket
+- rerun callers may override that up or down within the server limit
+
 Inspectable attempts and explicit competing attempts are separate ideas. Normal worker completion still writes one ordinary `TicketAttempt` record. When the explicit competing-attempt rerun path is used, the worker may see multiple jobs for the same ticket from the same current frontier, but each completion still lands as a normal `TicketAttempt`, not a new attempt type.
+
+Lifecycle note for workers:
+
+- completion creates a candidate attempt
+- validation makes that candidate reviewable
+- an operator may later choose one winner
+- the winner may remain unintegrated
+- only explicit acceptance/integration advances `project.accepted_frontier_id`
 
 Phase 1 vocabulary freeze:
 
-- accepted `TicketAttempt`: the accepted implementation record for one ticket
-- promotion candidate: the future stable selection of accepted attempts whose dependency closure is valid against `shipped_frontier`
+- validated candidate: a reviewable `TicketAttempt` that passed validation but is not yet the chosen or integrated result
+- winner: the operator-selected candidate for one ticket
+- accepted/integrated `TicketAttempt`: the winner that actually advanced the accepted frontier
+- promotion candidate: the future stable selection of accepted/integrated attempts whose dependency closure is valid against `shipped_frontier`
 - `ShipRun`: an execution record created from a promotion candidate
 - `wave_num`: legacy-only compatibility metadata in the current codebase, not the target contract
 
@@ -89,6 +110,21 @@ docker run --rm \
 
 **Required env:** `TICKET_ID`, `PROJECT_ID`, `TERARCHITECT_API_URL`, `REPO_URL`. Optional: `GITHUB_TOKEN`, `TERARCHITECT_WORKER_API_KEY`. Swarm/Docker runs also require `AGENTHUB_URL` plus `AGENTHUB_API_KEY` or `AGENTHUB_API_KEY_PATH`, and the coordinator forwards explicit `BASE_LEAF_ID` / `BASE_HASH` for workspace materialization from the accepted frontier. Agent config (Director/Worker/Codex env such as `DIRECTOR_*`, `WORKER_*`, `OPENROUTER_API_KEY`, `CODEX_EXTRA_FLAGS`) must be set in the environment.
 
+When the job is part of a competing-attempt fan-out, workers should also expect:
+
+- stable attempt env: `ATTEMPT_SLOT`, `ATTEMPT_INDEX`, `ATTEMPT_COUNT`
+- target strategy env: `ATTEMPT_STRATEGY_ID`, `ATTEMPT_STRATEGY_LABEL`, `ATTEMPT_STRATEGY_PROMPT`, `ATTEMPT_STRATEGY_INDEX`, `ATTEMPT_STRATEGY_COUNT`
+
+The five default operator-visible strategies/personas are:
+
+1. `minimal-patch`
+2. `root-cause-debugger`
+3. `test-first`
+4. `refactor-forward`
+5. `systems-explorer`
+
+Sibling backend lanes may still be wiring the strategy fields, but worker implementations should treat the names above as the stable intended contract.
+
 Workspace in container: `/workspace` (clone and run happen there). Exit 0 = success; non-zero = failure (coordinator uses this to call jobs/complete or jobs/fail). PR-review jobs have been removed; human feedback now flows through AgentHub channels and Ship Room/Workspace actions. The operator contract is candidate review followed by `ShipRun` execution; any remaining wave-keyed ship routes are backend compatibility shims.
 
 ---
@@ -117,7 +153,7 @@ python -m coordinator
 - **TERARCHITECT_WORKER_API_KEY** — Bearer token for worker API (claim, complete, fail).
 - **GITHUB_TOKEN** — Passed to the container for GitHub clone access and for Ship Room release/export PR creation when GitHub is used as the export boundary.
 - **AGENT_IMAGE** — Docker image to run (default `terarchitect-agent`).
-- **MAX_CONCURRENT_AGENTS** — Max containers at once (default 1).
+- **MAX_CONCURRENT_AGENTS** — Global max containers at once (default 1). Same-ticket competing attempts may consume multiple slots inside this cap; unrelated graph-conflicting tickets still remain blocked.
 - **POLL_INTERVAL_SEC** — Seconds between claim attempts when no capacity or no job (default 10).
 
 **Container reachability:** The coordinator passes its env (including `TERARCHITECT_API_URL`) to each container. Compose coordinator should also pass `DOCKER_NETWORK=terarchitect_default` so workers can reach `backend` and `agenthub` by service name. If the app is on the host and the coordinator runs on the same host, set `TERARCHITECT_API_URL=http://host.docker.internal:5010` (or the host’s IP) so the container can reach the app. On Linux without Docker Desktop the coordinator adds `--add-host=host.docker.internal:host-gateway` automatically when needed.

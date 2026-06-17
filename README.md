@@ -3,8 +3,8 @@
 Terarchitect is an agent-first, CLI-first SDLC orchestrator: model your system as a graph, define intents, and let a **Director → Worker** agent pair publish implementation attempts to an AgentHub DAG.
 
 - **Primary users are agents and coordinators**: the system is built around automated execution and DAG-native promotion/shipping.
-- **UI and human actions stay at the review/ship boundary**: accepted attempts become shippable through promotion-candidate review and `ShipRun` execution.
-- **Contract being frozen in Phase 1**: agent completes work, a human accepts the `TicketAttempt`, operators review a stable promotion candidate, create a `ShipRun`, inspect it, then ship/merge at the final boundary.
+- **UI and human actions stay at the review/ship boundary**: workers produce validated candidates, operators choose winners, and only accepted/integrated attempts become shippable through promotion-candidate review and `ShipRun` execution.
+- **Contract being frozen in Phase 1**: agent completes work, validation creates a candidate, a human may choose a winner, only explicit acceptance/integration advances the frontier, then operators review a stable promotion candidate, create a `ShipRun`, inspect it, and ship/merge at the final boundary.
 - **One container per job**: reproducible, isolated runs.
 - **Coordinator-friendly**: run the coordinator on the same machine as the app, or on a completely separate machine.
 
@@ -30,7 +30,7 @@ If you’ve ever wanted architecture-aware agent swarms with a clear human shipp
 - **Architecture graph**: encode components + interfaces, not just TODO lists
 - **Intent-driven execution**: moving an intent/ticket to *In Progress* enqueues an agent job
 - **Director/Worker separation**: strategy (Director) vs code-writing execution (Worker, with Codex preferred for implementation-heavy work)
-- **AgentHub-native workflow**: agents publish attempts/leaves; accepted `TicketAttempt`s become promotion candidates, and `ShipRun`s compose/release them
+- **AgentHub-native workflow**: agents publish attempts/leaves; validated candidates are reviewed, accepted/integrated `TicketAttempt`s become promotion candidates, and `ShipRun`s compose/release them
 - **Runs anywhere Docker runs**: single-box dev or two-box production
 
 ---
@@ -88,6 +88,8 @@ At the app boundary, the coordinator/agent use a small “worker API” surface 
 
 Details: `docs/PHASE1_WORKER_API.md`.
 
+For explicit competing attempts, operators should see five pre-selected strategies: `minimal-patch`, `root-cause-debugger`, `test-first`, `refactor-forward`, and `systems-explorer`. Workers should receive attempt metadata such as `ATTEMPT_SLOT`, `ATTEMPT_INDEX`, `ATTEMPT_COUNT`, plus strategy metadata once sibling lanes finish wiring it end-to-end.
+
 ---
 
 ## System architecture (app + coordinator + agent)
@@ -98,11 +100,11 @@ Details: `docs/PHASE1_WORKER_API.md`.
 | **Coordinator** | Claims jobs from the API and starts one agent container per job. | **Docker Compose** or **host process** |
 | **Agent image** | Director + Worker (OpenCode, Claude Code, or Codex). Materializes the selected AgentHub base leaf, implements the ticket, publishes an AgentHub attempt, exits. | **Docker container** started by the coordinator |
 
-High-level flow: **GitHub URL/ref import → AgentHub DAG project → accepted frontier selects `base_leaf_id` → UI enqueue → coordinator claims → agent container materializes the base leaf → AgentHub attempt created → accepted `TicketAttempt` → promotion candidate review → `ShipRun` compose/ship → shipped frontier advance**.
+High-level flow: **GitHub URL/ref import → AgentHub DAG project → accepted frontier selects `base_leaf_id` → UI enqueue → coordinator claims → agent container materializes the base leaf → AgentHub attempt created → validated candidate → operator-chosen winner → accepted/integrated `TicketAttempt` → promotion candidate review → `ShipRun` compose/ship → shipped frontier advance**.
 
-The UI is an operator surface, not the primary execution surface. Agents and coordinators do the work; humans review accepted attempts and ship at the promotion boundary. The primary operator workflow is promotion-candidate review followed by `ShipRun` compose/ship. Legacy wave-keyed HTTP routes remain backend compatibility surfaces only.
+The UI is an operator surface, not the primary execution surface. Agents and coordinators do the work; humans review validated candidates, choose winners, integrate accepted work, and ship at the promotion boundary. The primary operator workflow is promotion-candidate review followed by `ShipRun` compose/ship. Legacy wave-keyed HTTP routes remain backend compatibility surfaces only.
 
-Attempt inspection is already first-class: normal worker completions create `TicketAttempt` rows that can be listed, inspected, diffed, accepted, or rejected. Explicit competing attempts are a narrower opt-in rerun flow for one ticket from the same current frontier; they still materialize as ordinary `TicketAttempt`s rather than a separate review object. See `docs/COMPETING_ATTEMPTS.md`.
+Attempt inspection is already first-class: normal worker completions create `TicketAttempt` rows that can be listed, inspected, diffed, accepted, or rejected. Explicit competing attempts are a narrower opt-in rerun flow for one ticket from the same current frontier; they still materialize as ordinary `TicketAttempt`s rather than a separate review object. The real lifecycle is candidate validation -> winner choice -> accepted/integrated frontier advance -> promotion candidate -> `ShipRun`. See `docs/COMPETING_ATTEMPTS.md`.
 
 ---
 
@@ -147,7 +149,7 @@ python -m coordinator
 
 Tip: set `PYTHONPATH=/path/to/terarchitect` if your environment needs it.
 
-**Concurrency note:** the coordinator defaults to `MAX_CONCURRENT_AGENTS=1` but parallel runs are now safe. Each agent container runs its own isolated Docker daemon (DinD via `--privileged`), so concurrent jobs never conflict on container names, networks, or ports. Increase `MAX_CONCURRENT_AGENTS` to run multiple tickets in parallel; see the TODO section for tuning guidance.
+**Concurrency note:** the coordinator defaults to `MAX_CONCURRENT_AGENTS=1` but parallel runs are now safe. This is a global cap across all workers. Same-ticket competing attempts may run concurrently inside that cap, while unrelated ticket graph conflicts still block as usual. Each agent container runs its own isolated Docker daemon (DinD via `--privileged`), so concurrent jobs never conflict on container names, networks, or ports. Increase `MAX_CONCURRENT_AGENTS` to run multiple jobs in parallel; see the TODO section for tuning guidance.
 
 ---
 
@@ -197,10 +199,11 @@ Normal execution is **GitHub-first** and **DAG-first**:
    - publishes a child attempt/leaf back to AgentHub
    - exits
 7. Terarchitect records the attempt as a `TicketAttempt`.
-8. Human acceptance advances the project's **accepted frontier**, which becomes the source of truth for later tickets and shipping.
-9. The Ship Room flow is: review a stable promotion candidate built from accepted attempts whose dependency closure is valid, create a `ShipRun` from that candidate set, then advance the shipped frontier when shipped.
+8. Validation makes each attempt a reviewable candidate. Operators may choose a winner and deliberately leave it unintegrated.
+9. Only explicit acceptance/integration advances the project's **accepted frontier**, which becomes the source of truth for later tickets and shipping.
+10. The Ship Room flow is: review a stable promotion candidate built from accepted/integrated attempts whose dependency closure is valid, create a `ShipRun` from that candidate set, then advance the shipped frontier when shipped.
 
-If one ticket needs deliberate alternatives, explicit competing attempts rerun that same ticket from the current accepted frontier and create multiple sibling `TicketAttempt`s for later comparison. That does not change the promotion model: operators still inspect the attempts, accept one winner, then continue through Ship Room. See `docs/COMPETING_ATTEMPTS.md`.
+If one ticket needs deliberate alternatives, explicit competing attempts rerun that same ticket from the current accepted frontier and create multiple sibling `TicketAttempt`s for later comparison. The product default is `3` attempts per ticket, with rerun overrides available when you want fewer or more. That does not change the promotion model: operators inspect the sibling candidates, choose one winner, optionally leave it unintegrated, and only unblock downstream work after explicit acceptance/integration. See `docs/COMPETING_ATTEMPTS.md`.
 
 Local project paths still exist only as a **legacy import/debug path**:
 
@@ -238,8 +241,8 @@ No mixing with your project’s Dockerfile. The agent image is built once and re
 
 ## Highlights
 
-- **Ship Room**: review accepted AgentHub attempts as future promotion candidates, compose them into a `ShipRun`, and advance the shipped frontier.
-- **Promotion-boundary review**: accept attempts first, then inspect one `ShipRun` created from a stable candidate set before the final ship/merge step.
+- **Ship Room**: review accepted/integrated AgentHub attempts as future promotion candidates, compose them into a `ShipRun`, and advance the shipped frontier.
+- **Promotion-boundary review**: validate candidates first, choose a winner, integrate it when ready, then inspect one `ShipRun` created from a stable candidate set before the final ship/merge step.
 - **Cancelable runs**: worker-facing cancel flag + polling endpoint so you can stop a run cleanly.
 - **Per-project execution mode**: run jobs in Docker (clone in container) or Local (run at a configured host path).
 - **Env-only config**: each service (backend, coordinator) uses a simple `.env` that fits its needs; no shared settings store. See `.env.example`.

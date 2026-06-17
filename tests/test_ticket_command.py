@@ -206,17 +206,40 @@ def test_ticket_rerun_current_frontier_hits_explicit_endpoint(capsys):
         "column_id": "in_progress",
         "base_leaf_id": "leaf_01HZX3CURRENTFRONTIER01234567",
         "accepted_frontier_id": "leaf_01HZX3CURRENTFRONTIER01234567",
+        "attempt_count": 3,
     })
-    args = SimpleNamespace(project_id="proj-1", ticket_id="ticket-1", output="human")
+    args = SimpleNamespace(project_id="proj-1", ticket_id="ticket-1", attempt_count=3, output="human")
 
     ticket_cmd._cmd_rerun_current_frontier(args, api)
 
     assert api.posts == [
         (
             "/api/projects/proj-1/tickets/ticket-1/rerun-from-current-frontier",
-            {},
+            {"attempt_count": 3},
         )
     ]
     stdout = capsys.readouterr().out
+    assert "Attempts" in stdout
+    assert "3" in stdout
     assert "current frontier" in stdout
     assert "leaf_01HZX3C" in stdout
+
+
+def test_ticket_rerun_current_frontier_allows_attempt_override():
+    api = StubAPI(post_response={
+        "id": "ticket-1",
+        "column_id": "in_progress",
+        "base_leaf_id": "leaf_01HZX3CURRENTFRONTIER01234567",
+        "accepted_frontier_id": "leaf_01HZX3CURRENTFRONTIER01234567",
+        "attempt_count": 5,
+    })
+    args = SimpleNamespace(project_id="proj-1", ticket_id="ticket-1", attempt_count=5, output="human")
+
+    ticket_cmd._cmd_rerun_current_frontier(args, api)
+
+    assert api.posts == [
+        (
+            "/api/projects/proj-1/tickets/ticket-1/rerun-from-current-frontier",
+            {"attempt_count": 5},
+        )
+    ]

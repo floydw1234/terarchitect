@@ -123,9 +123,18 @@ def register(subparsers) -> None:
     ru.add_argument("--run-local", action="store_true",
                     help="Run agent directly on this host (dev mode, no coordinator needed)")
 
-    rcf = sub.add_parser("rerun-current-frontier", help="Reset ticket base to project.accepted_frontier_id and enqueue")
+    rcf = sub.add_parser(
+        "rerun-current-frontier",
+        help="Reset ticket base to project.accepted_frontier_id and enqueue competing attempts",
+    )
     rcf.add_argument("project_id")
     rcf.add_argument("ticket_id")
+    rcf.add_argument(
+        "--attempt-count",
+        type=int,
+        default=3,
+        help="Number of attempts to enqueue from the current frontier (default: 3)",
+    )
 
     # cancel
     ca = sub.add_parser("cancel", help="Request cancellation of a running ticket")
@@ -476,14 +485,16 @@ def _cmd_rerun_current_frontier(args, api: API) -> None:
     try:
         ticket = api.post(
             f"/api/projects/{args.project_id}/tickets/{args.ticket_id}/rerun-from-current-frontier",
-            {},
+            {"attempt_count": args.attempt_count},
         )
     except APIError as e:
         die(e, output=args.output)
 
+    attempt_count = ticket.get("attempt_count", args.attempt_count)
     print_receipt(
         f"Ticket {short_id(args.ticket_id)} enqueued from current frontier.",
         fields=[
+            ("Attempts", attempt_count),
             ("Column", ticket.get("column_id") or "unknown"),
             ("Base", (ticket.get("base_leaf_id") or "unknown")[:12]),
         ],
