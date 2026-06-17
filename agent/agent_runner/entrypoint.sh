@@ -59,9 +59,9 @@ if [ -z "$DOCKER_HOST" ]; then
 fi
 
 # --- OpenCode server ---
-# Only start OpenCode when it is actually needed (i.e. not claude-code mode).
+# Only start OpenCode when it is actually needed.
 _worker_mode="${WORKER_MODE:-opencode}"
-if [ "$_worker_mode" != "claude-code" ]; then
+if [ "$_worker_mode" = "opencode" ]; then
   _oc_port="${OPENCODE_SERVER_PORT:-4096}"
   # Inject provider config from agent settings (WORKER_LLM_URL, WORKER_MODEL, WORKER_API_KEY) so OpenCode server has the LLM at startup.
   if [ -n "${WORKER_LLM_URL}" ] || [ -n "${WORKER_MODEL}" ]; then
