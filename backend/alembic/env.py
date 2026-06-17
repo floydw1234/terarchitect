@@ -15,7 +15,7 @@ config = context.config
 
 from alembic_support import (  # noqa: E402
     configure_alembic_version_table_storage,
-    ensure_alembic_version_table_capacity,
+    run_alembic_online_migrations,
 )
 
 configure_alembic_version_table_storage()
@@ -53,11 +53,11 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
-    with connectable.connect() as connection:
-        ensure_alembic_version_table_capacity(connection)
-        context.configure(connection=connection, target_metadata=target_metadata)
-        with context.begin_transaction():
-            context.run_migrations()
+    run_alembic_online_migrations(
+        connectable,
+        alembic_context=context,
+        target_metadata=target_metadata,
+    )
 
 
 if context.is_offline_mode():

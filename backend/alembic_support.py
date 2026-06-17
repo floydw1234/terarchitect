@@ -78,3 +78,17 @@ def ensure_alembic_version_table_capacity(
         f"ALTER TABLE {qualified_table} "
         f"ALTER COLUMN version_num TYPE VARCHAR({ALEMBIC_VERSION_NUM_LENGTH})"
     )
+
+
+def run_alembic_online_migrations(connectable, *, alembic_context, target_metadata) -> None:
+    """Run online migrations in an engine-owned transaction.
+
+    SQLAlchemy 2 rolls back open implicit transactions when a bare Connection
+    context manager exits. Alembic's online migrations need an Engine.begin()
+    scope so DDL, alembic_version widening, and the final version update persist.
+    """
+    with connectable.begin() as connection:
+        ensure_alembic_version_table_capacity(connection)
+        alembic_context.configure(connection=connection, target_metadata=target_metadata)
+        with alembic_context.begin_transaction():
+            alembic_context.run_migrations()

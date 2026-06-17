@@ -14,6 +14,7 @@ from alembic_support import (  # noqa: E402
     ALEMBIC_VERSION_NUM_LENGTH,
     configure_alembic_version_table_storage,
     ensure_alembic_version_table_capacity,
+    run_alembic_online_migrations,
 )
 
 
@@ -57,3 +58,47 @@ def test_ensure_alembic_version_table_capacity_skips_wide_or_unbounded_columns()
         ensure_alembic_version_table_capacity(connection)
 
     connection.exec_driver_sql.assert_not_called()
+
+
+def test_run_alembic_online_migrations_uses_engine_begin_and_widens_before_running():
+    connectable = MagicMock()
+    connection = MagicMock()
+    begin_context = MagicMock()
+    begin_context.__enter__.return_value = connection
+    connectable.begin.return_value = begin_context
+
+    alembic_context = MagicMock()
+    migration_context = MagicMock()
+    alembic_context.begin_transaction.return_value = migration_context
+
+    events = []
+
+    def _record_ensure(conn):
+        events.append(("ensure", conn))
+
+    def _record_configure(**kwargs):
+        events.append(("configure", kwargs["connection"], kwargs["target_metadata"]))
+
+    def _record_run():
+        events.append(("run", None))
+
+    target_metadata = object()
+
+    alembic_context.configure.side_effect = _record_configure
+    alembic_context.run_migrations.side_effect = _record_run
+
+    with patch("alembic_support.ensure_alembic_version_table_capacity", side_effect=_record_ensure):
+        run_alembic_online_migrations(
+            connectable,
+            alembic_context=alembic_context,
+            target_metadata=target_metadata,
+        )
+
+    connectable.begin.assert_called_once_with()
+    connectable.connect.assert_not_called()
+    alembic_context.begin_transaction.assert_called_once_with()
+    assert events == [
+        ("ensure", connection),
+        ("configure", connection, target_metadata),
+        ("run", None),
+    ]
