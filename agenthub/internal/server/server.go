@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 
 	"agenthub/internal/auth"
 	"agenthub/internal/db"
@@ -23,6 +24,7 @@ type Server struct {
 	repo     *gitrepo.Repo
 	adminKey string
 	mux      *http.ServeMux
+	handler  http.Handler
 	config   Config
 }
 
@@ -35,6 +37,7 @@ func New(database *db.DB, repo *gitrepo.Repo, adminKey string, cfg Config) *Serv
 		config:   cfg,
 	}
 	s.setupRoutes()
+	s.handler = s.withAPICORS(s.mux)
 	return s
 }
 
@@ -83,7 +86,41 @@ func (s *Server) setupRoutes() {
 
 func (s *Server) ListenAndServe() error {
 	log.Printf("listening on %s", s.config.ListenAddr)
-	return http.ListenAndServe(s.config.ListenAddr, s.mux)
+	return http.ListenAndServe(s.config.ListenAddr, s.handler)
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.handler.ServeHTTP(w, r)
+}
+
+func (s *Server) withAPICORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			// Reflect the browser origin for local UI development so localhost,
+			// 127.0.0.1, and LAN-served pages can talk to AgentHub without a
+			// separate allowlist. Auth still applies to non-preflight requests.
+			headers := w.Header()
+			headers.Set("Access-Control-Allow-Origin", origin)
+			headers.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			headers.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+			headers.Add("Vary", "Origin")
+			headers.Add("Vary", "Access-Control-Request-Method")
+			headers.Add("Vary", "Access-Control-Request-Headers")
+		}
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 // JSON helpers

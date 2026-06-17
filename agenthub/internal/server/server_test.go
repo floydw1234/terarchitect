@@ -37,7 +37,7 @@ func TestCommitReceiptIncludesMentionsAndMetadata(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/git/receipts/"+hashes.child, nil)
 	req.Header.Set("Authorization", authHeader)
 	rec := httptest.NewRecorder()
-	srv.mux.ServeHTTP(rec, req)
+	srv.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status %d: %s", rec.Code, rec.Body.String())
@@ -90,7 +90,7 @@ func TestCommitReceiptForMissingCommitReturnsExistsFalse(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/git/receipts/"+missing, nil)
 	req.Header.Set("Authorization", authHeader)
 	rec := httptest.NewRecorder()
-	srv.mux.ServeHTTP(rec, req)
+	srv.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status %d: %s", rec.Code, rec.Body.String())
@@ -128,7 +128,7 @@ func TestRecentEventsEndpointReturnsTypedEventsWithChannelFilter(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/events?channel_prefix=wave-&limit=10", nil)
 	req.Header.Set("Authorization", authHeader)
 	rec := httptest.NewRecorder()
-	srv.mux.ServeHTTP(rec, req)
+	srv.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status %d: %s", rec.Code, rec.Body.String())
@@ -155,7 +155,7 @@ func TestDoctorEndpointReportsHealthyChecks(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/doctor", nil)
 	req.Header.Set("Authorization", authHeader)
 	rec := httptest.NewRecorder()
-	srv.mux.ServeHTTP(rec, req)
+	srv.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unexpected status %d: %s", rec.Code, rec.Body.String())
@@ -182,7 +182,7 @@ func TestSeedEndpointReturnsExplicitNotSupported(t *testing.T) {
 	req.Header.Set("Authorization", authHeader)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	srv.mux.ServeHTTP(rec, req)
+	srv.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("unexpected status %d: %s", rec.Code, rec.Body.String())
@@ -206,7 +206,7 @@ func TestGitHubImportEndpointImportsLocalFixtureBundle(t *testing.T) {
 	req.Header.Set("Authorization", authHeader)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	srv.mux.ServeHTTP(rec, req)
+	srv.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("unexpected status %d: %s", rec.Code, rec.Body.String())
@@ -257,7 +257,7 @@ func TestGitHubImportEndpointRejectsInvalidURL(t *testing.T) {
 	req.Header.Set("Authorization", authHeader)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	srv.mux.ServeHTTP(rec, req)
+	srv.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected status %d: %s", rec.Code, rec.Body.String())
@@ -273,7 +273,7 @@ func TestGitHubImportEndpointRejectsBadRef(t *testing.T) {
 	req.Header.Set("Authorization", authHeader)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	srv.mux.ServeHTTP(rec, req)
+	srv.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected status %d: %s", rec.Code, rec.Body.String())
@@ -285,6 +285,50 @@ func TestGitHubImportEndpointRejectsBadRef(t *testing.T) {
 	}
 	if payload["error"] != "requested ref was not found" {
 		t.Fatalf("unexpected payload %#v", payload)
+	}
+}
+
+func TestCORSPreflightBypassesAuthForAPIEndpoints(t *testing.T) {
+	srv, _, _, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/git/leaves", nil)
+	req.Header.Set("Origin", "http://127.0.0.1:3000")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	req.Header.Set("Access-Control-Request-Headers", "Authorization, Content-Type")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://127.0.0.1:3000" {
+		t.Fatalf("unexpected allow origin %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Methods"); got != "GET, POST, PUT, PATCH, DELETE, OPTIONS" {
+		t.Fatalf("unexpected allow methods %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "Authorization, Content-Type" {
+		t.Fatalf("unexpected allow headers %q", got)
+	}
+}
+
+func TestCORSHeadersIncludedOnNormalAPIResponses(t *testing.T) {
+	srv, _, authHeader, _ := newTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/git/leaves", nil)
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("Origin", "http://192.168.1.10:4173")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://192.168.1.10:4173" {
+		t.Fatalf("unexpected allow origin %q", got)
+	}
+	if vary := rec.Header().Values("Vary"); len(vary) == 0 {
+		t.Fatalf("expected vary headers to be set")
 	}
 }
 
