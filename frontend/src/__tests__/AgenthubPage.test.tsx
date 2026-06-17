@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { MemoryRouter } from 'react-router-dom';
 import { ThemeProvider, createTheme } from '@mui/material';
@@ -38,6 +38,14 @@ function statusResponse(status: number, statusText: string) {
     statusText,
     json: async () => ({}),
   });
+}
+
+function deferredResponse() {
+  let resolve!: (value: { ok: boolean; status: number; statusText: string }) => void;
+  const promise = new Promise<{ ok: boolean; status: number; statusText: string }>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }
 
 describe('AgenthubPage', () => {
@@ -153,18 +161,73 @@ describe('AgenthubPage', () => {
     });
   });
 
-  test('shows the auth helper when AgentHub returns 401', async () => {
-    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+  test('clearing the key removes protected data before a 401 auth helper reload', async () => {
+    window.localStorage.setItem('terarchitect.agenthub.key', 'test-key');
+
+    let healthCallCount = 0;
+    const delayedHealth = deferredResponse();
+
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      const authHeader = (init?.headers as Record<string, string> | undefined)?.Authorization;
 
       if (url.endsWith('/api/health')) {
-        return Promise.resolve({ ok: true, status: 200, statusText: 'OK' });
+        healthCallCount += 1;
+        if (healthCallCount === 1) {
+          return Promise.resolve({ ok: true, status: 200, statusText: 'OK' });
+        }
+        return delayedHealth.promise;
       }
-      if (
-        url.endsWith('/api/git/leaves') ||
-        url.endsWith('/api/git/commits?limit=30') ||
-        url.endsWith('/api/channels')
-      ) {
+
+      if (url.endsWith('/api/git/leaves')) {
+        if (authHeader === 'Bearer test-key') {
+          return jsonResponse([
+            {
+              hash: 'bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222',
+              parent_hash: 'aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111',
+              agent_id: 'agent-beta',
+              message: 'Finalize orchestrator pass',
+              created_at: '2026-06-17T10:05:00.000Z',
+            },
+          ]);
+        }
+        return statusResponse(401, 'Unauthorized');
+      }
+      if (url.endsWith('/api/git/commits?limit=30')) {
+        if (authHeader === 'Bearer test-key') {
+          return jsonResponse([
+            {
+              hash: 'bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222',
+              parent_hash: 'aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111',
+              agent_id: 'agent-beta',
+              message: 'Finalize orchestrator pass',
+              created_at: '2026-06-17T10:05:00.000Z',
+            },
+          ]);
+        }
+        return statusResponse(401, 'Unauthorized');
+      }
+      if (url.endsWith('/api/channels')) {
+        if (authHeader === 'Bearer test-key') {
+          return jsonResponse([
+            { id: 1, name: 'ops', description: 'Operator sync', created_at: '2026-06-17T09:30:00.000Z' },
+          ]);
+        }
+        return statusResponse(401, 'Unauthorized');
+      }
+      if (url.endsWith('/api/channels/ops/posts?limit=5')) {
+        if (authHeader === 'Bearer test-key') {
+          return jsonResponse([
+            {
+              id: 99,
+              channel_id: 1,
+              agent_id: 'agent-beta',
+              parent_id: null,
+              content: 'Graph refresh deployed.',
+              created_at: '2026-06-17T10:06:00.000Z',
+            },
+          ]);
+        }
         return statusResponse(401, 'Unauthorized');
       }
 
@@ -173,12 +236,27 @@ describe('AgenthubPage', () => {
 
     renderAgenthubPage();
 
+    expect(await screen.findByText('Graph refresh deployed.')).toBeInTheDocument();
+    expect(screen.getByText('#ops')).toBeInTheDocument();
+    expect(screen.getByTestId('commit-dag-node-bbbb2222bb')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /clear key/i }));
+
+    expect(window.localStorage.getItem('terarchitect.agenthub.key')).toBeNull();
+    expect(screen.queryByText('Graph refresh deployed.')).not.toBeInTheDocument();
+    expect(screen.queryByText('#ops')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('commit-dag-node-bbbb2222bb')).not.toBeInTheDocument();
+
+    delayedHealth.resolve({ ok: true, status: 200, statusText: 'OK' });
+
     expect(
       await screen.findByText(/AgentHub requires an API key\. Enter or update it below, then save to reload the DAG\./i),
     ).toBeInTheDocument();
     expect(screen.getByLabelText('API key')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /save key/i })).toBeInTheDocument();
     expect(screen.queryByText(/AgentHub is not reachable at http:\/\/agenthub\.local/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Graph refresh deployed.')).not.toBeInTheDocument();
+    expect(screen.queryByText('#ops')).not.toBeInTheDocument();
   });
 
   test('shows the offline helper when AgentHub is unreachable', async () => {

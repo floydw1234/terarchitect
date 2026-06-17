@@ -101,6 +101,13 @@ const AgenthubPage: React.FC = () => {
   const [usingDevFallback, setUsingDevFallback] = useState(
     () => !window.localStorage.getItem(AGENTHUB_KEY_STORAGE)?.trim() && Boolean((window as any).__AH_KEY__),
   );
+  const resetProtectedData = useCallback(() => {
+    setLeaves([]);
+    setLog([]);
+    setChannels([]);
+    setRecentPosts([]);
+    setLastRefresh(null);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -142,6 +149,7 @@ const AgenthubPage: React.FC = () => {
       setLastRefresh(new Date());
     } catch (e: any) {
       if (e?.code === 'AUTH_REQUIRED') {
+        resetProtectedData();
         setOnline(true);
       } else {
         setOnline(false);
@@ -150,7 +158,7 @@ const AgenthubPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [resetProtectedData]);
 
   useEffect(() => {
     load();
@@ -174,6 +182,7 @@ const AgenthubPage: React.FC = () => {
   const handleClearKey = () => {
     window.localStorage.removeItem(AGENTHUB_KEY_STORAGE);
     setKeyDraft('');
+    resetProtectedData();
     void load();
   };
 
