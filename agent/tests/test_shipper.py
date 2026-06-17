@@ -1,6 +1,56 @@
+import base64
 from unittest.mock import patch
 
+import pytest
+
 from agent.shipper import shipper
+
+
+@pytest.mark.parametrize("token_env", ["GH_TOKEN", "GITHUB_TOKEN", "GITHUB_AGENT_TOKEN"])
+def test_git_uses_github_token_for_non_interactive_https_auth(tmp_path, token_env):
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs["env"]
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with patch.dict("os.environ", {token_env: "ghs_test_token"}, clear=True):
+        with patch("agent.shipper.shipper.subprocess.run", side_effect=fake_run):
+            shipper._git(["fetch", "origin", "main"], cwd=str(tmp_path), check=False)
+
+    env = captured["env"]
+    assert captured["args"] == ["git", "fetch", "origin", "main"]
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    assert env["GIT_CONFIG_COUNT"] == "1"
+    assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
+    assert env["GIT_CONFIG_VALUE_0"].startswith("AUTHORIZATION: basic ")
+    encoded = env["GIT_CONFIG_VALUE_0"].split(" ", 2)[2]
+    assert base64.b64decode(encoded).decode("utf-8") == "x-access-token:ghs_test_token"
+
+
+def test_clone_repo_redacts_tokens_from_git_failures(tmp_path):
+    repo_path = tmp_path / "repo"
+    secret = "ghs_test_token"
+
+    def fake_run(args, **kwargs):
+        return type("R", (), {
+            "returncode": 128,
+            "stdout": "",
+            "stderr": f"fatal: auth failed for https://x-access-token:{secret}@github.com/example/demo",
+        })()
+
+    with patch.dict("os.environ", {"GITHUB_TOKEN": secret}, clear=True):
+        with patch("agent.shipper.shipper.subprocess.run", side_effect=fake_run):
+            try:
+                shipper._clone_repo("https://github.com/example/demo", str(repo_path))
+            except shipper.ComposeError as exc:
+                message = str(exc)
+            else:
+                raise AssertionError("Expected ComposeError")
+
+    assert secret not in message
+    assert "[REDACTED]" in message
 
 
 def test_prepare_runtime_repo_clones_ephemeral_repo_when_project_path_missing(tmp_path):

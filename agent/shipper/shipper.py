@@ -33,6 +33,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import base64
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -45,6 +46,31 @@ import requests
 
 def _env(key: str, default: str = "") -> str:
     return (os.environ.get(key) or default).strip()
+
+
+def _github_token() -> str:
+    return (
+        _env("GITHUB_TOKEN")
+        or _env("GH_TOKEN")
+        or _env("GITHUB_AGENT_TOKEN")
+        or _env("github_agent_token")
+    )
+
+
+def _redact_secrets(text: str) -> str:
+    if not text:
+        return text
+    redacted = text
+    for secret in {
+        _env("GITHUB_TOKEN"),
+        _env("GH_TOKEN"),
+        _env("GITHUB_AGENT_TOKEN"),
+        _env("github_agent_token"),
+    }:
+        if secret:
+            redacted = redacted.replace(secret, "[REDACTED]")
+    redacted = re.sub(r"https://[^/\s@]+@github\.com", "https://[REDACTED]@github.com", redacted)
+    return redacted
 
 
 def _base_url() -> str:
@@ -112,6 +138,17 @@ def _git(args: list, cwd: str, check: bool = True, timeout: int = 60) -> subproc
         "GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email,
         "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email,
     })
+    github_token = _github_token()
+    if github_token:
+        auth_value = base64.b64encode(f"x-access-token:{github_token}".encode("utf-8")).decode("ascii")
+        try:
+            config_count = int(env.get("GIT_CONFIG_COUNT", "0") or "0")
+        except ValueError:
+            config_count = 0
+        env["GIT_CONFIG_COUNT"] = str(config_count + 1)
+        env[f"GIT_CONFIG_KEY_{config_count}"] = "http.https://github.com/.extraheader"
+        env[f"GIT_CONFIG_VALUE_{config_count}"] = f"AUTHORIZATION: basic {auth_value}"
+        env["GIT_TERMINAL_PROMPT"] = "0"
     return subprocess.run(
         ["git"] + args, cwd=cwd, capture_output=True, text=True,
         timeout=timeout, env=env, check=check,
@@ -194,7 +231,7 @@ def _clone_repo(github_url: str, repo_path: str) -> None:
         os.makedirs(parent, exist_ok=True)
     result = _git(["clone", github_url, repo_path], cwd=parent or None, check=False, timeout=300)
     if result.returncode != 0 or not os.path.isdir(repo_path):
-        detail = (result.stderr or result.stdout or "").strip() or "git clone failed"
+        detail = _redact_secrets((result.stderr or result.stdout or "").strip() or "git clone failed")
         raise ComposeError(f"Failed to clone ephemeral repo from GitHub: {detail[:1000]}")
 
 
@@ -345,6 +382,10 @@ def _open_release_pr(
         body = body[:59997] + "..."
 
     gh_env = {**os.environ}
+    github_token = _github_token()
+    if github_token:
+        gh_env.setdefault("GH_TOKEN", github_token)
+        gh_env.setdefault("GITHUB_TOKEN", github_token)
     try:
         r = subprocess.run(
             ["gh", "pr", "create",
@@ -372,9 +413,9 @@ def _open_release_pr(
             if r2.returncode == 0:
                 pr_data = json.loads(r2.stdout or "{}")
                 return pr_data.get("url"), pr_data.get("number")
-        print(f"[shipper] gh pr create failed: {r.stderr[:300]}", file=sys.stderr)
+        print(f"[shipper] gh pr create failed: {_redact_secrets(r.stderr)[:300]}", file=sys.stderr)
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        print(f"[shipper] gh pr create error: {e}", file=sys.stderr)
+        print(f"[shipper] gh pr create error: {_redact_secrets(str(e))}", file=sys.stderr)
     return None, None
 
 
@@ -555,9 +596,10 @@ def run_once() -> bool:
             cwd=runtime_repo_path, check=False,
         )
         if push_r.returncode != 0:
-            print(f"[shipper] Push failed: {push_r.stderr[:300]}", file=sys.stderr)
+            push_error = _redact_secrets(push_r.stderr or push_r.stdout or "")
+            print(f"[shipper] Push failed: {push_error[:300]}", file=sys.stderr)
             _api_post(f"/api/worker/ship-run/{run_id}/fail", {
-                "error": f"Failed to push release branch {branch!r}: {push_r.stderr[:1000]}",
+                "error": f"Failed to push release branch {branch!r}: {push_error[:1000]}",
                 "compose_failed": True,
                 "runtime": runtime_repo,
             })
