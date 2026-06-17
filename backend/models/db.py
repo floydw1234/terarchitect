@@ -182,12 +182,11 @@ class AgentJob(db.Model):
 
 class TicketAttempt(db.Model):
     """Records each AgentHub attempt for a ticket in swarm mode.
-    The MVP path uses proposed/accepted/rejected/failed/shipped, but the live
-    code still tolerates legacy-compatible validating/composed/release_pr_open
-    states so older callbacks and tests keep working.
-    Canonical DAG-native record: an accepted TicketAttempt is the accepted
-    implementation artifact for one ticket and carries the commit/base hashes
-    used to form later promotion candidates."""
+    Validation, winner selection, and acceptance/integration are distinct:
+    validation marks an attempt as readable, winner selection marks the chosen
+    candidate for the ticket, and acceptance/integration advances the project
+    frontier for dependency use. Legacy-compatible composed/release_pr_open/
+    shipped states remain for downstream shipping flows and older tests."""
 
     __tablename__ = "ticket_attempts"
 
@@ -201,10 +200,15 @@ class TicketAttempt(db.Model):
     wave_num = db.Column(db.Integer, default=0)
     attempt_num = db.Column(db.Integer, nullable=False, default=1)
     agent_id = db.Column(db.String(255))
-    # MVP-facing states: proposed | accepted | rejected | superseded | failed | shipped
-    # Legacy-compatible states retained in the live code: validating | composed
-    # | release_pr_open
+    # Canonical lifecycle states: proposed | validating | validated | accepted
+    # | rejected | superseded | failed | shipped
+    # Legacy-compatible states retained in the live code: composed | release_pr_open
     status = db.Column(db.String(50), nullable=False, default="proposed")
+    validated_at = db.Column(db.TIMESTAMP)
+    is_winner = db.Column(db.Boolean)
+    winner_chosen_at = db.Column(db.TIMESTAMP)
+    integrated_at = db.Column(db.TIMESTAMP)
+    integrated_frontier_id = db.Column(db.String(255))
     summary = db.Column(db.Text)
     test_status = db.Column(db.String(50))   # passed | failed | skipped | None
     test_output = db.Column(db.Text)

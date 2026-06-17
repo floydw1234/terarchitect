@@ -98,6 +98,10 @@ from .services.ticket_service import (
 )
 from .services.attempt_service import (
     SATISFIED_STATUSES as _SATISFIED_STATUSES,
+    attempt_is_integrated as _attempt_is_integrated,
+    attempt_is_validated as _attempt_is_validated,
+    attempt_is_winner as _attempt_is_winner,
+    attempt_satisfies_dependencies as _attempt_satisfies_dependencies,
     attempt_stale_status as _attempt_stale_status,
     attempt_to_json as _attempt_to_json,
     create_attempt as _create_attempt,
@@ -1830,19 +1834,17 @@ def ticket_detail(project_id, ticket_id):
                 }), 400
             dep_ids = ticket.depends_on_ticket_ids or []
             if dep_ids:
-                # A dependency is satisfied when it has an accepted attempt
+                # A dependency is satisfied only when it has a winning integrated attempt.
                 blocking = [
                     db.session.get(Ticket, d) for d in dep_ids
-                    if not TicketAttempt.query.filter_by(ticket_id=d).filter(
-                        TicketAttempt.status.in_(_SATISFIED_STATUSES)
-                    ).first()
+                    if not _get_accepted_attempt(d)
                 ]
                 blocking = [b for b in blocking if b]
                 if blocking:
                     titles = ", ".join(f'"{b.title}"' for b in blocking[:3])
                     suffix = f" (+{len(blocking) - 3} more)" if len(blocking) > 3 else ""
                     return jsonify({
-                        "error": f"Blocked by tickets with no accepted attempt: {titles}{suffix}.",
+                        "error": f"Blocked by tickets with no integrated winner attempt: {titles}{suffix}.",
                     }), 400
         if "column_id" in data:
             new_col = data["column_id"]
@@ -2105,7 +2107,7 @@ def ticket_complete(project_id, ticket_id):
             # Validate immediately: check commit exists in AgentHub
             _validate_attempt(attempt)
             # Post validation result to ticket channel
-            if attempt.status == "accepted":
+            if _attempt_is_validated(attempt):
                 _post_event(
                     _ticket_channel(str(ticket_id)),
                     _event_content(
@@ -2117,6 +2119,7 @@ def ticket_complete(project_id, ticket_id):
                             "commit_hash": commit_hash,
                             "base_hash": base_hash,
                             "wave_num": attempt.wave_num,
+                            "status": attempt.status,
                         },
                     ),
                 )
@@ -2264,9 +2267,75 @@ def project_attempt_diff(project_id, attempt_id):
     return jsonify(_inspect_diff(project, attempt, file_path=file_path, max_bytes=max_bytes))
 
 
+@api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/attempts/<uuid:attempt_id>/choose-winner", methods=["POST"])
+def ticket_attempt_choose_winner(project_id, ticket_id, attempt_id):
+    """Choose the winning validated attempt for a ticket without integrating it."""
+    from datetime import datetime, timezone
+
+    project = _get_project_or_404(project_id)
+    attempt = TicketAttempt.query.filter_by(
+        project_id=project_id, ticket_id=ticket_id, id=attempt_id
+    ).first_or_404()
+    ticket_attempts = (
+        TicketAttempt.query
+        .filter_by(project_id=project_id, ticket_id=ticket_id)
+        .order_by(TicketAttempt.attempt_num.desc())
+        .all()
+    )
+    try:
+        if not _attempt_is_validated(attempt):
+            raise ValueError("Attempt must be validated before it can be chosen as the winner.")
+        existing_integrated = next(
+            (
+                sibling for sibling in ticket_attempts
+                if str(sibling.id) != str(attempt.id) and _attempt_is_integrated(sibling)
+            ),
+            None,
+        )
+        if existing_integrated is not None:
+            raise ValueError(
+                "Ticket already has an integrated attempt. Choose a new winner only before integration."
+            )
+
+        now = datetime.now(timezone.utc)
+        for sibling in ticket_attempts:
+            if str(sibling.id) == str(attempt.id):
+                continue
+            if sibling.is_winner:
+                sibling.is_winner = False
+                sibling.updated_at = now
+        attempt.is_winner = True
+        attempt.winner_chosen_at = now
+        attempt.updated_at = now
+        db.session.commit()
+        _post_event(
+            _ticket_channel(str(ticket_id)),
+            _event_content(
+                "attempt_winner_chosen",
+                f"Attempt #{attempt.attempt_num} chosen as winner"
+                + (f" at {attempt.agenthub_commit_hash[:12]}" if attempt.agenthub_commit_hash else ""),
+                {
+                    "attempt_id": str(attempt.id),
+                    "attempt_num": attempt.attempt_num,
+                    "commit_hash": attempt.agenthub_commit_hash,
+                    "wave_num": attempt.wave_num,
+                },
+            ),
+        )
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({
+            "error": str(e),
+            "accepted_frontier_id": _get_project_frontier_id(project),
+        }), 409
+    payload = _attempt_to_json(attempt, accepted_frontier_id=_get_project_frontier_id(project))
+    payload["project"] = _project_to_json(project)
+    return jsonify(payload)
+
+
 @api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/attempts/<uuid:attempt_id>/accept", methods=["POST"])
 def ticket_attempt_accept(project_id, ticket_id, attempt_id):
-    """Accept a ticket attempt. Supersedes any previously accepted attempt for the same ticket."""
+    """Accept/integrate the chosen winner for dependency use and frontier advancement."""
     from datetime import datetime, timezone
 
     project = _get_project_or_404(project_id)
@@ -2274,30 +2343,58 @@ def ticket_attempt_accept(project_id, ticket_id, attempt_id):
         project_id=project_id, ticket_id=ticket_id, id=attempt_id
     ).first_or_404()
     try:
-        stale, stale_reason = _attempt_stale_status(attempt, project)
-        if stale is None:
-            raise ValueError(stale_reason or "Cannot determine attempt staleness.")
-        if stale:
-            raise ValueError(
-                f"Attempt is stale and cannot be accepted without an explicit override. {stale_reason}"
-            )
         commit_hash = (attempt.agenthub_commit_hash or "").strip()
         if not commit_hash:
             raise ValueError(
                 "Attempt has no AgentHub leaf/commit id; cannot advance project.accepted_frontier_id."
             )
-        # Supersede any existing accepted attempt for this ticket
+
+        if not _attempt_is_validated(attempt):
+            raise ValueError("Attempt must be validated before it can be accepted/integrated.")
+        if not _attempt_is_winner(attempt):
+            raise ValueError("Attempt must be chosen as the winner before it can be accepted/integrated.")
+
         prev_accepted = _get_accepted_attempt(ticket_id)
         if prev_accepted and str(prev_accepted.id) != str(attempt_id):
-            try:
-                _transition_attempt(prev_accepted, "superseded", reason="superseded by newer acceptance")
-            except ValueError:
-                pass  # already in a terminal state
-        if attempt.status != "accepted":
-            _transition_attempt(attempt, "accepted")
-        project.accepted_frontier_id = commit_hash
-        project.updated_at = datetime.now(timezone.utc)
-        db.session.commit()
+            raise ValueError(
+                "A different attempt for this ticket is already integrated. Superseding integrated history is not supported here."
+            )
+
+        if _attempt_is_integrated(attempt) and (
+            (attempt.integrated_frontier_id or commit_hash) == commit_hash
+        ):
+            if not attempt.integrated_frontier_id:
+                attempt.integrated_frontier_id = commit_hash
+            if not attempt.integrated_at:
+                attempt.integrated_at = datetime.now(timezone.utc)
+            if not attempt.is_winner:
+                attempt.is_winner = True
+            if not attempt.winner_chosen_at:
+                attempt.winner_chosen_at = attempt.integrated_at
+            project.accepted_frontier_id = commit_hash
+            project.updated_at = datetime.now(timezone.utc)
+            db.session.commit()
+        else:
+            stale, stale_reason = _attempt_stale_status(attempt, project)
+            if stale is None:
+                raise ValueError(stale_reason or "Cannot determine attempt staleness.")
+            if stale:
+                raise ValueError(
+                    f"Attempt is stale and cannot be accepted/integrated without an explicit override. {stale_reason}"
+                )
+
+            if attempt.status != "accepted":
+                _transition_attempt(attempt, "accepted")
+            now = datetime.now(timezone.utc)
+            attempt.is_winner = True
+            attempt.winner_chosen_at = attempt.winner_chosen_at or now
+            attempt.integrated_at = attempt.integrated_at or now
+            attempt.integrated_frontier_id = commit_hash
+            project.accepted_frontier_id = commit_hash
+            project.updated_at = now
+            db.session.commit()
+
+        _dispatch_unblocked_queued(project_id)
         _post_event(
             _ticket_channel(str(ticket_id)),
             _event_content(
@@ -2318,6 +2415,9 @@ def ticket_attempt_accept(project_id, ticket_id, attempt_id):
             "error": str(e),
             "accepted_frontier_id": _get_project_frontier_id(project),
         }), 409
+    except Exception:
+        db.session.rollback()
+        raise
     payload = _attempt_to_json(attempt, accepted_frontier_id=_get_project_frontier_id(project))
     payload["accepted_frontier_id"] = project.accepted_frontier_id
     payload["project"] = _project_to_json(project)
@@ -2960,10 +3060,15 @@ def _ensure_wave_candidate(project, wave_num: int):
 
     accepted_attempts = [_get_accepted_attempt(ticket.id) for ticket in wave_tickets]
     if not any(accepted_attempts):
-        return None, None, None, "No accepted attempts found for this wave. Agents must complete tickets first."
+        return None, None, None, (
+            "No integrated winner attempts found for this wave. "
+            "Agents must validate, choose winners, and accept/integrate tickets first."
+        )
     if not all(accepted_attempts):
         missing = [wave_tickets[i].title for i, attempt in enumerate(accepted_attempts) if not attempt]
-        return None, None, None, f"Some tickets have no accepted attempt yet: {', '.join(missing[:3])}"
+        return None, None, None, (
+            "Some tickets have no integrated winner attempt yet: " + ", ".join(missing[:3])
+        )
 
     candidate, snapshot = _ensure_candidate_from_attempt_ids(
         project,
@@ -3064,8 +3169,10 @@ def _wave_next_actions(*, wave_num: int, blockers: list[str], all_done: bool, sh
             actions.append("Fix or remove dependency references that point to missing tickets.")
         if any("cycle" in b.lower() for b in blockers):
             actions.append("Break the dependency cycle so tickets can be ordered into earlier waves.")
-        if any("no accepted attempt" in b.lower() for b in blockers):
-            actions.append("Wait for every ticket in this candidate set to reach an accepted attempt.")
+        if any("no integrated winner attempt" in b.lower() for b in blockers):
+            actions.append(
+                "Wait for every ticket in this candidate set to have a chosen winner that has been accepted/integrated."
+            )
         if any("not shipped" in b.lower() for b in blockers):
             actions.append("Ship prerequisite promotion work first, then re-run candidate review or compose.")
         if any("not the current frontier" in b.lower() or "base " in b.lower() for b in blockers):
@@ -3284,8 +3391,8 @@ def ship_happy_path(project_id):
     attempt = _get_accepted_attempt(ticket.id)
     if attempt is None:
         return jsonify({
-            "error": "Ticket has no accepted attempt yet.",
-            "hint": "Accept an attempt before using ship happy-path.",
+            "error": "Ticket has no integrated winner attempt yet.",
+            "hint": "Choose a winner and accept/integrate it before using ship happy-path.",
             "next_commands": [f"ta ticket attempts {project_id} {ticket_id}"],
         }), 409
 
@@ -3386,7 +3493,9 @@ def ship_candidates(project_id):
     data = request.json or {}
     selected_attempt_ids = data.get("selected_attempt_ids")
     if not isinstance(selected_attempt_ids, list):
-        return jsonify({"error": "selected_attempt_ids must be a list of accepted attempt ids."}), 400
+        return jsonify({
+            "error": "selected_attempt_ids must be a list of winning integrated attempt ids."
+        }), 400
 
     candidate, snapshot = _ensure_candidate_from_attempt_ids(project, selected_attempt_ids)
     candidate.selected_leaf_hashes = snapshot["selected_leaf_hashes"]
@@ -3630,7 +3739,11 @@ def ship_wave_compose(project_id, wave_num):
 
     candidate, snapshot, wave_tickets, error = _ensure_wave_candidate(project, wave_num)
     if error:
-        return jsonify({"error": error}), 409 if "accepted" in error.lower() else 404
+        status = 404
+        lowered = error.lower()
+        if "accepted" in lowered or "integrated winner" in lowered:
+            status = 409
+        return jsonify({"error": error}), status
 
     tickets = Ticket.query.filter_by(project_id=project_id).all()
     waves = _compute_waves(tickets)
@@ -3929,13 +4042,7 @@ def _collect_wave_commit_hashes(wave_tickets: list, project) -> list:
     """Collect AgentHub commit hashes for a set of wave tickets from ticket_attempts."""
     hashes = []
     for t in wave_tickets:
-        attempt = (
-            TicketAttempt.query
-            .filter_by(ticket_id=t.id)
-            .filter(TicketAttempt.status.in_(_SATISFIED_STATUSES))
-            .order_by(TicketAttempt.attempt_num.desc())
-            .first()
-        )
+        attempt = _get_accepted_attempt(t.id)
         if attempt and attempt.agenthub_commit_hash:
             hashes.append(attempt.agenthub_commit_hash)
     return hashes
@@ -3980,7 +4087,7 @@ def _validate_wave_composition(
         errors.extend(explanation.get("blockers", []))
         attempt = accepted_by_ticket.get(str(ticket.id))
         if not attempt:
-            errors.append(f"Ticket '{ticket.title[:40]}' has no accepted attempt.")
+            errors.append(f"Ticket '{ticket.title[:40]}' has no integrated winner attempt.")
             continue
         if not attempt.agenthub_commit_hash:
             errors.append(f"Ticket '{ticket.title[:40]}' has no AgentHub commit hash.")
@@ -4009,7 +4116,7 @@ def _validate_wave_composition(
             if not dep_attempt:
                 errors.append(
                     f"Ticket '{ticket.title[:40]}' depends on '{dep.title[:40]}' "
-                    "which has no accepted attempt."
+                    "which has no integrated winner attempt."
                 )
                 continue
             if dep_attempt.status != "shipped":

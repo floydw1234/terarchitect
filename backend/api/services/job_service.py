@@ -3,7 +3,10 @@
 from flask import current_app
 
 from models.db import db, Project, Ticket, AgentJob, TicketAttempt
-from .attempt_service import SATISFIED_STATUSES as _SATISFIED_STATUSES
+from .attempt_service import (
+    SATISFIED_STATUSES as _SATISFIED_STATUSES,
+    attempt_satisfies_dependencies as _attempt_satisfies_dependencies,
+)
 from .project_service import get_project_frontier_id as _get_project_frontier_id
 
 
@@ -136,9 +139,9 @@ def mvp_dependency_base_context(ticket: Ticket, project: Project) -> dict:
 
     MVP order:
       1. No unshipped deps -> shipped_frontier
-      2. One accepted unshipped dep -> that dep's commit hash
+      2. One winning accepted/integrated unshipped dep -> that dep's commit hash
       3. All deps shipped -> shipped_frontier
-      4. Multiple accepted unshipped deps -> blocked
+      4. Multiple winning accepted/integrated unshipped deps -> blocked
 
     This path must not depend on temporary workspace composition.
     """
@@ -164,10 +167,10 @@ def mvp_dependency_base_context(ticket: Ticket, project: Project) -> dict:
         attempt = (
             TicketAttempt.query
             .filter_by(ticket_id=dep_id)
-            .filter(TicketAttempt.status.in_(_SATISFIED_STATUSES))
             .order_by(TicketAttempt.attempt_num.desc())
-            .first()
+            .all()
         )
+        attempt = next((row for row in attempt if _attempt_satisfies_dependencies(row)), None)
         if not attempt:
             continue
         if attempt.status == "shipped":
@@ -216,14 +219,14 @@ def mvp_dependency_base_context(ticket: Ticket, project: Project) -> dict:
         "accepted_unshipped_dependency_ticket_ids": [
             str(attempt.ticket_id) for attempt in accepted_unshipped_attempts
         ],
-        "shipped_dependency_ticket_ids": [str(attempt.ticket_id) for attempt in shipped_attempts],
-        "resolved_from_ticket_id": None,
-        "blocked": True,
-        "blocked_reason": (
-            "Multiple accepted unshipped dependencies are blocked in the MVP path. "
-            "Promote or ship prerequisite work first so exactly one stable base commit remains."
-        ),
-    }
+            "shipped_dependency_ticket_ids": [str(attempt.ticket_id) for attempt in shipped_attempts],
+            "resolved_from_ticket_id": None,
+            "blocked": True,
+            "blocked_reason": (
+                "Multiple winning accepted/integrated unshipped dependencies are blocked in the MVP path. "
+                "Promote or ship prerequisite work first so exactly one stable base commit remains."
+            ),
+        }
 
 
 def _attempt_hashes(attempts: list[TicketAttempt]) -> list[str]:

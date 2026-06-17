@@ -21,8 +21,9 @@ from .project_service import (
 # release-flow callbacks and tests.
 
 _TRANSITIONS: dict[str, set[str]] = {
-    "proposed":        {"validating", "accepted", "rejected", "failed"},
-    "validating":      {"accepted", "failed"},
+    "proposed":        {"validating", "validated", "rejected", "failed"},
+    "validating":      {"validated", "failed"},
+    "validated":       {"accepted", "rejected", "failed"},
     "accepted":        {"composed", "superseded"},
     "composed":        {"release_pr_open"},
     "release_pr_open": {"shipped"},
@@ -35,9 +36,44 @@ _TRANSITIONS: dict[str, set[str]] = {
 
 ALL_STATUSES: frozenset[str] = frozenset(_TRANSITIONS.keys())
 
-# Attempt statuses that count as "satisfied" for dependency and wave completion checks.
-# Exported so all services use the same definition.
-SATISFIED_STATUSES: frozenset[str] = frozenset(["accepted", "composed", "release_pr_open", "shipped"])
+LEGACY_WINNER_FALLBACK_STATUSES: frozenset[str] = frozenset(["accepted", "composed", "release_pr_open", "shipped"])
+VALIDATED_STATUSES: frozenset[str] = frozenset(["validated", "accepted", "composed", "release_pr_open", "shipped"])
+INTEGRATED_STATUSES: frozenset[str] = frozenset(["accepted", "composed", "release_pr_open", "shipped"])
+# Exported compatibility set for older callers that still key off status strings.
+SATISFIED_STATUSES: frozenset[str] = INTEGRATED_STATUSES
+
+
+def _iso_or_none(value) -> Optional[str]:
+    return value.isoformat() if isinstance(value, datetime) else None
+
+
+def attempt_is_validated(attempt: TicketAttempt | None) -> bool:
+    if attempt is None:
+        return False
+    return bool(getattr(attempt, "validated_at", None)) or attempt.status in VALIDATED_STATUSES
+
+
+def attempt_is_winner(attempt: TicketAttempt | None) -> bool:
+    if attempt is None:
+        return False
+    winner_flag = getattr(attempt, "is_winner", None)
+    if winner_flag is True:
+        return True
+    if winner_flag is False:
+        return False
+    return attempt.status in LEGACY_WINNER_FALLBACK_STATUSES
+
+
+def attempt_is_integrated(attempt: TicketAttempt | None) -> bool:
+    if attempt is None:
+        return False
+    if getattr(attempt, "integrated_at", None) or getattr(attempt, "integrated_frontier_id", None):
+        return True
+    return attempt.status in INTEGRATED_STATUSES
+
+
+def attempt_satisfies_dependencies(attempt: TicketAttempt | None) -> bool:
+    return attempt_is_winner(attempt) and attempt_is_integrated(attempt)
 
 
 def transition_attempt(attempt: TicketAttempt, new_status: str, reason: str = "") -> TicketAttempt:
@@ -49,7 +85,10 @@ def transition_attempt(attempt: TicketAttempt, new_status: str, reason: str = ""
             f"Allowed: {sorted(allowed) or 'none (terminal state)'}"
         )
     attempt.status = new_status
+    now = datetime.now(timezone.utc)
     attempt.updated_at = datetime.now(timezone.utc)
+    if new_status in VALIDATED_STATUSES and not getattr(attempt, "validated_at", None):
+        attempt.validated_at = now
     if reason:
         current_app.logger.info(
             "Attempt %s transitioned to %s: %s", attempt.id, new_status, reason
@@ -63,7 +102,7 @@ def transition_attempt(attempt: TicketAttempt, new_status: str, reason: str = ""
 # ---------------------------------------------------------------------------
 
 def validate_attempt(attempt: TicketAttempt, agenthub_url: str = "") -> TicketAttempt:
-    """Validate a proposed attempt and transition it to accepted or failed.
+    """Validate a proposed attempt and transition it to validated or failed.
 
     Checks (plan 8.1):
       1. commit_hash is present
@@ -71,7 +110,7 @@ def validate_attempt(attempt: TicketAttempt, agenthub_url: str = "") -> TicketAt
       3. commit exists in AgentHub (if AGENTHUB_URL is configured)
       4. summary exists (warning only)
 
-    If AgentHub is not configured, skips remote check and accepts immediately.
+    If AgentHub is not configured, skips remote check and validates immediately.
     This is the AgentHub-native MVP validation path; compatibility states are
     still allowed elsewhere in the model for older workflows.
     Caller must db.session.commit() after.
@@ -121,14 +160,14 @@ def validate_attempt(attempt: TicketAttempt, agenthub_url: str = "") -> TicketAt
                 )
                 return attempt
             if not resp.ok:
-                # AgentHub returned an unexpected error — accept anyway to not block work
+                # AgentHub returned an unexpected error — validate anyway to not block work
                 current_app.logger.warning(
-                    "AgentHub validation check returned %s for %s — accepting anyway",
+                    "AgentHub validation check returned %s for %s — validating anyway",
                     resp.status_code, attempt.agenthub_commit_hash[:12],
                 )
         except Exception as exc:
             current_app.logger.warning(
-                "AgentHub validation unreachable (%s) — accepting attempt %s",
+                "AgentHub validation unreachable (%s) — validating attempt %s",
                 exc, attempt.id,
             )
 
@@ -137,7 +176,8 @@ def validate_attempt(attempt: TicketAttempt, agenthub_url: str = "") -> TicketAt
             "validation_warning attempt=%s reason=no_summary", attempt.id
         )
 
-    attempt.status = "accepted"
+    attempt.status = "validated"
+    attempt.validated_at = datetime.now(timezone.utc)
     attempt.updated_at = datetime.now(timezone.utc)
     current_app.logger.info(
         "validation_passed attempt=%s ticket=%s commit=%s",
@@ -190,6 +230,15 @@ def attempt_to_json(
         "agent_id": attempt.agent_id,
         "worker_job_id": attempt.agent_id,
         "status": attempt.status,
+        "validated": attempt_is_validated(attempt),
+        "validated_at": _iso_or_none(getattr(attempt, "validated_at", None)),
+        "is_winner": attempt_is_winner(attempt),
+        "winner_chosen_at": _iso_or_none(getattr(attempt, "winner_chosen_at", None)),
+        "accepted": attempt_is_integrated(attempt),
+        "integrated": attempt_is_integrated(attempt),
+        "integrated_at": _iso_or_none(getattr(attempt, "integrated_at", None)),
+        "integrated_frontier_id": getattr(attempt, "integrated_frontier_id", None),
+        "dependency_satisfied": attempt_satisfies_dependencies(attempt),
         "summary": attempt.summary,
         "validation_error": attempt.validation_error,
         "test_status": attempt.test_status,
@@ -217,18 +266,21 @@ def get_latest_attempt(ticket_id) -> Optional[TicketAttempt]:
 
 
 def get_accepted_attempt(ticket_id) -> Optional[TicketAttempt]:
-    """Return the accepted (or shipped) attempt for a ticket, if any.
+    """Return the integrated winner attempt for a ticket, if any.
 
-    Compatibility states like composed/release_pr_open are still treated as
-    satisfied because older release-flow code can emit them.
+    Compatibility states like composed/release_pr_open/shipped still count as
+    integrated winners for older fixtures and release-flow callbacks.
     """
-    return (
+    attempts = (
         TicketAttempt.query
         .filter_by(ticket_id=ticket_id)
-        .filter(TicketAttempt.status.in_(SATISFIED_STATUSES))
         .order_by(TicketAttempt.attempt_num.desc())
-        .first()
+        .all()
     )
+    for attempt in attempts:
+        if attempt_satisfies_dependencies(attempt):
+            return attempt
+    return None
 
 
 def list_wave_attempts(project_id, wave_num: int) -> list[TicketAttempt]:

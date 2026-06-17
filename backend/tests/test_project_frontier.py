@@ -859,7 +859,9 @@ def test_ticket_complete_records_attempt_with_frontier_lineage_and_latest_attemp
     payload = detail.get_json()
     assert payload["accepted_frontier_id"] == frontier_id
     assert payload["latest_attempt"]["attempt_num"] == 1
-    assert payload["latest_attempt"]["status"] == "accepted"
+    assert payload["latest_attempt"]["status"] == "validated"
+    assert payload["latest_attempt"]["validated"] is True
+    assert payload["latest_attempt"]["integrated"] is False
     assert payload["latest_attempt"]["stale"] is False
     assert payload["latest_attempt"]["stale_reason"] is None
 

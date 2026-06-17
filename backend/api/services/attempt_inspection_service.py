@@ -7,6 +7,10 @@ from models.db import Project, TicketAttempt
 
 from .attempt_service import (
     SATISFIED_STATUSES,
+    attempt_is_integrated,
+    attempt_is_validated,
+    attempt_is_winner,
+    attempt_satisfies_dependencies,
     attempt_stale_status as _attempt_stale_status,
 )
 from .project_service import get_project_frontier_id as _get_project_frontier_id
@@ -254,8 +258,8 @@ def attempt_inspection_json(project: Project, attempt: TicketAttempt) -> dict:
     accepted_frontier_id = _get_project_frontier_id(project)
     stale, stale_reason = _attempt_stale_status(attempt, project)
     changed_paths = [item["path"] for item in inspection["changed_files"]]
-    satisfied = attempt.status in SATISFIED_STATUSES
-    accepted = attempt.status == "accepted"
+    satisfied = attempt_satisfies_dependencies(attempt)
+    accepted = attempt_is_integrated(attempt)
     return {
         "id": str(attempt.id),
         "attempt_id": str(attempt.id),
@@ -263,7 +267,14 @@ def attempt_inspection_json(project: Project, attempt: TicketAttempt) -> dict:
         "ticket_id": str(attempt.ticket_id),
         "ticket_title": getattr(ticket, "title", None),
         "status": attempt.status,
+        "validated": attempt_is_validated(attempt),
+        "validated_at": attempt.validated_at.isoformat() if attempt.validated_at else None,
+        "is_winner": attempt_is_winner(attempt),
+        "winner_chosen_at": attempt.winner_chosen_at.isoformat() if attempt.winner_chosen_at else None,
         "accepted": accepted,
+        "integrated": accepted,
+        "integrated_at": attempt.integrated_at.isoformat() if attempt.integrated_at else None,
+        "integrated_frontier_id": attempt.integrated_frontier_id,
         "satisfied": satisfied,
         "summary": attempt.summary,
         "agenthub_commit_hash": attempt.agenthub_commit_hash,

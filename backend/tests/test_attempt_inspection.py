@@ -147,7 +147,10 @@ def test_project_attempt_list_and_detail_include_agent_friendly_fields(client, t
     assert item["attempt_id"] == attempt_id
     assert item["ticket_id"] == ticket_id
     assert item["ticket_title"] == "Inspectable ticket"
+    assert item["validated"] is True
+    assert item["is_winner"] is True
     assert item["accepted"] is True
+    assert item["integrated"] is True
     assert item["satisfied"] is True
     assert item["agenthub_commit_hash"] == attempt_hash
     assert item["base_hash"] == base_hash
@@ -171,6 +174,9 @@ def test_project_attempt_list_and_detail_include_agent_friendly_fields(client, t
     assert detail_data["attempt_id"] == attempt_id
     assert detail_data["base_leaf_id"] == base_hash
     assert detail_data["parent_leaf_id"] == base_hash
+    assert detail_data["validated"] is True
+    assert detail_data["is_winner"] is True
+    assert detail_data["integrated"] is True
     assert "stale" in detail_data
     assert detail_data["test_status"] == "passed"
 

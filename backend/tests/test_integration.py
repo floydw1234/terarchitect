@@ -70,6 +70,10 @@ def test_ticket_complete_creates_attempt(client, project):
     attempts_resp = client.get(f"/api/projects/{project['id']}/tickets/{tid}/attempts")
     assert attempts_resp.status_code == 200
     attempt_payload = attempts_resp.get_json()[0]
+    assert attempt_payload["status"] == "validated"
+    assert attempt_payload["validated"] is True
+    assert attempt_payload["is_winner"] is False
+    assert attempt_payload["integrated"] is False
     assert attempt_payload["base_hash"] == base_leaf_id
     assert attempt_payload["base_leaf_id"] == base_leaf_id
     assert attempt_payload["parent_leaf_id"] == base_leaf_id
@@ -366,7 +370,7 @@ def test_compose_rejects_no_accepted_attempts(client, project):
 
     resp = client.post(f"/api/projects/{pid}/ship/waves/0/compose", json={})
     assert resp.status_code == 409
-    assert "No accepted attempts" in resp.get_json().get("error", "")
+    assert "No integrated winner attempts" in resp.get_json().get("error", "")
 
 
 def test_compose_rejects_wave_with_unshipped_dependency(client, project):

@@ -2,7 +2,11 @@
 from collections import defaultdict
 
 from models.db import db, Project, PromotionCandidate, Ticket, ShipRun, TicketAttempt
-from .attempt_service import SATISFIED_STATUSES as _SATISFIED_STATUSES
+from .attempt_service import (
+    SATISFIED_STATUSES as _SATISFIED_STATUSES,
+    attempt_is_integrated as _attempt_is_integrated,
+    attempt_satisfies_dependencies as _attempt_satisfies_dependencies,
+)
 
 
 # MVP docs speak in terms of queued/composing/ready_to_ship/shipping/shipped.
@@ -181,7 +185,7 @@ def analyze_promotion_candidate_graph(
     selected_attempts: list,
     accepted_attempts_by_ticket_id: dict[str, TicketAttempt],
 ) -> dict:
-    """Resolve accepted-attempt dependency closure and validate a candidate set."""
+    """Resolve integrated-winner dependency closure and validate a candidate set."""
     ticket_by_id = {str(ticket.id): ticket for ticket in tickets}
     included_attempts_by_ticket_id: dict[str, TicketAttempt] = {}
     dependency_ticket_ids_by_ticket: dict[str, list[str]] = {}
@@ -221,7 +225,7 @@ def analyze_promotion_candidate_graph(
             if dep_attempt is None:
                 dep_title = dep_ticket.title[:40] if dep_ticket else dep_id
                 blockers.append(
-                    f"Ticket '{ticket.title[:40]}' depends on '{dep_title}' with no accepted attempt."
+                    f"Ticket '{ticket.title[:40]}' depends on '{dep_title}' with no integrated winner attempt."
                 )
                 continue
             if dep_attempt.status == "shipped":
@@ -317,7 +321,7 @@ def analyze_promotion_candidate_graph(
             )
 
         if not attempt.agenthub_commit_hash:
-            blockers.append(f"Ticket '{ticket.title[:40]}' has an accepted attempt with no commit hash.")
+            blockers.append(f"Ticket '{ticket.title[:40]}' has an integrated winner attempt with no commit hash.")
 
         allowed_bases = set(filter(None, [frontier])) | included_hashes
         if attempt.base_hash:
@@ -331,7 +335,7 @@ def analyze_promotion_candidate_graph(
                 else:
                     blockers.append(
                         f"Ticket '{ticket.title[:40]}' attempt base {attempt.base_hash[:12]} "
-                        "is not the current frontier or another included accepted attempt."
+                        "is not the current frontier or another included integrated winner attempt."
                     )
         elif frontier:
             blockers.append(f"Ticket '{ticket.title[:40]}' has no base hash for frontier validation.")
@@ -376,13 +380,16 @@ def build_promotion_candidate_snapshot(project, selected_attempt_ids: list[str])
         if attempt_id_str not in deduped_attempt_ids:
             deduped_attempt_ids.append(attempt_id_str)
 
-    accepted_attempts = (
-        TicketAttempt.query
-        .filter_by(project_id=project.id)
-        .filter(TicketAttempt.status.in_(_SATISFIED_STATUSES))
-        .order_by(TicketAttempt.ticket_id.asc(), TicketAttempt.attempt_num.desc())
-        .all()
-    )
+    accepted_attempts = [
+        attempt
+        for attempt in (
+            TicketAttempt.query
+            .filter_by(project_id=project.id)
+            .order_by(TicketAttempt.ticket_id.asc(), TicketAttempt.attempt_num.desc())
+            .all()
+        )
+        if _attempt_satisfies_dependencies(attempt)
+    ]
     accepted_attempts_by_ticket_id: dict[str, TicketAttempt] = {}
     for attempt in accepted_attempts:
         ticket_id = str(attempt.ticket_id)
@@ -394,7 +401,9 @@ def build_promotion_candidate_snapshot(project, selected_attempt_ids: list[str])
     for attempt_id in deduped_attempt_ids:
         attempt = attempts_by_id.get(attempt_id)
         if attempt is None:
-            blockers.append(f"Attempt {attempt_id} is not an accepted attempt in this project.")
+            blockers.append(
+                f"Attempt {attempt_id} is not a winning integrated attempt in this project."
+            )
             continue
         selected_attempts.append(attempt)
 
@@ -405,7 +414,7 @@ def build_promotion_candidate_snapshot(project, selected_attempt_ids: list[str])
         accepted_attempts_by_ticket_id=accepted_attempts_by_ticket_id,
     )
     if not deduped_attempt_ids:
-        blockers.append("selected_attempt_ids must include at least one accepted attempt.")
+        blockers.append("selected_attempt_ids must include at least one winning integrated attempt.")
     merged_blockers = analysis["validation_summary"].get("blockers", []) + blockers
     deduped_blockers: list[str] = []
     for blocker in merged_blockers:
@@ -502,7 +511,11 @@ def validate_promotion_candidate(candidate: PromotionCandidate, project: Project
         .order_by(TicketAttempt.ticket_id.asc(), TicketAttempt.attempt_num.desc())
         .all()
     )
-    accepted_attempts_by_ticket_id = dict(candidate_attempts_by_ticket_id)
+    accepted_attempts_by_ticket_id = {
+        ticket_id: attempt
+        for ticket_id, attempt in candidate_attempts_by_ticket_id.items()
+        if _attempt_satisfies_dependencies(attempt)
+    }
     for attempt in shipped_attempts:
         accepted_attempts_by_ticket_id.setdefault(str(attempt.ticket_id), attempt)
 

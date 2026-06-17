@@ -13,6 +13,10 @@ from .project_service import (
 )
 from .attempt_service import (
     SATISFIED_STATUSES as _SATISFIED_STATUSES,
+    attempt_is_integrated as _attempt_is_integrated,
+    attempt_is_validated as _attempt_is_validated,
+    attempt_is_winner as _attempt_is_winner,
+    attempt_satisfies_dependencies as _attempt_satisfies_dependencies,
     attempt_stale_status as _attempt_stale_status,
 )
 from .channel_service import (
@@ -95,10 +99,14 @@ def _attempt_strategy_for_index(attempt_index: int) -> dict:
     return dict(strategy)
 
 def _has_accepted_attempt(ticket_id) -> bool:
-    """True if the ticket has an accepted (or better) attempt."""
-    return TicketAttempt.query.filter_by(ticket_id=ticket_id).filter(
-        TicketAttempt.status.in_(_SATISFIED_STATUSES)
-    ).first() is not None
+    """True if the ticket has a winner that has been integrated for dependency use."""
+    attempts = (
+        TicketAttempt.query
+        .filter_by(ticket_id=ticket_id)
+        .order_by(TicketAttempt.attempt_num.desc())
+        .all()
+    )
+    return any(_attempt_satisfies_dependencies(attempt) for attempt in attempts)
 
 
 def resolve_ticket_base_leaf_id(project: Project | None, explicit_value, *, explicit_provided: bool) -> str | None:
@@ -215,9 +223,9 @@ def compute_ticket_display_state(
             return "stale"
         return "accepted"
 
-    # Latest attempt — agent has run but attempt isn't accepted yet
+    # Latest attempt — agent has run but attempt isn't integrated yet
     if latest_attempt:
-        if latest_attempt.status in ("proposed", "validating"):
+        if latest_attempt.status in ("proposed", "validating", "validated"):
             return "attempt_ready"
         if latest_attempt.status == "failed":
             return "failed"
@@ -226,7 +234,7 @@ def compute_ticket_display_state(
     if ticket.column_id == "in_progress":
         return "running"
 
-    # Dependency check — a dep is unblocked only when it has an accepted attempt.
+    # Dependency check — a dep is unblocked only when it has a winning integrated attempt.
     # If satisfied_dep_ids is pre-computed (batch), use it; otherwise fall back to per-dep query.
     dep_ids = ticket.depends_on_ticket_ids or []
     if dep_ids:
@@ -293,26 +301,34 @@ def ticket_to_json(t: Ticket) -> dict:
         .first()
     )
     accepted = None
-    if latest and latest.status in _SATISFIED_STATUSES:
+    if latest and _attempt_is_integrated(latest):
         accepted = latest
     elif latest:
-        accepted = (
+        attempts = (
             TicketAttempt.query
             .filter_by(ticket_id=t.id)
-            .filter(TicketAttempt.status.in_(_SATISFIED_STATUSES))
             .order_by(TicketAttempt.attempt_num.desc())
-            .first()
+            .all()
         )
+        accepted = next((attempt for attempt in attempts if _attempt_satisfies_dependencies(attempt)), None)
 
-    # Pre-fetch which dep tickets have accepted attempts (avoids N+1 inside compute_ticket_display_state)
+    # Pre-fetch which dep tickets have winning integrated attempts (avoids N+1 inside compute_ticket_display_state)
     dep_ids = t.depends_on_ticket_ids or []
     satisfied_dep_ids: Optional[set] = None
     if dep_ids:
-        satisfied_rows = TicketAttempt.query.filter(
-            TicketAttempt.ticket_id.in_(dep_ids),
-            TicketAttempt.status.in_(_SATISFIED_STATUSES),
-        ).with_entities(TicketAttempt.ticket_id).distinct().all()
-        satisfied_dep_ids = {str(row[0]) for row in satisfied_rows}
+        dep_attempts = (
+            TicketAttempt.query
+            .filter(TicketAttempt.ticket_id.in_(dep_ids))
+            .order_by(TicketAttempt.ticket_id.asc(), TicketAttempt.attempt_num.desc())
+            .all()
+        )
+        satisfied_dep_ids = set()
+        for attempt in dep_attempts:
+            ticket_id = str(attempt.ticket_id)
+            if ticket_id in satisfied_dep_ids:
+                continue
+            if _attempt_satisfies_dependencies(attempt):
+                satisfied_dep_ids.add(ticket_id)
 
     out["display_state"] = compute_ticket_display_state(
         t,
@@ -333,6 +349,9 @@ def ticket_to_json(t: Ticket) -> dict:
             "attempt_num": latest.attempt_num,
             "summary": latest.summary,
             "test_status": latest.test_status,
+            "validated": _attempt_is_validated(latest),
+            "is_winner": _attempt_is_winner(latest),
+            "integrated": _attempt_is_integrated(latest),
             "accepted_frontier_id": accepted_frontier_id,
             "stale": latest_stale,
             "stale_reason": latest_stale_reason,
@@ -351,6 +370,9 @@ def ticket_to_json(t: Ticket) -> dict:
             "status": accepted.status,
             "wave_num": accepted.wave_num,
             "attempt_num": accepted.attempt_num,
+            "validated": _attempt_is_validated(accepted),
+            "is_winner": _attempt_is_winner(accepted),
+            "integrated": _attempt_is_integrated(accepted),
             "accepted_frontier_id": accepted_frontier_id,
             "stale": acc_stale,
             "stale_reason": acc_stale_reason,
@@ -384,13 +406,13 @@ def _prepare_ticket_enqueue(ticket_id) -> tuple[Ticket | None, Project | None]:
             current_app.logger.info("Skipping enqueue: ticket %s project has no GitHub URL", ticket_id)
             return None, None
 
-    # Dependency check: a dep is satisfied when it has an accepted attempt
+    # Dependency check: a dep is satisfied only when it has a winning integrated attempt.
     dep_ids = ticket.depends_on_ticket_ids or []
     for dep_id in dep_ids:
         if not _has_accepted_attempt(dep_id):
             dep = db.session.get(Ticket, dep_id)
             current_app.logger.info(
-                "Skipping enqueue: ticket %s blocked by dep %s (%s) — no accepted attempt yet",
+                "Skipping enqueue: ticket %s blocked by dep %s (%s) — no integrated winner attempt yet",
                 ticket_id, dep_id, dep.title if dep else "?",
             )
             return None, None

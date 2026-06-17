@@ -48,7 +48,7 @@ def test_validate_attempt_accepts_when_commit_found(app):
             with patch.dict(os.environ, {"AGENTHUB_URL": "http://agenthub:8088"}):
                 result = validate_attempt(attempt)
 
-        assert result.status == "accepted"
+        assert result.status == "validated"
 
 
 # ---------------------------------------------------------------------------
@@ -98,8 +98,8 @@ def test_validate_attempt_accepts_when_agenthub_unreachable(app):
             with patch.dict(os.environ, {"AGENTHUB_URL": "http://agenthub:8088"}):
                 result = validate_attempt(attempt)
 
-        # Should accept — AgentHub unavailability must not block work
-        assert result.status == "accepted"
+        # Should validate — AgentHub unavailability must not block work
+        assert result.status == "validated"
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +191,7 @@ def test_compute_base_hash_uses_dep_hash_when_accepted(app):
             mock_attempt.status = "accepted"
 
             # Mock the query chain
-            MockTA.query.filter_by.return_value.filter.return_value.order_by.return_value.first.return_value = mock_attempt
+            MockTA.query.filter_by.return_value.order_by.return_value.all.return_value = [mock_attempt]
 
             ticket = MagicMock()
             ticket.depends_on_ticket_ids = [dep_id]
@@ -777,10 +777,10 @@ def test_ticket_attempts_list_returns_multiple_attempts_newest_first(client, pro
     assert [attempt["status"] for attempt in data] == ["proposed", "proposed"]
 
 
-def test_accept_attempt_supersedes_prior_accepted_attempt(client, project):
+def test_choose_winner_only_marks_one_validated_attempt(client, project):
     pid = project["id"]
     initial_frontier = project["accepted_frontier_id"]
-    from models.db import db, Ticket, TicketAttempt
+    from models.db import Project, db, Ticket, TicketAttempt
 
     with client.application.app_context():
         ticket = Ticket(
@@ -798,18 +798,20 @@ def test_accept_attempt_supersedes_prior_accepted_attempt(client, project):
             base_hash=initial_frontier,
             wave_num=0,
             attempt_num=1,
-            status="proposed",
+            status="validated",
             summary="first try",
+            validated_at=db.func.now(),
         )
         second = TicketAttempt(
             project_id=pid,
             ticket_id=ticket.id,
             agenthub_commit_hash="b" * 40,
-            base_hash="a" * 40,
+            base_hash=initial_frontier,
             wave_num=0,
             attempt_num=2,
-            status="proposed",
+            status="validated",
             summary="second try",
+            validated_at=db.func.now(),
         )
         db.session.add_all([first, second])
         db.session.commit()
@@ -817,23 +819,31 @@ def test_accept_attempt_supersedes_prior_accepted_attempt(client, project):
         first_attempt_id = str(first.id)
         second_attempt_id = str(second.id)
 
-    first_accept = client.post(
-        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{first_attempt_id}/accept"
+    first_choose = client.post(
+        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{first_attempt_id}/choose-winner"
     )
-    assert first_accept.status_code == 200
-    assert first_accept.get_json()["status"] == "accepted"
+    assert first_choose.status_code == 200
+    assert first_choose.get_json()["status"] == "validated"
+    assert first_choose.get_json()["is_winner"] is True
 
-    second_accept = client.post(
-        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{second_attempt_id}/accept"
+    second_choose = client.post(
+        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{second_attempt_id}/choose-winner"
     )
-    assert second_accept.status_code == 200
-    assert second_accept.get_json()["status"] == "accepted"
+    assert second_choose.status_code == 200
+    assert second_choose.get_json()["status"] == "validated"
+    assert second_choose.get_json()["is_winner"] is True
+    assert second_choose.get_json()["accepted_frontier_id"] == initial_frontier
 
     resp = client.get(f"/api/projects/{pid}/tickets/{ticket_id}/attempts")
     assert resp.status_code == 200
     attempts = resp.get_json()
     assert [attempt["attempt_num"] for attempt in attempts] == [2, 1]
-    assert [attempt["status"] for attempt in attempts] == ["accepted", "superseded"]
+    assert [attempt["status"] for attempt in attempts] == ["validated", "validated"]
+    assert [attempt["is_winner"] for attempt in attempts] == [True, False]
+
+    with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        assert stored_project.accepted_frontier_id == initial_frontier
 
 
 def test_accept_attempt_advances_project_accepted_frontier(client, project):
@@ -857,13 +867,19 @@ def test_accept_attempt_advances_project_accepted_frontier(client, project):
             base_hash=initial_frontier,
             wave_num=0,
             attempt_num=1,
-            status="proposed",
+            status="validated",
             summary="advance accepted frontier",
+            validated_at=db.func.now(),
         )
         db.session.add(attempt)
         db.session.commit()
         ticket_id = str(ticket.id)
         attempt_id = str(attempt.id)
+
+    choose = client.post(
+        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{attempt_id}/choose-winner"
+    )
+    assert choose.status_code == 200
 
     resp = client.post(
         f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{attempt_id}/accept"
@@ -872,6 +888,9 @@ def test_accept_attempt_advances_project_accepted_frontier(client, project):
     assert resp.status_code == 200
     payload = resp.get_json()
     assert payload["status"] == "accepted"
+    assert payload["validated"] is True
+    assert payload["is_winner"] is True
+    assert payload["integrated"] is True
     assert payload["accepted_frontier_id"] == "d" * 40
     assert payload["project"]["accepted_frontier_id"] == "d" * 40
 
@@ -902,8 +921,10 @@ def test_accept_attempt_fails_clearly_without_agenthub_commit_hash(client, proje
             base_hash=original_frontier,
             wave_num=0,
             attempt_num=1,
-            status="proposed",
+            status="validated",
             summary="missing commit hash",
+            validated_at=db.func.now(),
+            is_winner=True,
         )
         db.session.add(attempt)
         db.session.commit()
@@ -921,7 +942,7 @@ def test_accept_attempt_fails_clearly_without_agenthub_commit_hash(client, proje
         stored_project = db.session.get(Project, pid)
         stored_attempt = db.session.get(TicketAttempt, attempt_id)
         assert stored_project.accepted_frontier_id == original_frontier
-        assert stored_attempt.status == "proposed"
+        assert stored_attempt.status == "validated"
 
 
 def test_accept_attempt_does_not_fallback_to_local_git_head(client, project):
@@ -944,13 +965,19 @@ def test_accept_attempt_does_not_fallback_to_local_git_head(client, project):
             base_hash=project["accepted_frontier_id"],
             wave_num=0,
             attempt_num=1,
-            status="proposed",
+            status="validated",
             summary="must use stored leaf only",
+            validated_at=db.func.now(),
         )
         db.session.add(attempt)
         db.session.commit()
         ticket_id = str(ticket.id)
         attempt_id = str(attempt.id)
+
+    choose = client.post(
+        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{attempt_id}/choose-winner"
+    )
+    assert choose.status_code == 200
 
     with patch("api.routes._read_local_git_tip") as read_local_tip:
         resp = client.post(
@@ -1021,8 +1048,10 @@ def test_accept_attempt_rejects_stale_attempt_and_does_not_advance_frontier(clie
             base_hash="leaf_01HZX3OLDATTEMPTBASE0123456789",
             wave_num=0,
             attempt_num=1,
-            status="proposed",
+            status="validated",
             summary="stale attempt",
+            validated_at=db.func.now(),
+            is_winner=True,
         )
         db.session.add(attempt)
         db.session.commit()
@@ -1042,7 +1071,7 @@ def test_accept_attempt_rejects_stale_attempt_and_does_not_advance_frontier(clie
         stored_project = db.session.get(Project, pid)
         stored_attempt = db.session.get(TicketAttempt, attempt_id)
         assert stored_project.accepted_frontier_id == original_frontier
-        assert stored_attempt.status == "proposed"
+        assert stored_attempt.status == "validated"
 
 
 def test_accept_attempt_rejects_when_staleness_cannot_be_determined(client, project):
@@ -1068,8 +1097,10 @@ def test_accept_attempt_rejects_when_staleness_cannot_be_determined(client, proj
             base_hash=None,
             wave_num=0,
             attempt_num=1,
-            status="proposed",
+            status="validated",
             summary="unknown staleness",
+            validated_at=db.func.now(),
+            is_winner=True,
         )
         db.session.add(attempt)
         db.session.commit()
@@ -1088,7 +1119,7 @@ def test_accept_attempt_rejects_when_staleness_cannot_be_determined(client, proj
         stored_project = db.session.get(Project, pid)
         stored_attempt = db.session.get(TicketAttempt, attempt_id)
         assert stored_project.accepted_frontier_id is None
-        assert stored_attempt.status == "proposed"
+        assert stored_attempt.status == "validated"
 
 
 def test_reject_attempt_returns_rejected_state(client, project):
@@ -1313,7 +1344,7 @@ def test_create_promotion_candidate_blocks_missing_dependency_attempt(client, pr
     assert create_resp.status_code == 201
     data = create_resp.get_json()
     assert data["status"] == "blocked"
-    assert "no accepted attempt" in (data["conflict_summary"] or "")
+    assert "no integrated winner attempt" in (data["conflict_summary"] or "")
 
     list_resp = client.get(f"/api/projects/{pid}/ship/candidates?status=blocked")
     assert list_resp.status_code == 200
