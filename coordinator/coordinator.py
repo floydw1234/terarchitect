@@ -667,6 +667,10 @@ def _docker_run_args(image: str, job: dict) -> tuple:
     cache_volume = _env("AGENT_CACHE_VOLUME", "terarchitect-agent-cache")
     if cache_volume:
         args.extend(["-v", f"{cache_volume}:/cache"])
+    worker_mode = (env.get("WORKER_MODE") or "codex").strip().lower()
+    if worker_mode == "codex":
+        codex_config_dir = os.path.expanduser(_env("CODEX_CONFIG_DIR", "~/.codex"))
+        args.extend(["-v", f"{codex_config_dir}:/root/.codex"])
     docker_mode = _env("AGENT_DOCKER_MODE", "dind").lower()
     if docker_mode == "dind":
         args.append("--privileged")

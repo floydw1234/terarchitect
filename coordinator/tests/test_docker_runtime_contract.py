@@ -11,6 +11,16 @@ from coordinator.coordinator import _docker_run_args, _runtime_pythonpath, job_t
 
 
 class TestDockerRuntimeContract(unittest.TestCase):
+    def _job(self) -> dict:
+        return {
+            "ticket_id": "ticket-1",
+            "project_id": "project-1",
+            "job_id": "job-1",
+            "kind": "ticket",
+            "repo_url": "https://github.com/example/repo",
+            "execution_mode": "docker",
+        }
+
     def test_runtime_pythonpath_includes_repo_and_agent_roots(self):
         pythonpath = _runtime_pythonpath("/tmp/custom")
         parts = pythonpath.split(os.pathsep)
@@ -85,21 +95,14 @@ class TestDockerRuntimeContract(unittest.TestCase):
         self.assertEqual(env["TERARCHITECT_ATTEMPT_STRATEGY"], "architecture-cleanup")
 
     def test_docker_run_args_use_env_file_for_secrets_and_attach_compose_network(self):
-        job = {
-            "ticket_id": "ticket-1",
-            "project_id": "project-1",
-            "job_id": "job-1",
-            "kind": "ticket",
-            "repo_url": "https://github.com/example/repo",
-            "execution_mode": "docker",
-            "base_leaf_id": "leaf_123",
-            "attempt_metadata": {
-                "attempt_batch_id": "batch-xyz",
-                "attempt_index": 2,
-                "attempt_count": 4,
-                "attempt_strategy": "product-polish",
-                "attempt_strategy_description": "Bias toward user-facing clarity and finish quality.",
-            },
+        job = self._job()
+        job["base_leaf_id"] = "leaf_123"
+        job["attempt_metadata"] = {
+            "attempt_batch_id": "batch-xyz",
+            "attempt_index": 2,
+            "attempt_count": 4,
+            "attempt_strategy": "product-polish",
+            "attempt_strategy_description": "Bias toward user-facing clarity and finish quality.",
         }
         env_overrides = {
             "TERARCHITECT_API_URL": "http://backend:5010",
@@ -143,6 +146,50 @@ class TestDockerRuntimeContract(unittest.TestCase):
                 self.assertIn("AGENTHUB_API_KEY_PATH=/run/secrets/agenthub_api_key", secret_env)
                 self.assertIn("WORKER_API_KEY=worker-secret", secret_env)
                 self.assertIn("OPENROUTER_API_KEY=openrouter-secret", secret_env)
+            finally:
+                if secret_env_path and os.path.exists(secret_env_path):
+                    os.unlink(secret_env_path)
+
+    def test_docker_run_args_mount_codex_config_dir_for_codex_workers(self):
+        env_overrides = {
+            "WORKER_MODE": "codex",
+            "CODEX_CONFIG_DIR": "/tmp/codex-config",
+            "AGENT_DOCKER_MODE": "dind",
+        }
+        with patch.dict(os.environ, env_overrides, clear=False):
+            args, secret_env_path = _docker_run_args("terarchitect-agent", self._job())
+            try:
+                self.assertIn("-v", args)
+                self.assertIn("/tmp/codex-config:/root/.codex", args)
+            finally:
+                if secret_env_path and os.path.exists(secret_env_path):
+                    os.unlink(secret_env_path)
+
+    def test_docker_run_args_mount_default_codex_config_dir_for_codex_workers(self):
+        env_overrides = {
+            "WORKER_MODE": "codex",
+            "AGENT_DOCKER_MODE": "dind",
+            "HOME": "/tmp/fake-home",
+        }
+        with patch.dict(os.environ, env_overrides, clear=False):
+            os.environ.pop("CODEX_CONFIG_DIR", None)
+            args, secret_env_path = _docker_run_args("terarchitect-agent", self._job())
+            try:
+                self.assertIn("/tmp/fake-home/.codex:/root/.codex", args)
+            finally:
+                if secret_env_path and os.path.exists(secret_env_path):
+                    os.unlink(secret_env_path)
+
+    def test_docker_run_args_skip_codex_config_mount_for_non_codex_workers(self):
+        env_overrides = {
+            "WORKER_MODE": "opencode",
+            "CODEX_CONFIG_DIR": "/tmp/codex-config",
+            "AGENT_DOCKER_MODE": "dind",
+        }
+        with patch.dict(os.environ, env_overrides, clear=False):
+            args, secret_env_path = _docker_run_args("terarchitect-agent", self._job())
+            try:
+                self.assertNotIn("/tmp/codex-config:/root/.codex", args)
             finally:
                 if secret_env_path and os.path.exists(secret_env_path):
                     os.unlink(secret_env_path)
