@@ -1,5 +1,5 @@
 """Composite Workspace service: serialization and compatibility analysis (Phase 9)."""
-from models.db import CompositeWorkspace, TicketAttempt, Ticket, Project
+from models.db import CompositeWorkspace, Project, Ticket, TicketAttempt, db
 from .attempt_service import SATISFIED_STATUSES
 
 
