@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   Alert,
   Box,
+  Button,
   Card,
   CardContent,
   Chip,
@@ -9,6 +10,7 @@ import {
   Divider,
   IconButton,
   Stack,
+  TextField,
   Tooltip,
   Typography,
 } from '@mui/material';
@@ -17,6 +19,9 @@ import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import { AGENTHUB_URL } from '../utils/api';
 import CommitDagGraph from '../components/graph/CommitDagGraph';
 import { accentFromString, graphGlassPanelSx } from '../components/graph/graphVisuals';
+
+const AGENTHUB_KEY_STORAGE = 'terarchitect.agenthub.key';
+const AUTH_REQUIRED_MESSAGE = 'AgentHub requires an API key. Enter or update it below, then save to reload the DAG.';
 
 interface Commit {
   hash: string;
@@ -55,9 +60,16 @@ function timeAgo(iso: string) {
 }
 
 async function ahGet(path: string) {
+  const storedKey = window.localStorage.getItem(AGENTHUB_KEY_STORAGE)?.trim();
+  const key = storedKey || (window as any).__AH_KEY__ || '';
   const resp = await fetch(AGENTHUB_URL + path, {
-    headers: { Authorization: `Bearer ${(window as any).__AH_KEY__ ?? ''}` },
+    headers: key ? { Authorization: `Bearer ${key}` } : undefined,
   });
+  if (resp.status === 401) {
+    const authError = new Error(AUTH_REQUIRED_MESSAGE);
+    (authError as Error & { code?: string }).code = 'AUTH_REQUIRED';
+    throw authError;
+  }
   if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
   return resp.json();
 }
@@ -84,10 +96,18 @@ const AgenthubPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const [keyDraft, setKeyDraft] = useState('');
+  const [hasSavedKey, setHasSavedKey] = useState(() => Boolean(window.localStorage.getItem(AGENTHUB_KEY_STORAGE)?.trim()));
+  const [usingDevFallback, setUsingDevFallback] = useState(
+    () => !window.localStorage.getItem(AGENTHUB_KEY_STORAGE)?.trim() && Boolean((window as any).__AH_KEY__),
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    const storedKey = window.localStorage.getItem(AGENTHUB_KEY_STORAGE)?.trim();
+    setHasSavedKey(Boolean(storedKey));
+    setUsingDevFallback(!storedKey && Boolean((window as any).__AH_KEY__));
     try {
       const health = await fetch(AGENTHUB_URL + '/api/health');
       setOnline(health.ok);
@@ -121,7 +141,11 @@ const AgenthubPage: React.FC = () => {
 
       setLastRefresh(new Date());
     } catch (e: any) {
-      setOnline(false);
+      if (e?.code === 'AUTH_REQUIRED') {
+        setOnline(true);
+      } else {
+        setOnline(false);
+      }
       setError(e.message);
     } finally {
       setLoading(false);
@@ -135,6 +159,23 @@ const AgenthubPage: React.FC = () => {
   const uniqueAgents = Array.from(
     new Set([...log.map((commit) => commit.agent_id), ...recentPosts.map((post) => post.agent_id)].filter(Boolean)),
   );
+
+  const handleSaveKey = () => {
+    const nextKey = keyDraft.trim();
+    if (nextKey) {
+      window.localStorage.setItem(AGENTHUB_KEY_STORAGE, nextKey);
+    } else {
+      window.localStorage.removeItem(AGENTHUB_KEY_STORAGE);
+    }
+    setKeyDraft('');
+    void load();
+  };
+
+  const handleClearKey = () => {
+    window.localStorage.removeItem(AGENTHUB_KEY_STORAGE);
+    setKeyDraft('');
+    void load();
+  };
 
   return (
     <Box sx={{ maxWidth: 1440, mx: 'auto', display: 'flex', flexDirection: 'column', gap: 2.25 }}>
@@ -180,6 +221,43 @@ const AgenthubPage: React.FC = () => {
           </Stack>
         </Stack>
       </Box>
+
+      <Card>
+        <CardContent>
+          <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} alignItems={{ xs: 'stretch', lg: 'center' }}>
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography variant="subtitle1">Connection</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                Store an AgentHub API key in this browser to load protected DAG data. The key is not shown in page text.
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                {hasSavedKey
+                  ? 'A saved key is available in local storage.'
+                  : usingDevFallback
+                    ? 'Using the development fallback from window.__AH_KEY__.'
+                    : 'No saved key is configured.'}
+              </Typography>
+            </Box>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} sx={{ width: { xs: '100%', lg: 'auto' } }}>
+              <TextField
+                type="password"
+                size="small"
+                label="API key"
+                value={keyDraft}
+                onChange={(event) => setKeyDraft(event.target.value)}
+                autoComplete="off"
+                sx={{ minWidth: { xs: '100%', sm: 280 } }}
+              />
+              <Button variant="contained" onClick={handleSaveKey} disabled={loading}>
+                Save key
+              </Button>
+              <Button variant="outlined" onClick={handleClearKey} disabled={loading || (!hasSavedKey && !usingDevFallback)}>
+                Clear key
+              </Button>
+            </Stack>
+          </Stack>
+        </CardContent>
+      </Card>
 
       {error && <Alert severity="warning">{error}</Alert>}
       {online === false && !error && (
