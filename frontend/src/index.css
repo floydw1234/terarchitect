@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 * {
   margin: 0;
@@ -11,8 +11,8 @@ body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #0f172a;
-  color: #f8fafc;
+  background-color: #08090a;
+  color: #f4f7fb;
 }
 
 code {
@@ -20,5 +20,36 @@ code {
 }
 
 #root {
-  height: 100vh;
+  min-height: 100vh;
+}
+
+::selection {
+  background: rgba(139, 92, 246, 0.36);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+}
+
+.graph-edge-flow {
+  animation: graphEdgeFlow 12s linear infinite;
+}
+
+@keyframes graphEdgeFlow {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -240;
+  }
 }

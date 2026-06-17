@@ -1,10 +1,22 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
-  Box, Typography, Card, CardContent, Chip, CircularProgress,
-  Alert, IconButton, Tooltip, Divider, Stack,
+  Alert,
+  Box,
+  Card,
+  CardContent,
+  Chip,
+  CircularProgress,
+  Divider,
+  IconButton,
+  Stack,
+  Tooltip,
+  Typography,
 } from '@mui/material';
-import RefreshIcon from '@mui/icons-material/Refresh';
+import { alpha } from '@mui/material/styles';
+import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import { AGENTHUB_URL } from '../utils/api';
+import CommitDagGraph from '../components/graph/CommitDagGraph';
+import { accentFromString, graphGlassPanelSx } from '../components/graph/graphVisuals';
 
 interface Commit {
   hash: string;
@@ -50,6 +62,19 @@ async function ahGet(path: string) {
   return resp.json();
 }
 
+const StatCard: React.FC<{ label: string; value: number; accent: string }> = ({ label, value, accent }) => (
+  <Card sx={{ minHeight: 132 }}>
+    <CardContent>
+      <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: '0.14em' }}>
+        {label}
+      </Typography>
+      <Typography variant="h4" sx={{ mt: 1, color: accent }}>
+        {value}
+      </Typography>
+    </CardContent>
+  </Card>
+);
+
 const AgenthubPage: React.FC = () => {
   const [online, setOnline] = useState<boolean | null>(null);
   const [leaves, setLeaves] = useState<Commit[]>([]);
@@ -64,7 +89,6 @@ const AgenthubPage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      // Health check
       const health = await fetch(AGENTHUB_URL + '/api/health');
       setOnline(health.ok);
 
@@ -83,13 +107,14 @@ const AgenthubPage: React.FC = () => {
       setLog(logData ?? []);
       setChannels(channelsData ?? []);
 
-      // Fetch recent posts from each channel (up to 5 channels, 5 posts each)
       const posts: Post[] = [];
-      for (const ch of (channelsData ?? []).slice(0, 5)) {
+      for (const channel of (channelsData ?? []).slice(0, 5)) {
         try {
-          const p = await ahGet(`/api/channels/${ch.name}/posts?limit=5`);
-          posts.push(...(p ?? []));
-        } catch {}
+          const channelPosts = await ahGet(`/api/channels/${channel.name}/posts?limit=5`);
+          posts.push(...(channelPosts ?? []));
+        } catch {
+          // Ignore channel-specific post failures and keep the dashboard usable.
+        }
       }
       posts.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
       setRecentPosts(posts.slice(0, 20));
@@ -103,210 +128,262 @@ const AgenthubPage: React.FC = () => {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
-  const agentColors: Record<string, string> = {};
-  const palette = ['#22d3ee', '#a78bfa', '#34d399', '#f59e0b', '#f87171', '#60a5fa'];
-  let colorIdx = 0;
-  function agentColor(id: string) {
-    if (!id) return '#94a3b8';
-    if (!agentColors[id]) agentColors[id] = palette[colorIdx++ % palette.length];
-    return agentColors[id];
-  }
-
-  const uniqueAgents = Array.from(new Set([...log.map(c => c.agent_id), ...recentPosts.map(p => p.agent_id)].filter(Boolean)));
+  const uniqueAgents = Array.from(
+    new Set([...log.map((commit) => commit.agent_id), ...recentPosts.map((post) => post.agent_id)].filter(Boolean)),
+  );
 
   return (
-    <Box sx={{ maxWidth: 1100, mx: 'auto' }}>
-      {/* Header */}
-      <Box sx={{ display: 'flex', alignItems: 'center', mb: 3, gap: 2 }}>
-        <Typography variant="h5" fontWeight={700}>AgentHub</Typography>
-        <Chip
-          size="small"
-          label={online === null ? 'checking…' : online ? 'online' : 'offline'}
-          color={online ? 'success' : online === false ? 'error' : 'default'}
-        />
-        {lastRefresh && (
-          <Typography variant="caption" color="text.secondary">
-            refreshed {timeAgo(lastRefresh.toISOString())}
-          </Typography>
-        )}
-        <Box sx={{ flex: 1 }} />
-        <Tooltip title="Refresh">
-          <span>
-            <IconButton onClick={load} disabled={loading} size="small">
-              <RefreshIcon fontSize="small" />
-            </IconButton>
-          </span>
-        </Tooltip>
+    <Box sx={{ maxWidth: 1440, mx: 'auto', display: 'flex', flexDirection: 'column', gap: 2.25 }}>
+      <Box sx={{ ...graphGlassPanelSx, px: { xs: 2, md: 2.75 }, py: { xs: 2.25, md: 2.75 } }}>
+        <Stack
+          direction={{ xs: 'column', lg: 'row' }}
+          spacing={2}
+          justifyContent="space-between"
+          alignItems={{ xs: 'flex-start', lg: 'center' }}
+        >
+          <Box>
+            <Typography variant="overline" color="secondary.main">
+              Multi-agent Operations
+            </Typography>
+            <Typography variant="h4" sx={{ mt: 0.5 }}>
+              AgentHub
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1, maxWidth: 760 }}>
+              Recent frontier state, active channels, and commit lineage from the AgentHub swarm in a shared graph visual language.
+            </Typography>
+          </Box>
+
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Chip
+              size="small"
+              label={online === null ? 'Checking' : online ? 'Online' : 'Offline'}
+              color={online ? 'success' : online === false ? 'error' : 'default'}
+            />
+            {lastRefresh && (
+              <Chip
+                size="small"
+                label={`Refreshed ${timeAgo(lastRefresh.toISOString())}`}
+                sx={{ bgcolor: 'rgba(255, 255, 255, 0.05)' }}
+              />
+            )}
+            <Tooltip title="Refresh AgentHub data">
+              <span>
+                <IconButton onClick={load} disabled={loading} size="small">
+                  <RefreshRoundedIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+          </Stack>
+        </Stack>
       </Box>
 
-      {error && <Alert severity="warning" sx={{ mb: 2 }}>{error}</Alert>}
+      {error && <Alert severity="warning">{error}</Alert>}
       {online === false && !error && (
-        <Alert severity="info" sx={{ mb: 2 }}>
-          AgentHub is not reachable at {AGENTHUB_URL}. Start it with{' '}
-          <code>docker compose --profile swarm up agenthub</code>.
+        <Alert severity="info">
+          AgentHub is not reachable at {AGENTHUB_URL}. Start it with <code>docker compose --profile swarm up agenthub</code>.
         </Alert>
       )}
 
       {loading && !log.length && (
-        <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}>
-          <CircularProgress size={32} />
+        <Box sx={{ display: 'flex', justifyContent: 'center', py: 7 }}>
+          <CircularProgress size={34} />
         </Box>
       )}
 
       {online && (
-        <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 3 }}>
+        <>
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))', xl: 'repeat(4, minmax(0, 1fr))' },
+              gap: 2,
+            }}
+          >
+            <StatCard label="Recent commits" value={log.length} accent="#8b5cf6" />
+            <StatCard label="Frontier leaves" value={leaves.length} accent="#22d3ee" />
+            <StatCard label="Channels" value={channels.length} accent="#38bdf8" />
+            <StatCard label="Agents seen" value={uniqueAgents.length} accent="#a78bfa" />
+          </Box>
 
-          {/* Stats row */}
-          <Card sx={{ gridColumn: '1 / -1' }}>
-            <CardContent>
-              <Stack direction="row" spacing={4}>
-                <Box>
-                  <Typography variant="h4" fontWeight={700} color="primary">{log.length}</Typography>
-                  <Typography variant="caption" color="text.secondary">commits (last 30)</Typography>
-                </Box>
-                <Box>
-                  <Typography variant="h4" fontWeight={700} color="primary">{leaves.length}</Typography>
-                  <Typography variant="caption" color="text.secondary">leaves (frontier)</Typography>
-                </Box>
-                <Box>
-                  <Typography variant="h4" fontWeight={700} color="primary">{channels.length}</Typography>
-                  <Typography variant="caption" color="text.secondary">channels</Typography>
-                </Box>
-                <Box>
-                  <Typography variant="h4" fontWeight={700} color="primary">{uniqueAgents.length}</Typography>
-                  <Typography variant="caption" color="text.secondary">agents seen</Typography>
-                </Box>
-              </Stack>
-              {uniqueAgents.length > 0 && (
-                <Box sx={{ mt: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                  {uniqueAgents.map(id => (
-                    <Chip key={id} size="small" label={id}
-                      sx={{ bgcolor: agentColor(id) + '22', color: agentColor(id), border: `1px solid ${agentColor(id)}44` }} />
-                  ))}
-                </Box>
-              )}
+          {uniqueAgents.length > 0 && (
+            <Card>
+              <CardContent>
+                <Typography variant="subtitle1" sx={{ mb: 1.5 }}>
+                  Active agents
+                </Typography>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  {uniqueAgents.map((agentId) => {
+                    const accent = accentFromString(agentId);
+                    return (
+                      <Chip
+                        key={agentId}
+                        size="small"
+                        label={agentId}
+                        sx={{
+                          bgcolor: alpha(accent, 0.12),
+                          color: accent,
+                          border: `1px solid ${alpha(accent, 0.28)}`,
+                          fontFamily: '"JetBrains Mono", monospace',
+                        }}
+                      />
+                    );
+                  })}
+                </Stack>
+              </CardContent>
+            </Card>
+          )}
+
+          <Card>
+            <CardContent sx={{ p: 1.25 }}>
+              <CommitDagGraph commits={log} leaves={leaves} />
             </CardContent>
           </Card>
 
-          {/* Frontier / leaves */}
-          <Card>
-            <CardContent>
-              <Typography variant="subtitle1" fontWeight={600} mb={1.5}>
-                Frontier — current leaves
-              </Typography>
-              {leaves.length === 0 ? (
-                <Typography variant="body2" color="text.secondary">No commits yet.</Typography>
-              ) : (
-                <Stack spacing={1}>
-                  {leaves.map(c => (
-                    <Box key={c.hash} sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start' }}>
-                      <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'primary.main', pt: 0.3, whiteSpace: 'nowrap' }}>
-                        {short(c.hash)}
-                      </Typography>
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Typography variant="body2" noWrap>{c.message || '(no message)'}</Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          {c.agent_id || '(seed)'} · {timeAgo(c.created_at)}
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: { xs: '1fr', xl: 'repeat(2, minmax(0, 1fr))' },
+              gap: 2,
+            }}
+          >
+            <Card>
+              <CardContent>
+                <Typography variant="subtitle1" sx={{ mb: 1.5 }}>
+                  Frontier leaves
+                </Typography>
+                {leaves.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary">
+                    No commits on the frontier yet.
+                  </Typography>
+                ) : (
+                  <Stack spacing={1.25}>
+                    {leaves.map((commit) => (
+                      <Box key={commit.hash} sx={{ display: 'flex', gap: 1.25, alignItems: 'flex-start' }}>
+                        <Typography variant="caption" sx={{ fontFamily: '"JetBrains Mono", monospace', color: 'secondary.main', pt: 0.2, whiteSpace: 'nowrap' }}>
+                          {short(commit.hash)}
                         </Typography>
+                        <Box sx={{ minWidth: 0, flex: 1 }}>
+                          <Typography variant="body2" noWrap>
+                            {commit.message || '(no message)'}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            {commit.agent_id || 'seed'} · {timeAgo(commit.created_at)}
+                          </Typography>
+                        </Box>
                       </Box>
-                    </Box>
-                  ))}
-                </Stack>
-              )}
-            </CardContent>
-          </Card>
+                    ))}
+                  </Stack>
+                )}
+              </CardContent>
+            </Card>
 
-          {/* Recent commits */}
-          <Card>
-            <CardContent>
-              <Typography variant="subtitle1" fontWeight={600} mb={1.5}>
-                Recent commits
-              </Typography>
-              {log.length === 0 ? (
-                <Typography variant="body2" color="text.secondary">No commits yet.</Typography>
-              ) : (
-                <Stack spacing={1} divider={<Divider />}>
-                  {log.slice(0, 15).map(c => (
-                    <Box key={c.hash} sx={{ display: 'flex', gap: 1.5, alignItems: 'flex-start' }}>
-                      <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'primary.main', pt: 0.3, whiteSpace: 'nowrap' }}>
-                        {short(c.hash)}
-                      </Typography>
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Typography variant="body2" noWrap>{c.message || '(no message)'}</Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          <span style={{ color: agentColor(c.agent_id) }}>{c.agent_id || '(seed)'}</span>
-                          {' '}· {timeAgo(c.created_at)}
-                          {c.parent_hash && (
-                            <span style={{ opacity: 0.5 }}> · ← {short(c.parent_hash)}</span>
-                          )}
+            <Card>
+              <CardContent>
+                <Typography variant="subtitle1" sx={{ mb: 1.5 }}>
+                  Recent commits
+                </Typography>
+                {log.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary">
+                    No recent commits yet.
+                  </Typography>
+                ) : (
+                  <Stack spacing={1} divider={<Divider />}>
+                    {log.slice(0, 15).map((commit) => {
+                      const accent = accentFromString(commit.agent_id);
+                      return (
+                        <Box key={commit.hash} sx={{ display: 'flex', gap: 1.25, alignItems: 'flex-start' }}>
+                          <Typography variant="caption" sx={{ fontFamily: '"JetBrains Mono", monospace', color: accent, pt: 0.2, whiteSpace: 'nowrap' }}>
+                            {short(commit.hash)}
+                          </Typography>
+                          <Box sx={{ minWidth: 0, flex: 1 }}>
+                            <Typography variant="body2" noWrap>
+                              {commit.message || '(no message)'}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              <span style={{ color: accent }}>{commit.agent_id || 'seed'}</span>
+                              {' · '}
+                              {timeAgo(commit.created_at)}
+                              {commit.parent_hash && (
+                                <span style={{ opacity: 0.58 }}>{` · ← ${short(commit.parent_hash)}`}</span>
+                              )}
+                            </Typography>
+                          </Box>
+                        </Box>
+                      );
+                    })}
+                  </Stack>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent>
+                <Typography variant="subtitle1" sx={{ mb: 1.5 }}>
+                  Channels
+                </Typography>
+                {channels.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary">
+                    No channels registered.
+                  </Typography>
+                ) : (
+                  <Stack spacing={1}>
+                    {channels.map((channel) => (
+                      <Box key={channel.id} sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
+                        <Typography variant="body2" sx={{ fontFamily: '"JetBrains Mono", monospace' }}>
+                          #{channel.name}
                         </Typography>
-                      </Box>
-                    </Box>
-                  ))}
-                </Stack>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Channels */}
-          <Card>
-            <CardContent>
-              <Typography variant="subtitle1" fontWeight={600} mb={1.5}>
-                Channels
-              </Typography>
-              {channels.length === 0 ? (
-                <Typography variant="body2" color="text.secondary">No channels yet.</Typography>
-              ) : (
-                <Stack spacing={0.5}>
-                  {channels.map(ch => (
-                    <Box key={ch.id} sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>#{ch.name}</Typography>
-                      {ch.description && (
-                        <Typography variant="caption" color="text.secondary">— {ch.description}</Typography>
-                      )}
-                    </Box>
-                  ))}
-                </Stack>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Recent board posts */}
-          <Card>
-            <CardContent>
-              <Typography variant="subtitle1" fontWeight={600} mb={1.5}>
-                Recent board posts
-              </Typography>
-              {recentPosts.length === 0 ? (
-                <Typography variant="body2" color="text.secondary">No posts yet.</Typography>
-              ) : (
-                <Stack spacing={1} divider={<Divider />}>
-                  {recentPosts.map(p => (
-                    <Box key={p.id}>
-                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mb: 0.25 }}>
-                        <Typography variant="caption" sx={{ color: agentColor(p.agent_id), fontWeight: 600 }}>
-                          {p.agent_id}
-                        </Typography>
-                        {p.parent_id && (
-                          <Chip size="small" label="reply" sx={{ height: 16, fontSize: 10 }} />
+                        {channel.description && (
+                          <Typography variant="caption" color="text.secondary" noWrap>
+                            {channel.description}
+                          </Typography>
                         )}
-                        <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
-                          {timeAgo(p.created_at)}
-                        </Typography>
                       </Box>
-                      <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                        {p.content.length > 200 ? p.content.slice(0, 200) + '…' : p.content}
-                      </Typography>
-                    </Box>
-                  ))}
-                </Stack>
-              )}
-            </CardContent>
-          </Card>
+                    ))}
+                  </Stack>
+                )}
+              </CardContent>
+            </Card>
 
-        </Box>
+            <Card>
+              <CardContent>
+                <Typography variant="subtitle1" sx={{ mb: 1.5 }}>
+                  Recent board posts
+                </Typography>
+                {recentPosts.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary">
+                    No recent posts yet.
+                  </Typography>
+                ) : (
+                  <Stack spacing={1} divider={<Divider />}>
+                    {recentPosts.map((post) => {
+                      const accent = accentFromString(post.agent_id);
+                      return (
+                        <Box key={post.id}>
+                          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mb: 0.4 }}>
+                            <Typography variant="caption" sx={{ color: accent, fontWeight: 700 }}>
+                              {post.agent_id || 'unknown'}
+                            </Typography>
+                            {post.parent_id && <Chip size="small" label="Reply" sx={{ height: 18, fontSize: 10 }} />}
+                            <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
+                              {timeAgo(post.created_at)}
+                            </Typography>
+                          </Box>
+                          <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                            {post.content.length > 220 ? `${post.content.slice(0, 220)}…` : post.content}
+                          </Typography>
+                        </Box>
+                      );
+                    })}
+                  </Stack>
+                )}
+              </CardContent>
+            </Card>
+          </Box>
+        </>
       )}
     </Box>
   );
