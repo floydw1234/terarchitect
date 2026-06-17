@@ -80,6 +80,32 @@ def _artifact_endpoint_hint(project_id: str, attempt_id: str) -> str:
     )
 
 
+def _normalize_attempt_files_payload(data) -> dict[str, object]:
+    if isinstance(data, dict):
+        raw_files = data.get("changed_files")
+        if raw_files is None and "files" in data:
+            raw_files = data.get("files")
+        normalized = {
+            "files": list(raw_files) if isinstance(raw_files, list) else [],
+            "unavailable_reason": data.get("unavailable_reason"),
+            "next_actions": list(data.get("next_actions") or []),
+        }
+        if "commit_available" in data:
+            normalized["commit_available"] = data.get("commit_available")
+        return normalized
+    if isinstance(data, list):
+        return {
+            "files": list(data),
+            "unavailable_reason": None,
+            "next_actions": [],
+        }
+    return {
+        "files": [],
+        "unavailable_reason": None,
+        "next_actions": [],
+    }
+
+
 def _render_attempt_row(attempt: dict) -> dict[str, str]:
     files = attempt.get("changed_files") or attempt.get("files") or []
     if isinstance(files, list):
@@ -126,8 +152,9 @@ def _print_attempt_summary(attempt: dict, project_id: str) -> None:
     ticket_id = attempt.get("ticket_id")
     if ticket_id:
         print(f"  ta ticket attempts {project_id} {ticket_id}")
-        if attempt.get("status") not in {"accepted", "composed", "release_pr_open", "shipped"}:
-            print(f"  ta ticket accept-attempt {project_id} {ticket_id} {attempt.get('id')}")
+        print(f"  ta ticket evaluate-attempts {project_id} {ticket_id} --attempt {attempt.get('id')}")
+        if attempt.get("is_winner"):
+            print(f"  ta ticket accept-winner {project_id} {ticket_id} {attempt.get('id')}")
         if attempt.get("status") not in {"rejected", "shipped", "superseded", "failed"}:
             print(f"  ta ticket reject-attempt {project_id} {ticket_id} {attempt.get('id')} --reason \"needs revision\"")
         if attempt.get("status") in {"accepted", "composed", "release_pr_open"}:
@@ -210,8 +237,17 @@ def _cmd_files(args, api: API) -> None:
     if args.output == "json":
         print_json(data)
         return
-    files = data.get("files") if isinstance(data, dict) else data
+    artifact = _normalize_attempt_files_payload(data)
+    files = artifact.get("files") or []
     if not files:
+        if artifact.get("unavailable_reason"):
+            print(artifact["unavailable_reason"])
+            if artifact.get("next_actions"):
+                print("")
+                print("Next:")
+                for action in artifact["next_actions"]:
+                    print(f"  {action}")
+            return
         print("No changed files reported for this attempt.")
         return
     rows = []

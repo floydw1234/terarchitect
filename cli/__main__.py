@@ -10,7 +10,8 @@ Commands:
                | migration import-agenthub-root
     publish    <project-id> [--target github] [--attempt-id ID | --commit HASH] [--push]
     ticket     list | create | show | update | run | cancel | logs
-               | attempts | accept-attempt | reject-attempt
+               | attempts | evaluate-attempts | choose-winner | accept-winner
+               | accept-attempt | reject-attempt
                (Intent fields: --rationale, --acceptance-criteria, --constraints, --intent-status)
     attempt    list | show | files | diff
     status     <project-id> --ticket <ticket-id>
