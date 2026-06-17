@@ -13,6 +13,13 @@ if _backend_dir not in sys.path:
 
 config = context.config
 
+from alembic_support import (  # noqa: E402
+    configure_alembic_version_table_storage,
+    ensure_alembic_version_table_capacity,
+)
+
+configure_alembic_version_table_storage()
+
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
@@ -47,6 +54,7 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
+        ensure_alembic_version_table_capacity(connection)
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():
             context.run_migrations()
