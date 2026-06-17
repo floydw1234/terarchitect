@@ -62,14 +62,27 @@ class TestDockerRuntimeContract(unittest.TestCase):
                 "kind": "ticket",
                 "repo_url": "https://github.com/example/repo",
                 "execution_mode": "docker",
-                "metadata": {"attempt_slot": "blue", "attempt_index": 2, "attempt_count": 4},
+                "metadata": {
+                    "attempt_batch_id": "batch-123",
+                    "attempt_index": 2,
+                    "attempt_count": 4,
+                    "attempt_strategy": "architecture-cleanup",
+                    "attempt_strategy_description": "Improve structure where it directly clarifies the ticket.",
+                },
             },
             for_docker=False,
         )
 
-        self.assertEqual(env["ATTEMPT_SLOT"], "blue")
+        self.assertEqual(env["ATTEMPT_BATCH_ID"], "batch-123")
         self.assertEqual(env["ATTEMPT_INDEX"], "2")
         self.assertEqual(env["ATTEMPT_COUNT"], "4")
+        self.assertEqual(env["ATTEMPT_STRATEGY"], "architecture-cleanup")
+        self.assertEqual(
+            env["ATTEMPT_STRATEGY_DESCRIPTION"],
+            "Improve structure where it directly clarifies the ticket.",
+        )
+        self.assertEqual(env["TERARCHITECT_ATTEMPT_BATCH_ID"], "batch-123")
+        self.assertEqual(env["TERARCHITECT_ATTEMPT_STRATEGY"], "architecture-cleanup")
 
     def test_docker_run_args_use_env_file_for_secrets_and_attach_compose_network(self):
         job = {
@@ -80,7 +93,13 @@ class TestDockerRuntimeContract(unittest.TestCase):
             "repo_url": "https://github.com/example/repo",
             "execution_mode": "docker",
             "base_leaf_id": "leaf_123",
-            "attempt_metadata": {"slot": "blue", "index": 2, "count": 4},
+            "attempt_metadata": {
+                "attempt_batch_id": "batch-xyz",
+                "attempt_index": 2,
+                "attempt_count": 4,
+                "attempt_strategy": "product-polish",
+                "attempt_strategy_description": "Bias toward user-facing clarity and finish quality.",
+            },
         }
         env_overrides = {
             "TERARCHITECT_API_URL": "http://backend:5010",
@@ -107,10 +126,15 @@ class TestDockerRuntimeContract(unittest.TestCase):
                 self.assertNotIn("WORKER_API_KEY=worker-secret", joined_args)
                 self.assertNotIn("OPENROUTER_API_KEY=openrouter-secret", joined_args)
                 self.assertIn("-e AGENTHUB_URL=http://agenthub:8080", joined_args)
-                self.assertIn("-e ATTEMPT_SLOT=blue", joined_args)
+                self.assertIn("-e ATTEMPT_BATCH_ID=batch-xyz", joined_args)
                 self.assertIn("-e ATTEMPT_INDEX=2", joined_args)
                 self.assertIn("-e ATTEMPT_COUNT=4", joined_args)
-                self.assertIn("slot-blue", args[args.index("--name") + 1])
+                self.assertIn("-e ATTEMPT_STRATEGY=product-polish", joined_args)
+                self.assertIn(
+                    "-e TERARCHITECT_ATTEMPT_STRATEGY_DESCRIPTION=Bias toward user-facing clarity and finish quality.",
+                    joined_args,
+                )
+                self.assertIn("strategy-product-polish", args[args.index("--name") + 1])
                 self.assertIsNotNone(secret_env_path)
 
                 with open(secret_env_path, encoding="utf-8") as handle:

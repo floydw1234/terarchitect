@@ -1,4 +1,5 @@
 """Ticket domain helpers: serialisation, enqueueing, dispatch, and display state."""
+import uuid
 from typing import Optional
 
 from flask import current_app
@@ -23,6 +24,75 @@ from .job_service import mvp_dependency_base_context as _mvp_dependency_base_con
 
 
 MAX_PARALLEL_ATTEMPTS = 5
+DEFAULT_TICKET_ATTEMPT_COUNT = 3
+ATTEMPT_STRATEGIES = (
+    {
+        "key": "conservative-minimalist",
+        "description": "Prefer the smallest safe change that satisfies the ticket and avoids broad refactors.",
+    },
+    {
+        "key": "test-first-verifier",
+        "description": "Lead with tests or explicit verification so the change is proven before broad edits.",
+    },
+    {
+        "key": "architecture-cleanup",
+        "description": "Improve structure where it directly clarifies the ticket and reduces local complexity.",
+    },
+    {
+        "key": "performance-simplicity",
+        "description": "Favor simple implementations with attention to obvious performance costs and unnecessary work.",
+    },
+    {
+        "key": "product-polish",
+        "description": "Bias toward user-facing clarity, edge-case handling, and finish quality while staying on scope.",
+    },
+)
+
+
+def _clamp_attempt_count(value: int) -> int:
+    return max(1, min(MAX_PARALLEL_ATTEMPTS, value))
+
+
+def parse_attempt_count(
+    raw_value,
+    *,
+    default: int,
+    field_name: str = "attempt_count",
+) -> tuple[int | None, str | None]:
+    if raw_value is None:
+        return _clamp_attempt_count(default), None
+    if isinstance(raw_value, bool):
+        return None, f"{field_name} must be an integer"
+    if isinstance(raw_value, float):
+        if not raw_value.is_integer():
+            return None, f"{field_name} must be an integer"
+        raw_value = int(raw_value)
+    try:
+        attempt_count = int(raw_value)
+    except (TypeError, ValueError):
+        return None, f"{field_name} must be an integer"
+    if attempt_count < 1:
+        return None, f"{field_name} must be at least 1"
+    if attempt_count > MAX_PARALLEL_ATTEMPTS:
+        return None, f"{field_name} must be at most {MAX_PARALLEL_ATTEMPTS}"
+    return attempt_count, None
+
+
+def ticket_default_attempt_count(ticket: Ticket | None) -> int:
+    raw_value = getattr(ticket, "default_attempt_count", None) if ticket else None
+    attempt_count, error = parse_attempt_count(
+        raw_value,
+        default=DEFAULT_TICKET_ATTEMPT_COUNT,
+        field_name="default_attempt_count",
+    )
+    if error or attempt_count is None:
+        return DEFAULT_TICKET_ATTEMPT_COUNT
+    return attempt_count
+
+
+def _attempt_strategy_for_index(attempt_index: int) -> dict:
+    strategy = ATTEMPT_STRATEGIES[(attempt_index - 1) % len(ATTEMPT_STRATEGIES)]
+    return dict(strategy)
 
 def _has_accepted_attempt(ticket_id) -> bool:
     """True if the ticket has an accepted (or better) attempt."""
@@ -194,6 +264,7 @@ def ticket_to_json(t: Ticket) -> dict:
         "priority": t.priority,
         "status": t.status,
         "failed_count": t.failed_count or 0,
+        "default_attempt_count": ticket_default_attempt_count(t),
         "depends_on_ticket_ids": t.depends_on_ticket_ids or [],
         "base_leaf_id": getattr(t, "base_leaf_id", None),
         "accepted_frontier_id": accepted_frontier_id,
@@ -348,25 +419,36 @@ def _prepare_ticket_enqueue(ticket_id) -> tuple[Ticket | None, Project | None]:
 
 
 def _create_ticket_jobs(ticket: Ticket, *, count: int) -> list[AgentJob]:
-    jobs = [
-        AgentJob(
-            ticket_id=ticket.id,
-            project_id=ticket.project_id,
-            kind="ticket",
-            status="pending",
+    count = _clamp_attempt_count(count)
+    attempt_batch_id = str(uuid.uuid4())
+    jobs: list[AgentJob] = []
+    for attempt_index in range(1, count + 1):
+        strategy = _attempt_strategy_for_index(attempt_index)
+        jobs.append(
+            AgentJob(
+                ticket_id=ticket.id,
+                project_id=ticket.project_id,
+                kind="ticket",
+                status="pending",
+                attempt_metadata={
+                    "attempt_batch_id": attempt_batch_id,
+                    "attempt_index": attempt_index,
+                    "attempt_count": count,
+                    "attempt_strategy": strategy["key"],
+                    "attempt_strategy_description": strategy["description"],
+                },
+            )
         )
-        for _ in range(count)
-    ]
     db.session.add_all(jobs)
     db.session.commit()
     return jobs
 
 
-def enqueue_ticket_job(ticket_id):
-    """Enqueue one ticket job. Skip if project missing URL/path or already pending/running."""
+def enqueue_ticket_jobs(ticket_id, attempt_count: int | None = None) -> list[AgentJob]:
+    """Enqueue one or more jobs for a ticket, assigning persisted attempt metadata."""
     ticket, _ = _prepare_ticket_enqueue(ticket_id)
     if not ticket:
-        return None
+        return []
 
     existing = AgentJob.query.filter(
         AgentJob.ticket_id == ticket_id,
@@ -374,51 +456,43 @@ def enqueue_ticket_job(ticket_id):
     ).with_for_update(skip_locked=True).first()
     if existing:
         current_app.logger.info("Skipping enqueue: ticket %s already has job %s", ticket_id, existing.id)
-        return None
-
-    jobs = _create_ticket_jobs(ticket, count=1)
-    current_app.logger.info("Enqueued ticket job for ticket %s", ticket_id)
-    _post_event(
-        _ticket_channel(str(ticket_id)),
-        _event_content(
-            "ticket_assigned",
-            f"Ticket assigned: {ticket.title[:200]}",
-            {"ticket_id": str(ticket_id), "project_id": str(ticket.project_id)},
-        ),
-    )
-    return jobs[0]
-
-
-def enqueue_parallel_ticket_jobs(ticket_id, attempt_count: int) -> list[AgentJob]:
-    """Enqueue an explicit competing-attempt batch for one ticket.
-
-    AgentJob currently has no metadata/json column, so these rows are only
-    distinguishable by creation order and job ID. The worker claim payload
-    exposes a best-effort slot index derived from the active sibling jobs.
-    """
-    ticket, _ = _prepare_ticket_enqueue(ticket_id)
-    if not ticket:
         return []
 
-    jobs = _create_ticket_jobs(ticket, count=attempt_count)
+    count = attempt_count if attempt_count is not None else ticket_default_attempt_count(ticket)
+    jobs = _create_ticket_jobs(ticket, count=count)
     current_app.logger.info(
-        "Enqueued %s competing ticket jobs for ticket %s",
-        attempt_count,
+        "Enqueued %s ticket job(s) for ticket %s",
+        len(jobs),
         ticket_id,
     )
+    event_payload = {
+        "ticket_id": str(ticket_id),
+        "project_id": str(ticket.project_id),
+        "attempt_count": len(jobs),
+    }
+    batch_id = ((jobs[0].attempt_metadata or {}).get("attempt_batch_id") if jobs else None)
+    if batch_id:
+        event_payload["attempt_batch_id"] = batch_id
     _post_event(
         _ticket_channel(str(ticket_id)),
         _event_content(
             "ticket_assigned",
             f"Ticket assigned: {ticket.title[:200]}",
-            {
-                "ticket_id": str(ticket_id),
-                "project_id": str(ticket.project_id),
-                "attempt_count": attempt_count,
-            },
+            event_payload,
         ),
     )
     return jobs
+
+
+def enqueue_ticket_job(ticket_id):
+    """Enqueue one ticket job. Skip if project missing URL/path or already pending/running."""
+    jobs = enqueue_ticket_jobs(ticket_id, attempt_count=1)
+    return jobs[0] if jobs else None
+
+
+def enqueue_parallel_ticket_jobs(ticket_id, attempt_count: int) -> list[AgentJob]:
+    """Enqueue an explicit competing-attempt batch for one ticket."""
+    return enqueue_ticket_jobs(ticket_id, attempt_count=attempt_count)
 
 
 def dispatch_unblocked_queued(project_id):
@@ -465,7 +539,7 @@ def dispatch_unblocked_queued(project_id):
         t.column_id = "in_progress"
         t.intent_status = "active"
         db.session.commit()
-        enqueue_ticket_job(t.id)
+        enqueue_ticket_jobs(t.id)
         if is_swarm:
             occupied_nodes.update(t.associated_node_ids or [])
             occupied_edges.update(t.associated_edge_ids or [])

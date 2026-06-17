@@ -900,7 +900,7 @@ def test_ticket_complete_is_idempotent_for_matching_swarm_attempt_payload(client
         assert len(attempts) == 1
 
 
-def test_ticket_rerun_from_current_frontier_updates_base_and_enqueues_job(client):
+def test_ticket_rerun_from_current_frontier_uses_ticket_default_attempt_count_when_omitted(client):
     from models.db import AgentJob, Ticket, db
 
     create_project = client.post(
@@ -928,6 +928,7 @@ def test_ticket_rerun_from_current_frontier_updates_base_and_enqueues_job(client
             title="Needs rerun",
             intent_status="active",
             base_leaf_id="leaf_01HZX3OLDTICKETBASE0123456789",
+            default_attempt_count=4,
         )
         db.session.add(ticket)
         db.session.commit()
@@ -945,17 +946,27 @@ def test_ticket_rerun_from_current_frontier_updates_base_and_enqueues_job(client
     assert payload["column_id"] == "in_progress"
     assert payload["intent_status"] == "active"
     assert payload["stale"] is False
-    assert payload["attempt_count"] == 1
-    assert payload["job_count"] == 1
-    assert len(payload["job_ids"]) == 1
+    assert payload["default_attempt_count"] == 4
+    assert payload["attempt_count"] == 4
+    assert payload["job_count"] == 4
+    assert len(payload["job_ids"]) == 4
 
     with client.application.app_context():
         stored_ticket = db.session.get(Ticket, ticket_id)
-        jobs = AgentJob.query.filter_by(ticket_id=ticket_id).all()
+        jobs = AgentJob.query.filter_by(ticket_id=ticket_id).order_by(AgentJob.created_at.asc()).all()
         assert stored_ticket.base_leaf_id == "leaf_01HZX3CURRENTFRONTIER01234567"
         assert stored_ticket.column_id == "in_progress"
-        assert len(jobs) == 1
-        assert jobs[0].status == "pending"
+        assert len(jobs) == 4
+        assert all(job.status == "pending" for job in jobs)
+        assert len({job.attempt_metadata["attempt_batch_id"] for job in jobs}) == 1
+        assert [job.attempt_metadata["attempt_index"] for job in jobs] == [1, 2, 3, 4]
+        assert [job.attempt_metadata["attempt_count"] for job in jobs] == [4, 4, 4, 4]
+        assert [job.attempt_metadata["attempt_strategy"] for job in jobs] == [
+            "conservative-minimalist",
+            "test-first-verifier",
+            "architecture-cleanup",
+            "performance-simplicity",
+        ]
 
 
 def test_ticket_rerun_from_current_frontier_enqueues_explicit_parallel_jobs(client):
@@ -981,6 +992,7 @@ def test_ticket_rerun_from_current_frontier_enqueues_explicit_parallel_jobs(clie
             title="Needs parallel rerun",
             intent_status="active",
             base_leaf_id="leaf_01HZX3OLDTICKETBASE0123456789",
+            default_attempt_count=4,
         )
         db.session.add(ticket)
         db.session.commit()
@@ -988,21 +1000,26 @@ def test_ticket_rerun_from_current_frontier_enqueues_explicit_parallel_jobs(clie
 
     response = client.post(
         f"/api/projects/{project_id}/tickets/{ticket_id}/rerun-from-current-frontier",
-        json={"attempt_count": 3},
+        json={"attempt_count": 2},
     )
 
     assert response.status_code == 202
     payload = response.get_json()
     assert payload["base_leaf_id"] == "leaf_01HZX3PARALLELFRONTIER123456"
-    assert payload["attempt_count"] == 3
-    assert payload["job_count"] == 3
-    assert len(payload["job_ids"]) == 3
+    assert payload["default_attempt_count"] == 4
+    assert payload["attempt_count"] == 2
+    assert payload["job_count"] == 2
+    assert len(payload["job_ids"]) == 2
     assert "competing attempts" in payload["message"]
 
     with client.application.app_context():
         jobs = AgentJob.query.filter_by(ticket_id=ticket_id).order_by(AgentJob.created_at.asc()).all()
-        assert len(jobs) == 3
+        assert len(jobs) == 2
         assert all(job.status == "pending" for job in jobs)
+        assert [job.attempt_metadata["attempt_strategy"] for job in jobs] == [
+            "conservative-minimalist",
+            "test-first-verifier",
+        ]
 
 
 def test_ticket_rerun_from_current_frontier_validates_attempt_count(client):

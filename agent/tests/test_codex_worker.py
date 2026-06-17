@@ -87,6 +87,19 @@ class TestPromptStack(unittest.TestCase):
         self.assertIn("inject BASE_URL/PORT", prompt)
         self.assertIn("unique compose project name", prompt)
 
+    def test_agent_system_prompt_includes_attempt_strategy_guidance_from_env(self):
+        from middle_agent.agent import get_agent_system_prompt
+
+        with patch.dict(os.environ, {
+            "TERARCHITECT_ATTEMPT_STRATEGY": "product-polish",
+            "TERARCHITECT_ATTEMPT_STRATEGY_DESCRIPTION": "Bias toward user-facing clarity and finish quality.",
+        }, clear=False):
+            prompt = get_agent_system_prompt()
+
+        self.assertIn("Attempt strategy for this run", prompt)
+        self.assertIn("product-polish", prompt)
+        self.assertIn("Bias toward user-facing clarity and finish quality.", prompt)
+
     def test_task_plan_path_falls_back_without_project_path(self):
         from middle_agent.agent import _get_task_plan_path
 

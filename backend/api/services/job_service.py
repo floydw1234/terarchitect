@@ -240,9 +240,16 @@ def _optional_attempt_metadata(job) -> dict:
             sources.append(value)
 
     aliases = {
-        "attempt_slot": ("attempt_slot", "parallel_attempt_slot", "slot"),
+        "attempt_batch_id": ("attempt_batch_id", "parallel_attempt_batch_id", "batch_id"),
         "attempt_index": ("attempt_index", "parallel_attempt_index", "index"),
         "attempt_count": ("attempt_count", "parallel_attempt_count", "count"),
+        "attempt_strategy": ("attempt_strategy", "parallel_attempt_strategy", "strategy", "attempt_slot", "parallel_attempt_slot", "slot"),
+        "attempt_strategy_description": (
+            "attempt_strategy_description",
+            "parallel_attempt_strategy_description",
+            "strategy_description",
+            "description",
+        ),
     }
     out = {}
     for field, names in aliases.items():
@@ -306,6 +313,7 @@ def job_to_response(job):
             ticket.depends_on_ticket_ids or [],
         )
 
+    attempt_metadata = _optional_attempt_metadata(job)
     active_jobs = (
         AgentJob.query
         .filter(
@@ -315,11 +323,20 @@ def job_to_response(job):
         .order_by(AgentJob.created_at.asc(), AgentJob.id.asc())
         .all()
     )
-    parallel_attempt_count = len(active_jobs)
-    parallel_attempt_index = next(
-        (index for index, sibling in enumerate(active_jobs, start=1) if sibling.id == job.id),
-        1,
-    )
+    try:
+        parallel_attempt_count = int(attempt_metadata.get("attempt_count") or len(active_jobs))
+    except (TypeError, ValueError):
+        parallel_attempt_count = len(active_jobs)
+    try:
+        parallel_attempt_index = int(
+            attempt_metadata.get("attempt_index")
+            or next((index for index, sibling in enumerate(active_jobs, start=1) if sibling.id == job.id), 1)
+        )
+    except (TypeError, ValueError):
+        parallel_attempt_index = next(
+            (index for index, sibling in enumerate(active_jobs, start=1) if sibling.id == job.id),
+            1,
+        )
 
     out = {
         "job_id": str(job.id),
@@ -344,5 +361,8 @@ def job_to_response(job):
     project_path = (project.project_path or "").strip() if project else ""
     if project_path:
         out["project_path"] = project_path
-    out.update(_optional_attempt_metadata(job))
+    if attempt_metadata:
+        out["attempt_metadata"] = dict(attempt_metadata)
+        out["metadata"] = dict(attempt_metadata)
+    out.update(attempt_metadata)
     return out

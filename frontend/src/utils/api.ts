@@ -104,6 +104,7 @@ export interface Ticket {
   column_id: string;
   base_leaf_id?: string | null;
   accepted_frontier_id?: string | null;
+  default_attempt_count?: number;
   title: string;
   description?: string;
   associated_node_ids?: string[];
@@ -544,6 +545,7 @@ export async function createTicket(projectId: string, data: {
   column_id: string;
   title: string;
   base_leaf_id?: string;
+  default_attempt_count?: number;
   description?: string;
   associated_node_ids?: string[];
   associated_edge_ids?: string[];
@@ -568,6 +570,7 @@ export async function createTicket(projectId: string, data: {
 export async function updateTicket(projectId: string, ticketId: string, data: {
   column_id?: string;
   title?: string;
+  default_attempt_count?: number;
   description?: string;
   priority?: string;
   status?: string;

@@ -88,11 +88,21 @@ def get_agent_system_prompt() -> str:
         "- Prefer targeted clarifying questions over demanding full-file verbatim pastes; ask for diffs or snippets only\n"
         "  when they are truly necessary to resolve ambiguity.\n"
     )
+    attempt_env = _worker_attempt_env()
+    strategy_guidance = ""
+    if attempt_env.get("attempt_strategy"):
+        strategy_guidance = (
+            "\n\nAttempt strategy for this run:\n"
+            f"- key: {attempt_env['attempt_strategy']}\n"
+            f"- description: {attempt_env.get('attempt_strategy_description') or 'No description provided.'}\n"
+            "- Direct the worker to lean into this strategy while still satisfying the ticket exactly.\n"
+        )
     if not style:
-        return base + guidelines
+        return base + guidelines + strategy_guidance
     return (
         base
         + guidelines
+        + strategy_guidance
         + "\n\n---\nCommunication style (use this tone when directing the worker; draw from these examples):\n\n"
         + style
     )
@@ -156,6 +166,27 @@ def _worker_lineage_env() -> dict[str, str]:
         value = (os.environ.get(key) or "").strip()
         if value:
             out[key] = value
+    return out
+
+
+def _worker_attempt_env() -> dict[str, str]:
+    aliases = {
+        "attempt_batch_id": ("TERARCHITECT_ATTEMPT_BATCH_ID", "ATTEMPT_BATCH_ID"),
+        "attempt_index": ("TERARCHITECT_ATTEMPT_INDEX", "ATTEMPT_INDEX"),
+        "attempt_count": ("TERARCHITECT_ATTEMPT_COUNT", "ATTEMPT_COUNT"),
+        "attempt_strategy": ("TERARCHITECT_ATTEMPT_STRATEGY", "ATTEMPT_STRATEGY"),
+        "attempt_strategy_description": (
+            "TERARCHITECT_ATTEMPT_STRATEGY_DESCRIPTION",
+            "ATTEMPT_STRATEGY_DESCRIPTION",
+        ),
+    }
+    out: dict[str, str] = {}
+    for field, env_keys in aliases.items():
+        for key in env_keys:
+            value = (os.environ.get(key) or "").strip()
+            if value:
+                out[field] = value
+                break
     return out
 
 
@@ -1197,6 +1228,9 @@ class MiddleAgent:
                 "current_ticket": context.get("current_ticket"),
                 "graph_relevant_to_current_ticket": context.get("graph_relevant_to_current_ticket"),
             }
+            attempt_context = _worker_attempt_env()
+            if attempt_context:
+                worker_context["attempt_context"] = attempt_context
             context_json = "\nContext:\n" + json.dumps(worker_context, indent=2, default=str)
 
             # Swarm mode: prepend peer context (what other agents have done on this ticket)

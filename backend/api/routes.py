@@ -85,11 +85,14 @@ from .services.publish_service import (
 )
 from .services.ticket_service import (
     dispatch_unblocked_queued as _dispatch_unblocked_queued,
+    DEFAULT_TICKET_ATTEMPT_COUNT as _DEFAULT_TICKET_ATTEMPT_COUNT,
     ensure_ticket_base_leaf_id as _ensure_ticket_base_leaf_id,
+    enqueue_ticket_jobs as _enqueue_ticket_jobs,
     enqueue_ticket_job as _enqueue_ticket_job,
     enqueue_parallel_ticket_jobs as _enqueue_parallel_ticket_jobs,
-    MAX_PARALLEL_ATTEMPTS as _MAX_PARALLEL_ATTEMPTS,
+    parse_attempt_count as _parse_ticket_attempt_count,
     resolve_ticket_base_leaf_id as _resolve_ticket_base_leaf_id,
+    ticket_default_attempt_count as _ticket_default_attempt_count,
     ticket_to_json as _ticket_to_json,
     validate_ticket_base_leaf as _validate_ticket_base_leaf,
 )
@@ -162,24 +165,8 @@ def _get_project_or_404(project_id):
     return project
 
 
-def _parse_attempt_count(raw_value) -> tuple[int | None, str | None]:
-    if raw_value is None:
-        return 1, None
-    if isinstance(raw_value, bool):
-        return None, "attempt_count must be an integer"
-    if isinstance(raw_value, float):
-        if not raw_value.is_integer():
-            return None, "attempt_count must be an integer"
-        raw_value = int(raw_value)
-    try:
-        attempt_count = int(raw_value)
-    except (TypeError, ValueError):
-        return None, "attempt_count must be an integer"
-    if attempt_count < 1:
-        return None, "attempt_count must be at least 1"
-    if attempt_count > _MAX_PARALLEL_ATTEMPTS:
-        return None, f"attempt_count must be at most {_MAX_PARALLEL_ATTEMPTS}"
-    return attempt_count, None
+def _parse_attempt_count(raw_value, *, default: int = 1) -> tuple[int | None, str | None]:
+    return _parse_ticket_attempt_count(raw_value, default=default, field_name="attempt_count")
 
 
 def _fail_job_with_ticket_recovery(job, *, reset_column_id: str = "queued") -> None:
@@ -1764,6 +1751,13 @@ def tickets(project_id):
         valid, error = _validate_ticket_base_leaf(project, base_leaf_id)
         if not valid:
             return jsonify({"error": error}), 400
+        default_attempt_count, attempt_count_error = _parse_ticket_attempt_count(
+            data.get("default_attempt_count"),
+            default=_DEFAULT_TICKET_ATTEMPT_COUNT,
+            field_name="default_attempt_count",
+        )
+        if attempt_count_error:
+            return jsonify({"error": attempt_count_error}), 400
         ticket = Ticket(
             project_id=project_id,
             column_id=data["column_id"],
@@ -1782,6 +1776,7 @@ def tickets(project_id):
             risk_level=data.get("risk_level"),
             created_source=data.get("created_source", "manual"),
             base_leaf_id=base_leaf_id,
+            default_attempt_count=default_attempt_count,
         )
         db.session.add(ticket)
         db.session.commit()
@@ -1883,6 +1878,15 @@ def ticket_detail(project_id, ticket_id):
             ticket.value_score = data["value_score"]
         if "risk_level" in data:
             ticket.risk_level = data["risk_level"]
+        if "default_attempt_count" in data:
+            default_attempt_count, attempt_count_error = _parse_ticket_attempt_count(
+                data.get("default_attempt_count"),
+                default=_DEFAULT_TICKET_ATTEMPT_COUNT,
+                field_name="default_attempt_count",
+            )
+            if attempt_count_error:
+                return jsonify({"error": attempt_count_error}), 400
+            ticket.default_attempt_count = default_attempt_count
         db.session.commit()
         content = ((ticket.title or "") + " " + (ticket.description or "")).strip()
         if content:
@@ -1890,7 +1894,7 @@ def ticket_detail(project_id, ticket_id):
         if moved_to_in_progress:
             ticket.intent_status = "active"
             db.session.commit()
-            _enqueue_ticket_job(ticket.id)
+            _enqueue_ticket_jobs(ticket.id)
         if data.get("column_id") == "queued":
             # Manual re-queue — fire retry_requested if the ticket had previous attempts
             has_attempts = TicketAttempt.query.filter_by(ticket_id=ticket.id).first()
@@ -2356,7 +2360,10 @@ def ticket_rerun_from_current_frontier(project_id, ticket_id):
     project = _get_project_or_404(project_id)
     ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
     data = request.json or {}
-    attempt_count, attempt_count_error = _parse_attempt_count(data.get("attempt_count"))
+    attempt_count, attempt_count_error = _parse_attempt_count(
+        data.get("attempt_count"),
+        default=_ticket_default_attempt_count(ticket),
+    )
     if attempt_count_error:
         return jsonify({"error": attempt_count_error}), 400
 

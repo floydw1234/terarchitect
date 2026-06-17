@@ -102,6 +102,7 @@ class Ticket(db.Model):
     priority = db.Column(db.String(50), default="medium")
     status = db.Column(db.String(50), default="todo")
     failed_count = db.Column(db.Integer, default=0, nullable=False)
+    default_attempt_count = db.Column(db.Integer, default=3, nullable=False)
     depends_on_ticket_ids = db.Column(JSON_TYPE, default=list)
     # Canonical AgentHub base leaf for this ticket's execution lineage.
     base_leaf_id = db.Column(db.String(255))
@@ -174,6 +175,7 @@ class AgentJob(db.Model):
     kind = db.Column(db.String(50), nullable=False, default="ticket")
     status = db.Column(db.String(50), nullable=False, default="pending")  # pending | running | completed | failed
     cancel_requested = db.Column(db.Boolean, nullable=False, default=False)
+    attempt_metadata = db.Column(JSON_TYPE, default=dict, nullable=False)
     created_at = db.Column(db.TIMESTAMP, default=db.func.now())
     updated_at = db.Column(db.TIMESTAMP, default=db.func.now(), onupdate=db.func.now())
 

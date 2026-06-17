@@ -657,16 +657,31 @@ def test_job_to_response_includes_optional_attempt_metadata(app):
         )
         db.session.add(ticket)
         db.session.flush()
-        job = AgentJob(ticket_id=ticket.id, project_id=project.id, kind="ticket", status="pending")
-        job.attempt_metadata = {"slot": "blue", "index": 2, "count": 4}
+        job = AgentJob(
+            ticket_id=ticket.id,
+            project_id=project.id,
+            kind="ticket",
+            status="pending",
+            attempt_metadata={
+                "attempt_batch_id": "batch-abc",
+                "attempt_index": 2,
+                "attempt_count": 4,
+                "attempt_strategy": "test-first-verifier",
+                "attempt_strategy_description": "Lead with tests or explicit verification.",
+            },
+        )
         db.session.add(job)
         db.session.commit()
 
         payload = job_to_response(job)
 
-    assert payload["attempt_slot"] == "blue"
+    assert payload["attempt_batch_id"] == "batch-abc"
     assert payload["attempt_index"] == "2"
     assert payload["attempt_count"] == "4"
+    assert payload["attempt_strategy"] == "test-first-verifier"
+    assert payload["attempt_strategy_description"] == "Lead with tests or explicit verification."
+    assert payload["parallel_attempt_index"] == 2
+    assert payload["parallel_attempt_count"] == 4
 
 
 def test_prepare_local_job_refuses_shipped_frontier_fallback():

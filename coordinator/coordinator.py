@@ -408,9 +408,16 @@ def _job_attempt_metadata(job: dict) -> Dict[str, str]:
             sources.append(value)
 
     aliases = {
-        "attempt_slot": ("attempt_slot", "parallel_attempt_slot", "slot"),
+        "attempt_batch_id": ("attempt_batch_id", "parallel_attempt_batch_id", "batch_id"),
         "attempt_index": ("attempt_index", "parallel_attempt_index", "index"),
         "attempt_count": ("attempt_count", "parallel_attempt_count", "count"),
+        "attempt_strategy": ("attempt_strategy", "parallel_attempt_strategy", "strategy", "attempt_slot", "parallel_attempt_slot", "slot"),
+        "attempt_strategy_description": (
+            "attempt_strategy_description",
+            "parallel_attempt_strategy_description",
+            "strategy_description",
+            "description",
+        ),
     }
     metadata: Dict[str, str] = {}
     for field, names in aliases.items():
@@ -433,12 +440,14 @@ def _job_attempt_suffix(job: dict) -> str:
     if not metadata:
         return ""
     parts = []
-    if metadata.get("attempt_slot"):
-        parts.append(f"slot={metadata['attempt_slot']}")
+    if metadata.get("attempt_batch_id"):
+        parts.append(f"batch={metadata['attempt_batch_id'][:8]}")
     if metadata.get("attempt_index"):
         parts.append(f"index={metadata['attempt_index']}")
     if metadata.get("attempt_count"):
         parts.append(f"count={metadata['attempt_count']}")
+    if metadata.get("attempt_strategy"):
+        parts.append(f"strategy={metadata['attempt_strategy']}")
     return f" [{' '.join(parts)}]"
 
 
@@ -452,12 +461,12 @@ def _job_attempt_slug(job: dict) -> str:
     if not metadata:
         return ""
     parts = []
-    if metadata.get("attempt_slot"):
-        parts.append(f"slot-{_slugify_name_part(metadata['attempt_slot'], default='slot')}")
     if metadata.get("attempt_index"):
         parts.append(f"idx-{_slugify_name_part(metadata['attempt_index'], default='idx')}")
     if metadata.get("attempt_count"):
         parts.append(f"of-{_slugify_name_part(metadata['attempt_count'], default='count')}")
+    if metadata.get("attempt_strategy"):
+        parts.append(f"strategy-{_slugify_name_part(metadata['attempt_strategy'], default='strategy')}")
     return "-".join(parts)
 
 
@@ -502,6 +511,7 @@ def job_to_env(job: dict, for_docker: bool = False) -> dict:
         env["AGENTHUB_ROOT_HASH"] = str(root_hash)
     for field, value in _job_attempt_metadata(job).items():
         env[field.upper()] = value
+        env[f"TERARCHITECT_{field.upper()}"] = value
     # Explicit workspace paths are only for local debug/import paths, not DAG-backed swarm jobs.
     workspace_path = (job.get("workspace_path") or "").strip()
     if workspace_path:

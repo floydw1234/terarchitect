@@ -1125,7 +1125,7 @@ def test_github_first_job_payload_uses_project_frontier_without_project_path(cli
         dispatch_unblocked_queued(pid)
         stored_ticket = db.session.get(Ticket, ticket_id)
         assert stored_ticket.base_leaf_id == "leaf_01HZX3GITHUBFIRST012345678"
-        assert AgentJob.query.filter_by(ticket_id=ticket_id).count() == 1
+        assert AgentJob.query.filter_by(ticket_id=ticket_id).count() == 3
 
     resp = client.post("/api/worker/jobs/start", json={"project_id": pid})
     assert resp.status_code == 200
@@ -1141,6 +1141,10 @@ def test_github_first_job_payload_uses_project_frontier_without_project_path(cli
     assert payload["source_metadata"]["source_type"] == "github"
     assert "project_path" not in payload
     assert payload["base_selection"]["base_source"] == "ticket_base_leaf"
+    assert payload["parallel_attempt_count"] == 3
+    assert payload["attempt_count"] == "3"
+    assert payload["attempt_index"] == "1"
+    assert payload["attempt_strategy"] == "conservative-minimalist"
 
 
 def test_worker_job_claim_fails_invalid_pending_job_without_blocking_queue(client):
@@ -1259,6 +1263,47 @@ def test_worker_job_claim_allows_parallel_same_ticket_jobs_with_graph_overlap(cl
     assert second_payload["ticket_id"] == ticket_id
     assert second_payload["parallel_attempt_count"] == 2
     assert second_payload["job_id"] != first_payload["job_id"]
+
+
+def test_dispatch_unblocked_queued_enqueues_ticket_default_attempt_batch(client, project):
+    from api.services.ticket_service import dispatch_unblocked_queued
+    from models.db import AgentJob, Ticket, db
+
+    client.put(
+        f"/api/projects/{project['id']}",
+        json={"github_url": "https://github.com/example/repo"},
+    )
+
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=project["id"],
+            column_id="queued",
+            title="Default attempt batch",
+            intent_status="ready",
+            base_leaf_id=project["accepted_frontier_id"],
+            default_attempt_count=3,
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+
+    with client.application.app_context():
+        dispatch_unblocked_queued(project["id"])
+        stored_ticket = db.session.get(Ticket, ticket_id)
+        jobs = AgentJob.query.filter_by(ticket_id=ticket_id).order_by(AgentJob.created_at.asc()).all()
+
+        assert stored_ticket is not None
+        assert stored_ticket.column_id == "in_progress"
+        assert stored_ticket.intent_status == "active"
+        assert len(jobs) == 3
+        assert len({job.attempt_metadata["attempt_batch_id"] for job in jobs}) == 1
+        assert [job.attempt_metadata["attempt_index"] for job in jobs] == [1, 2, 3]
+        assert [job.attempt_metadata["attempt_count"] for job in jobs] == [3, 3, 3]
+        assert [job.attempt_metadata["attempt_strategy"] for job in jobs] == [
+            "conservative-minimalist",
+            "test-first-verifier",
+            "architecture-cleanup",
+        ]
 
 
 def test_worker_job_fail_keeps_ticket_in_progress_when_parallel_attempts_remain(client, project):
