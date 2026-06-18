@@ -79,6 +79,9 @@ from .services.agenthub_import_service import (
     import_github_project_to_agenthub as _import_github_project_to_agenthub,
     import_project_agenthub_root as _import_project_agenthub_root,
 )
+from .services.agenthub_graph_service import (
+    build_project_agenthub_graph as _build_project_agenthub_graph,
+)
 from .services.publish_service import (
     PublishError as _PublishError,
     publish_project as _publish_project,
@@ -189,6 +192,27 @@ def _fail_job_with_ticket_recovery(job, *, reset_column_id: str = "queued") -> N
     if ticket.column_id == "in_progress" and not has_other_active_jobs:
         ticket.column_id = reset_column_id
     ticket.failed_count = (ticket.failed_count or 0) + 1
+
+
+def _acceptance_allowed_base_hashes(project, ticket: Ticket | None) -> set[str]:
+    """Return commit hashes that may legitimately serve as an attempt base for acceptance.
+
+    Accepting a winner does not advance ``project.accepted_frontier_id``. A dependent
+    ticket can therefore still be valid when its attempt was based on an already
+    integrated dependency winner rather than the project's current frontier leaf.
+    """
+    allowed: set[str] = set()
+    frontier = _get_project_frontier_id(project)
+    if frontier:
+        allowed.add(frontier)
+    if ticket is None:
+        return allowed
+    for dep_id in ticket.depends_on_ticket_ids or []:
+        dep_attempt = _get_accepted_attempt(dep_id)
+        dep_hash = (getattr(dep_attempt, "agenthub_commit_hash", None) or "").strip()
+        if dep_hash:
+            allowed.add(dep_hash)
+    return allowed
 
 
 def _evidence_gate_response(project, target_type: str, target_id) -> tuple[dict | None, int | None]:
@@ -767,6 +791,12 @@ def project_detail(project_id):
 def project_doctor(project_id):
     project = _get_project_or_404(project_id)
     return jsonify(_project_doctor_report(project))
+
+
+@api_bp.route("/projects/<uuid:project_id>/agenthub/graph", methods=["GET"])
+def project_agenthub_graph(project_id):
+    project = _get_project_or_404(project_id)
+    return jsonify(_build_project_agenthub_graph(project))
 
 
 @api_bp.route("/projects/<uuid:project_id>/publish", methods=["POST"])
@@ -2335,10 +2365,11 @@ def ticket_attempt_choose_winner(project_id, ticket_id, attempt_id):
 
 @api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/attempts/<uuid:attempt_id>/accept", methods=["POST"])
 def ticket_attempt_accept(project_id, ticket_id, attempt_id):
-    """Accept/integrate the chosen winner for dependency use and frontier advancement."""
+    """Accept/integrate the chosen winner for dependency use without advancing project frontier."""
     from datetime import datetime, timezone
 
     project = _get_project_or_404(project_id)
+    ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
     attempt = TicketAttempt.query.filter_by(
         project_id=project_id, ticket_id=ticket_id, id=attempt_id
     ).first_or_404()
@@ -2346,7 +2377,7 @@ def ticket_attempt_accept(project_id, ticket_id, attempt_id):
         commit_hash = (attempt.agenthub_commit_hash or "").strip()
         if not commit_hash:
             raise ValueError(
-                "Attempt has no AgentHub leaf/commit id; cannot advance project.accepted_frontier_id."
+                "Attempt has no AgentHub leaf/commit id; cannot be accepted/integrated."
             )
 
         if not _attempt_is_validated(attempt):
@@ -2371,17 +2402,25 @@ def ticket_attempt_accept(project_id, ticket_id, attempt_id):
                 attempt.is_winner = True
             if not attempt.winner_chosen_at:
                 attempt.winner_chosen_at = attempt.integrated_at
-            project.accepted_frontier_id = commit_hash
-            project.updated_at = datetime.now(timezone.utc)
             db.session.commit()
         else:
-            stale, stale_reason = _attempt_stale_status(attempt, project)
-            if stale is None:
-                raise ValueError(stale_reason or "Cannot determine attempt staleness.")
-            if stale:
-                raise ValueError(
-                    f"Attempt is stale and cannot be accepted/integrated without an explicit override. {stale_reason}"
-                )
+            allowed_bases = _acceptance_allowed_base_hashes(project, ticket)
+            normalized_base = _normalize_frontier_id(getattr(attempt, "base_hash", None))
+            if normalized_base not in allowed_bases:
+                stale, stale_reason = _attempt_stale_status(attempt, project)
+                if stale is None:
+                    raise ValueError(stale_reason or "Cannot determine attempt staleness.")
+                if stale:
+                    if allowed_bases:
+                        allowed_preview = ", ".join(sorted(base[:12] for base in allowed_bases))
+                        raise ValueError(
+                            "Attempt is stale and cannot be accepted/integrated without an explicit override. "
+                            f"attempt.base_hash must match project.accepted_frontier_id or an integrated dependency winner "
+                            f"({allowed_preview})."
+                        )
+                    raise ValueError(
+                        f"Attempt is stale and cannot be accepted/integrated without an explicit override. {stale_reason}"
+                    )
 
             if attempt.status != "accepted":
                 _transition_attempt(attempt, "accepted")
@@ -2390,8 +2429,6 @@ def ticket_attempt_accept(project_id, ticket_id, attempt_id):
             attempt.winner_chosen_at = attempt.winner_chosen_at or now
             attempt.integrated_at = attempt.integrated_at or now
             attempt.integrated_frontier_id = commit_hash
-            project.accepted_frontier_id = commit_hash
-            project.updated_at = now
             db.session.commit()
 
         _dispatch_unblocked_queued(project_id)

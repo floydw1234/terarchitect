@@ -846,7 +846,7 @@ def test_choose_winner_only_marks_one_validated_attempt(client, project):
         assert stored_project.accepted_frontier_id == initial_frontier
 
 
-def test_accept_attempt_advances_project_accepted_frontier(client, project):
+def test_accept_attempt_integrates_winner_without_advancing_project_accepted_frontier(client, project):
     pid = project["id"]
     initial_frontier = project["accepted_frontier_id"]
     from models.db import db, Project, Ticket, TicketAttempt
@@ -868,7 +868,7 @@ def test_accept_attempt_advances_project_accepted_frontier(client, project):
             wave_num=0,
             attempt_num=1,
             status="validated",
-            summary="advance accepted frontier",
+            summary="integrate winner without frontier advance",
             validated_at=db.func.now(),
         )
         db.session.add(attempt)
@@ -891,13 +891,13 @@ def test_accept_attempt_advances_project_accepted_frontier(client, project):
     assert payload["validated"] is True
     assert payload["is_winner"] is True
     assert payload["integrated"] is True
-    assert payload["accepted_frontier_id"] == "d" * 40
-    assert payload["project"]["accepted_frontier_id"] == "d" * 40
+    assert payload["accepted_frontier_id"] == initial_frontier
+    assert payload["project"]["accepted_frontier_id"] == initial_frontier
+    assert payload["integrated_frontier_id"] == "d" * 40
 
     with client.application.app_context():
         stored = db.session.get(Project, pid)
-        assert stored.accepted_frontier_id == "d" * 40
-        assert stored.updated_at is not None
+        assert stored.accepted_frontier_id == initial_frontier
 
 
 def test_accept_attempt_fails_clearly_without_agenthub_commit_hash(client, project):
@@ -985,7 +985,7 @@ def test_accept_attempt_does_not_fallback_to_local_git_head(client, project):
         )
 
     assert resp.status_code == 200
-    assert resp.get_json()["accepted_frontier_id"] == "e" * 40
+    assert resp.get_json()["accepted_frontier_id"] == project["accepted_frontier_id"]
     read_local_tip.assert_not_called()
 
 

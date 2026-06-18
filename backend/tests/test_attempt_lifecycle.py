@@ -191,6 +191,85 @@ def test_dependencies_unblock_only_after_winner_is_integrated(client, project):
         assert child.column_id == "in_progress"
 
 
+def test_accept_allows_attempt_based_on_integrated_dependency_winner_without_frontier_advance(client, project):
+    from models.db import Project, Ticket, TicketAttempt, db
+
+    pid = project["id"]
+    frontier = project["accepted_frontier_id"]
+
+    with client.application.app_context():
+        parent = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Parent",
+            intent_status="active",
+            base_leaf_id=frontier,
+        )
+        db.session.add(parent)
+        db.session.flush()
+        child = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Child",
+            intent_status="active",
+            depends_on_ticket_ids=[str(parent.id)],
+            base_leaf_id=frontier,
+        )
+        db.session.add(child)
+        db.session.flush()
+        parent_attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=parent.id,
+            agenthub_commit_hash="a" * 40,
+            base_hash=frontier,
+            attempt_num=1,
+            status="accepted",
+            validated_at=_now(),
+            integrated_at=_now(),
+            integrated_frontier_id="a" * 40,
+            is_winner=True,
+            winner_chosen_at=_now(),
+            summary="integrated parent winner",
+        )
+        child_attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=child.id,
+            agenthub_commit_hash="b" * 40,
+            base_hash="a" * 40,
+            attempt_num=1,
+            status="validated",
+            validated_at=_now(),
+            summary="validated child winner",
+        )
+        db.session.add_all([parent_attempt, child_attempt])
+        db.session.commit()
+        child_ticket_id = str(child.id)
+        child_attempt_id = str(child_attempt.id)
+
+    choose = client.post(
+        f"/api/projects/{pid}/tickets/{child_ticket_id}/attempts/{child_attempt_id}/choose-winner"
+    )
+    assert choose.status_code == 200
+
+    accept = client.post(
+        f"/api/projects/{pid}/tickets/{child_ticket_id}/attempts/{child_attempt_id}/accept"
+    )
+    assert accept.status_code == 200
+    payload = accept.get_json()
+    assert payload["status"] == "accepted"
+    assert payload["is_winner"] is True
+    assert payload["integrated"] is True
+    assert payload["accepted_frontier_id"] == frontier
+    assert payload["integrated_frontier_id"] == "b" * 40
+
+    with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        stored_attempt = db.session.get(TicketAttempt, child_attempt_id)
+        assert stored_project.accepted_frontier_id == frontier
+        assert stored_attempt.integrated_frontier_id == "b" * 40
+        assert stored_attempt.base_hash == "a" * 40
+
+
 def test_promotion_candidate_blocks_non_integrated_or_non_winner_attempts(client, project):
     from models.db import Project, Ticket, TicketAttempt, db
 

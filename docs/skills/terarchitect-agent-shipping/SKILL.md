@@ -110,7 +110,7 @@ Terarchitect should not silently promote code across trust boundaries.
 
 - Moving a ticket to In Progress enqueues work; the coordinator/agent may implement and publish an attempt.
 - An implementation attempt is only proposed until a human accepts it.
-- Acceptance advances the project's accepted AgentHub frontier; it does not mean GitHub/main has been updated.
+- Acceptance records an integrated winner for dependency use and promotion-candidate eligibility; it does not advance the project's accepted AgentHub frontier or GitHub/main by itself.
 - Publishing to GitHub is a separate explicit step. Dry-run first; use `--push` only when William asks to push or the task explicitly calls for downstream publication.
 - Use `--force` only with explicit user approval and after proving why fast-forward is impossible.
 
@@ -263,7 +263,7 @@ Typical lifecycle:
    python -m cli --output json attempt show <project_id> <attempt_id>
    python -m cli --output json attempt diff <project_id> <attempt_id>
    ```
-6. **Accept only verified attempts.** Acceptance updates the AgentHub accepted frontier for follow-on work.
+6. **Accept only verified winner attempts.** Choosing a winner and then accepting it records an integrated winner for follow-on dependency use; frontier advancement happens later in compose/ship.
 7. **Ship/publish only after review.** For Ship Room candidate flow, prefer:
    ```bash
    python -m cli ship candidates <project_id>
@@ -334,19 +334,19 @@ When working on Director/Worker prompts or acceptance criteria for projects with
 
 When invoking the shipper manually from source, verify the module actually calls `main()`. If `python -m agent.shipper.shipper` exits silently, run `python -c 'from agent.shipper.shipper import main; main()'` or use the configured service entrypoint.
 
-## Publishing accepted AgentHub commits downstream
+## Publishing integrated-winner AgentHub commits downstream
 
 When AgentHub is the runtime truth but GitHub remains a downstream distribution/backup target, use the explicit publish path instead of auto-pushing on acceptance.
 
 - Dry-run first:
   ```bash
-  python -m cli --output json publish <project_id> --attempt-id <accepted_attempt_id> --branch main
+  python -m cli --output json publish <project_id> --attempt-id <integrated_winner_attempt_id> --branch main
   ```
 - Actual GitHub push requires an explicit flag:
   ```bash
-  python -m cli --output json publish <project_id> --attempt-id <accepted_attempt_id> --branch main --push
+  python -m cli --output json publish <project_id> --attempt-id <integrated_winner_attempt_id> --branch main --push
   ```
-- The publish service selects the latest accepted/stable attempt by default, or accepts `--attempt-id` / `--commit` overrides.
+- The publish service selects the latest integrated winner attempt by default, or accepts `--attempt-id` / `--commit` overrides that resolve to an integrated winner.
 - It refuses dirty target repos, missing GitHub metadata, and non-fast-forward updates unless `--force` is explicitly passed.
 - For GitHub-seeded projects whose configured `project_path` is missing, publish uses an ephemeral clone from `github_url`, then fetches/materializes the AgentHub bundle and verifies fast-forward ancestry. `project_path` is a cache/debug surface, not a hard publish prerequisite.
 - On successful `--push`, it updates `project.shipped_frontier` to the published commit. Keep `accepted_frontier_id` as the DAG work frontier unless the project policy says otherwise.

@@ -8,17 +8,19 @@ Uses Flask test client. External calls (AgentHub, GitHub) are mocked.
   2.  Create dependency-linked tickets
   3.  Simulate agent completing tickets (ticket_complete)
   4.  Attempts publish to AgentHub (mocked validation)
-  5.  Attempts become accepted
+  5.  Attempts become validated candidates
+  6.  Operator chooses + accepts the winner attempt
   6.  Ship Room compose promotion candidate
   7.  Shipper reports composed (mocked)
   8.  Release PR merged (mocked gh)
   9.  shipped_frontier advances
-  10. Dependent queued work now satisfiable
+  10. Dependent queued work becomes satisfiable after winner acceptance
 
 """
 import os
 import sys
 import json
+from datetime import datetime, UTC
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -53,8 +55,29 @@ def _move_to_in_progress(client, project_id, ticket_id):
         db.session.commit()
 
 
+def _set_ticket_base_leaf_id(client, ticket_id, base_leaf_id):
+    """Align the persisted swarm ticket base with the commit/base used in /complete."""
+    from models.db import db, Ticket
+    with client.application.app_context():
+        t = db.session.get(Ticket, ticket_id)
+        t.base_leaf_id = base_leaf_id
+        db.session.commit()
+
+
+def _prepare_ticket_for_completion(client, ticket_id, *, base_leaf_id):
+    """Set the exact swarm base and execution state expected by /complete."""
+    from models.db import db, Ticket
+    with client.application.app_context():
+        t = db.session.get(Ticket, ticket_id)
+        t.column_id = "in_progress"
+        t.intent_status = "active"
+        t.base_leaf_id = base_leaf_id
+        db.session.commit()
+        db.session.remove()
+
+
 def _complete_ticket(client, project_id, ticket_id, commit_hash, base_hash=None):
-    """Simulate agent calling /complete. Mocks AgentHub validation to accept."""
+    """Simulate agent calling /complete. Mocks AgentHub validation to mark the attempt validated."""
     ok_resp = MagicMock()
     ok_resp.ok = True
     ok_resp.status_code = 200
@@ -71,12 +94,67 @@ def _complete_ticket(client, project_id, ticket_id, commit_hash, base_hash=None)
     return resp
 
 
+def _choose_winner(client, project_id, ticket_id, attempt_id):
+    resp = client.post(
+        f"/api/projects/{project_id}/tickets/{ticket_id}/attempts/{attempt_id}/choose-winner"
+    )
+    assert resp.status_code == 200
+    return resp.get_json()
+
+
+def _accept_attempt(client, project_id, ticket_id, attempt_id):
+    resp = client.post(
+        f"/api/projects/{project_id}/tickets/{ticket_id}/attempts/{attempt_id}/accept"
+    )
+    assert resp.status_code == 200
+    return resp.get_json()
+
+
+def _attempts_by_commit(client, project_id):
+    attempts_resp = client.get(f"/api/projects/{project_id}/attempts")
+    assert attempts_resp.status_code == 200
+    attempts = attempts_resp.get_json()
+    return {attempt["agenthub_commit_hash"]: attempt for attempt in attempts}
+
+
+def _seed_validated_attempt(client, project_id, ticket_id, commit_hash, *, base_hash, summary):
+    """Create a validated attempt directly for test flows that only care about winner ordering."""
+    from models.db import db, Ticket, TicketAttempt
+    with client.application.app_context():
+        ticket = db.session.get(Ticket, ticket_id)
+        attempt_num = (
+            db.session.query(db.func.max(TicketAttempt.attempt_num))
+            .filter_by(ticket_id=ticket_id)
+            .scalar()
+            or 0
+        ) + 1
+        ticket.column_id = "done"
+        ticket.status = "completed"
+        ticket.intent_status = "active"
+        ticket.base_leaf_id = base_hash
+        attempt = TicketAttempt(
+            project_id=project_id,
+            ticket_id=ticket_id,
+            agenthub_commit_hash=commit_hash,
+            base_hash=base_hash,
+            wave_num=0,
+            attempt_num=attempt_num,
+            status="validated",
+            summary=summary,
+            validated_at=datetime.now(UTC),
+        )
+        db.session.add(attempt)
+        db.session.commit()
+        return str(attempt.id)
+
+
 # ---------------------------------------------------------------------------
 # 12.5  Ship happy path
 # ---------------------------------------------------------------------------
 
 def test_e2e_ship_happy_path(client, project):
     pid = project["id"]
+    initial_frontier = project["accepted_frontier_id"]
 
     # Step 1+2: Create two dependency-linked tickets
     t_a = _create_ticket(client, pid, "Ticket A — no deps")
@@ -87,7 +165,27 @@ def test_e2e_ship_happy_path(client, project):
     resp = _complete_ticket(client, pid, t_a["id"], "a" * 40)
     assert resp.status_code == 200
 
-    # Step 4+5: Attempt A should be accepted (AgentHub mocked to return 200)
+    attempts_by_commit = _attempts_by_commit(client, pid)
+    attempt_a = attempts_by_commit["a" * 40]
+    assert attempt_a["status"] == "validated"
+    assert attempt_a["accepted"] is False
+
+    # Step 4+5: completion yields a validated candidate; no accepted attempts yet
+    wave_resp = client.get(f"/api/projects/{pid}/ship/waves")
+    assert wave_resp.status_code == 200
+    waves = wave_resp.get_json()
+    wave_0 = next((w for w in waves if w["wave_num"] == 0), None)
+    assert wave_0 is not None
+    assert wave_0["accepted_count"] == 0
+
+    # Step 6: choose and accept A before dependency-unblocking work can proceed
+    chosen_a = _choose_winner(client, pid, t_a["id"], attempt_a["id"])
+    assert chosen_a["status"] == "validated"
+    assert chosen_a["is_winner"] is True
+    accepted_a = _accept_attempt(client, pid, t_a["id"], attempt_a["id"])
+    assert accepted_a["status"] == "accepted"
+    assert accepted_a["accepted_frontier_id"] == initial_frontier
+
     wave_resp = client.get(f"/api/projects/{pid}/ship/waves")
     assert wave_resp.status_code == 200
     waves = wave_resp.get_json()
@@ -95,19 +193,33 @@ def test_e2e_ship_happy_path(client, project):
     assert wave_0 is not None
     assert wave_0["accepted_count"] == 1
 
-    # Step 5b: B is now unblocked — dispatch it
+    # Step 6b: B is now unblocked after A is accepted
     from api.services.ticket_service import dispatch_unblocked_queued
     with client.application.app_context():
         dispatch_unblocked_queued(pid)
         from models.db import db, Ticket
         t_b_db = db.session.get(Ticket, t_b["id"])
-        # B should have moved to in_progress since A has an accepted attempt
+        # B should have moved to in_progress since A now has an accepted attempt
         assert t_b_db.column_id == "in_progress", \
             f"B should be in_progress after A accepted, got {t_b_db.column_id}"
 
-    _complete_ticket(client, pid, t_b["id"], "b" * 40, base_hash="a" * 40)
+    _seed_validated_attempt(
+        client,
+        pid,
+        t_b["id"],
+        "b" * 40,
+        base_hash="a" * 40,
+        summary=f"Completed {t_b['id'][:8]}",
+    )
+    attempts_by_commit = _attempts_by_commit(client, pid)
+    attempt_b = attempts_by_commit["b" * 40]
+    assert attempt_b["status"] == "validated"
+    _choose_winner(client, pid, t_b["id"], attempt_b["id"])
+    accepted_b = _accept_attempt(client, pid, t_b["id"], attempt_b["id"])
+    assert accepted_b["status"] == "accepted"
+    assert accepted_b["accepted_frontier_id"] == initial_frontier
 
-    # Step 6: Compose the candidate for the accepted frontier-ready attempt set
+    # Step 7: Compose the candidate for the accepted frontier-ready attempt set
     compose_resp = client.post(f"/api/projects/{pid}/ship/waves/0/compose", json={})
     assert compose_resp.status_code in (200, 201)
     compose_data = compose_resp.get_json()
@@ -123,7 +235,7 @@ def test_e2e_ship_happy_path(client, project):
     assert claim_data["candidate"]["id"] == compose_data["promotion_candidate_id"]
     assert claim_data["commit_hashes"] == ["a" * 40]
 
-    # Step 7: Shipper reports composed
+    # Step 8: Shipper reports composed
     composed_resp = client.post(f"/api/worker/ship-run/{run_id}/composed", json={
         "composed_commit_hash": "c" * 40,
         "base_main_hash": "d" * 40,
@@ -140,7 +252,7 @@ def test_e2e_ship_happy_path(client, project):
     assert composed_data["test_status"] == "passed"
     assert composed_data["test_output"] == "All tests pass."
 
-    # Step 8+9: Ship via the no-main path — GitHub is optional.
+    # Step 9+10: Ship via the no-main path — GitHub is optional.
     # No github_url on this project → ship advances frontier directly
     # from composed_commit_hash without any gh pr merge call.
     ship_resp = client.post(f"/api/projects/{pid}/ship/waves/0/ship", json={})
@@ -168,13 +280,7 @@ def test_e2e_ship_happy_path(client, project):
 
 def test_e2e_create_promotion_candidate_from_accepted_attempts(client, project):
     pid = project["id"]
-    frontier = "f" * 40
-
-    frontier_resp = client.post(f"/api/projects/{pid}/frontier", json={
-        "hash": frontier,
-        "source": "test",
-    })
-    assert frontier_resp.status_code == 200
+    frontier = project["accepted_frontier_id"]
 
     t_a = _create_ticket(client, pid, "Ticket A")
     t_b = _create_ticket(client, pid, "Ticket B depends on A", deps=[t_a["id"]], column_id="queued")
@@ -183,13 +289,30 @@ def test_e2e_create_promotion_candidate_from_accepted_attempts(client, project):
     resp_a = _complete_ticket(client, pid, t_a["id"], "a" * 40, base_hash=frontier)
     assert resp_a.status_code == 200
 
+    attempts_by_commit = _attempts_by_commit(client, pid)
+    attempt_a = attempts_by_commit["a" * 40]
+    assert attempt_a["status"] == "validated"
+    _choose_winner(client, pid, t_a["id"], attempt_a["id"])
+    _accept_attempt(client, pid, t_a["id"], attempt_a["id"])
+
     from api.services.ticket_service import dispatch_unblocked_queued
     from models.db import db, TicketAttempt
     with client.application.app_context():
         dispatch_unblocked_queued(pid)
 
-    resp_b = _complete_ticket(client, pid, t_b["id"], "b" * 40, base_hash="a" * 40)
-    assert resp_b.status_code == 200
+    _seed_validated_attempt(
+        client,
+        pid,
+        t_b["id"],
+        "b" * 40,
+        base_hash="a" * 40,
+        summary=f"Completed {t_b['id'][:8]}",
+    )
+    attempts_by_commit = _attempts_by_commit(client, pid)
+    attempt_b = attempts_by_commit["b" * 40]
+    assert attempt_b["status"] == "validated"
+    _choose_winner(client, pid, t_b["id"], attempt_b["id"])
+    _accept_attempt(client, pid, t_b["id"], attempt_b["id"])
 
     attempts_resp = client.get(f"/api/projects/{pid}/attempts?status=accepted")
     assert attempts_resp.status_code == 200
