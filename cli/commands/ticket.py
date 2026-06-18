@@ -154,7 +154,10 @@ def register(subparsers) -> None:
     at.add_argument("ticket_id")
     at.add_argument("--json", action="store_true", help="Print JSON output")
 
-    aa = sub.add_parser("accept-attempt", help="Accept a ticket attempt")
+    aa = sub.add_parser(
+        "accept-attempt",
+        help="Legacy alias for accept-winner; canonical flow is evaluate-attempts -> choose-winner -> accept-winner",
+    )
     aa.add_argument("project_id")
     aa.add_argument("ticket_id")
     aa.add_argument("attempt_id")
@@ -657,6 +660,37 @@ def _filter_attempts(attempts: list[dict], attempt_ids: list[str], latest: int |
     return selected
 
 
+def _winner_flow_commands(project_id: str, ticket_id: str, attempt_id: str, *, frontier: str | None) -> dict[str, str]:
+    commands = {
+        "attempts": f"ta ticket attempts {project_id} {ticket_id}",
+        "evaluate": f"ta ticket evaluate-attempts {project_id} {ticket_id} --include-diff --include-files",
+        "choose": f"ta ticket choose-winner {project_id} {ticket_id} {attempt_id}",
+        "rerun": f"ta ticket rerun-current-frontier {project_id} {ticket_id}",
+    }
+    accept = f"ta ticket accept-winner {project_id} {ticket_id} {attempt_id}"
+    if frontier:
+        accept += f" --expect-frontier {frontier}"
+    commands["accept"] = accept
+    return commands
+
+
+def _winner_flow_error(
+    status: int,
+    message: str,
+    *,
+    detail: str | None = None,
+    hint: str | None = None,
+    next_commands: list[str] | None = None,
+) -> APIError:
+    return APIError(
+        status,
+        message,
+        detail=detail,
+        hint=hint,
+        next_commands=next_commands,
+    )
+
+
 def _preflight_attempt(
     args,
     api: API,
@@ -684,9 +718,16 @@ def _preflight_attempt(
         )
     frontier = (project.get("accepted_frontier_id") or "").strip() or None
     expected = (getattr(args, "expect_frontier", None) or "").strip() or None
+    commands = _winner_flow_commands(args.project_id, args.ticket_id, args.attempt_id, frontier=frontier)
     if expected and frontier != expected:
         die(
-            f"Expected frontier {expected} but project.accepted_frontier_id is {frontier or 'unset'}.",
+            _winner_flow_error(
+                409,
+                f"Expected frontier {expected}, but project.accepted_frontier_id is now {frontier or 'unset'}.",
+                detail="The project frontier changed after this command was prepared, so the winner flow must be re-evaluated against the current frontier.",
+                hint="Inspect the latest attempts, then choose or accept again from the current frontier.",
+                next_commands=[commands["attempts"], commands["evaluate"]],
+            ),
             output=args.output,
         )
     if not _attempt_validated(attempt):
@@ -701,7 +742,13 @@ def _preflight_attempt(
         )
     if require_winner and not attempt.get("is_winner"):
         die(
-            f"Attempt {args.attempt_id} is not the chosen winner yet. Run choose-winner first.",
+            _winner_flow_error(
+                409,
+                f"Attempt {args.attempt_id} is not the chosen winner for ticket {args.ticket_id}.",
+                detail="accept-winner only integrates the attempt already marked as the winner; choose-winner and accept-winner are separate lifecycle steps.",
+                hint=f"Choose this attempt as the winner first: {commands['choose']}",
+                next_commands=[commands["choose"], commands["evaluate"]],
+            ),
             output=args.output,
         )
     return project, {"id": args.ticket_id}, attempt, attempts
@@ -777,29 +824,11 @@ def _cmd_update(args, api: API) -> None:
 
 def _cmd_accept_attempt(args, api: API) -> None:
     _apply_json_flag(args)
-    if args.reason and args.output != "json":
-        print("Note: --reason is not sent by the current accept endpoint; recording it only in CLI output.")
-    try:
-        attempt = api.post(
-            f"/api/projects/{args.project_id}/tickets/{args.ticket_id}/attempts/{args.attempt_id}/accept",
-            {},
-        )
-    except APIError as e:
-        die(e, output=args.output)
-    if args.output == "json":
-        print_json(attempt)
-        return
-    print_receipt(
-        f"Accepted attempt {short_id(attempt.get('id', args.attempt_id))} for ticket {short_id(args.ticket_id)}.",
-        fields=[
-            ("Status", attempt.get("status")),
-            ("Commit", attempt.get("short_commit_hash") or attempt.get("agenthub_commit_hash") or "unavailable"),
-        ],
-        next_commands=[
-            f"ta attempt show {args.project_id} {attempt.get('id', args.attempt_id)}",
-            f"ta ship candidates {args.project_id}",
-        ],
-    )
+    if args.output != "json":
+        print("Legacy alias: `accept-attempt` now follows the winner-first flow. Use `evaluate-attempts`, `choose-winner`, then `accept-winner` for the canonical lifecycle.")
+        if args.reason:
+            print("Note: --reason is not sent by the current accept endpoint; recording it only in CLI output.")
+    _cmd_accept_winner(args, api)
 
 
 def _cmd_evaluate_attempts(args, api: API) -> None:
@@ -919,8 +948,15 @@ def _cmd_choose_winner(args, api: API) -> None:
     if integrated_sibling is not None:
         sibling_id = integrated_sibling.get("id") or integrated_sibling.get("attempt_id") or "unknown"
         sibling_status = _attempt_status_value(integrated_sibling) or "unknown"
+        commands = _winner_flow_commands(args.project_id, args.ticket_id, args.attempt_id, frontier=(project.get("accepted_frontier_id") or "").strip() or None)
         die(
-            f"Ticket {args.ticket_id} already has an integrated sibling attempt ({sibling_id}, status {sibling_status}).",
+            _winner_flow_error(
+                409,
+                f"Ticket {args.ticket_id} already has an integrated sibling attempt ({sibling_id}, status {sibling_status}).",
+                detail="A ticket cannot choose a new winner after a sibling attempt has already been integrated or shipped from this lifecycle.",
+                hint="Inspect the ticket attempts and current frontier before deciding whether to rerun from the current frontier.",
+                next_commands=[commands["attempts"], commands["evaluate"], commands["rerun"]],
+            ),
             output=args.output,
         )
     frontier = (project.get("accepted_frontier_id") or "").strip() or None
@@ -993,8 +1029,16 @@ def _cmd_accept_winner(args, api: API) -> None:
     )
     stale_reason = _stale_acceptance_reason(attempt, project)
     if stale_reason:
+        frontier = (project.get("accepted_frontier_id") or "").strip() or None
+        commands = _winner_flow_commands(args.project_id, args.ticket_id, args.attempt_id, frontier=frontier)
         die(
-            f"Attempt {args.attempt_id} is stale and cannot be accepted locally. {stale_reason}",
+            _winner_flow_error(
+                409,
+                f"Attempt {args.attempt_id} is stale and cannot be accepted locally.",
+                detail=stale_reason,
+                hint="Inspect the current attempts, re-evaluate them, and rerun from the current frontier if this attempt is no longer aligned.",
+                next_commands=[commands["attempts"], commands["evaluate"], commands["rerun"]],
+            ),
             output=args.output,
         )
     previous_frontier_id = (project.get("accepted_frontier_id") or "").strip() or None

@@ -1,4 +1,4 @@
-"""Publish accepted AgentHub commits to downstream targets."""
+"""Publish integrated-winner AgentHub commits to downstream targets."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ except (ModuleNotFoundError, ImportError):
     from backend.api.services.github_service import normalize_github_repo_url
 
 from .agenthub_import_service import agenthub_connection_from_env
-from .attempt_service import SATISFIED_STATUSES
+from .attempt_service import attempt_is_integrated_winner
 
 
 class PublishError(RuntimeError):
@@ -193,14 +193,17 @@ def _prepare_publish_repo(
         }
 
 
-def _latest_satisfied_attempt(project_id) -> TicketAttempt | None:
-    return (
+def _latest_integrated_winner_attempt(project_id) -> TicketAttempt | None:
+    attempts = (
         TicketAttempt.query
         .filter_by(project_id=project_id)
-        .filter(TicketAttempt.status.in_(SATISFIED_STATUSES))
         .order_by(TicketAttempt.created_at.desc(), TicketAttempt.attempt_num.desc())
-        .first()
+        .all()
     )
+    for attempt in attempts:
+        if attempt_is_integrated_winner(attempt):
+            return attempt
+    return None
 
 
 def _resolve_selection(project: Project, *, attempt_id: str | None, commit_hash: str | None) -> PublishSelection:
@@ -209,22 +212,25 @@ def _resolve_selection(project: Project, *, attempt_id: str | None, commit_hash:
     source = "accepted_frontier"
 
     if attempt_id:
-        selected_attempt = (
-            TicketAttempt.query
-            .filter_by(project_id=project.id, id=attempt_id)
-            .filter(TicketAttempt.status.in_(SATISFIED_STATUSES))
-            .first()
-        )
+        selected_attempt = TicketAttempt.query.filter_by(project_id=project.id, id=attempt_id).first()
         if selected_attempt is None:
             raise PublishError(
-                "Accepted attempt not found",
+                "Integrated winner attempt not found",
                 status_code=404,
                 phase="selection",
                 detail=f"attempt_id={attempt_id}",
             )
+        if not attempt_is_integrated_winner(selected_attempt):
+            raise PublishError(
+                "Selected attempt is not an integrated winner",
+                status_code=409,
+                phase="selection",
+                detail=f"attempt_id={attempt_id} status={selected_attempt.status}",
+                hint="Choose an attempt that has both winner selection and integration recorded.",
+            )
         if not (selected_attempt.agenthub_commit_hash or "").strip():
             raise PublishError(
-                "Accepted attempt has no AgentHub commit hash",
+                "Integrated winner attempt has no AgentHub commit hash",
                 status_code=409,
                 phase="selection",
                 detail=f"attempt_id={attempt_id}",
@@ -238,24 +244,24 @@ def _resolve_selection(project: Project, *, attempt_id: str | None, commit_hash:
         commit = selected_attempt.agenthub_commit_hash
         source = "attempt"
     elif commit:
-        selected_attempt = (
+        attempts = (
             TicketAttempt.query
             .filter_by(project_id=project.id, agenthub_commit_hash=commit)
-            .filter(TicketAttempt.status.in_(SATISFIED_STATUSES))
             .order_by(TicketAttempt.created_at.desc(), TicketAttempt.attempt_num.desc())
-            .first()
+            .all()
         )
+        selected_attempt = next((attempt for attempt in attempts if attempt_is_integrated_winner(attempt)), None)
         if selected_attempt is not None:
             source = "attempt"
         elif commit != (project.accepted_frontier_id or "").strip():
             raise PublishError(
-                "Explicit commit is not an accepted/stable project commit",
+                "Explicit commit is not an integrated winner or current project frontier commit",
                 status_code=409,
                 phase="selection",
-                hint="Use --attempt-id or a commit from an accepted attempt.",
+                hint="Use --attempt-id or a commit from an integrated winner attempt.",
             )
     else:
-        selected_attempt = _latest_satisfied_attempt(project.id)
+        selected_attempt = _latest_integrated_winner_attempt(project.id)
         if selected_attempt is not None and (selected_attempt.agenthub_commit_hash or "").strip():
             commit = selected_attempt.agenthub_commit_hash
             source = "attempt"
@@ -264,10 +270,10 @@ def _resolve_selection(project: Project, *, attempt_id: str | None, commit_hash:
 
     if not commit:
         raise PublishError(
-            "No accepted/stable AgentHub commit is available to publish",
+            "No integrated winner AgentHub commit is available to publish",
             status_code=409,
             phase="selection",
-            hint="Accept an attempt first or set project.accepted_frontier_id.",
+            hint="Integrate a winner attempt first or set project.accepted_frontier_id.",
         )
     return PublishSelection(commit_hash=commit, attempt=selected_attempt, source=source)
 
@@ -502,7 +508,7 @@ def publish_project(
         shipped_at = datetime.now(timezone.utc)
         project.shipped_frontier = selection.commit_hash
         project.shipped_frontier_updated_at = shipped_at
-        if selection.attempt is not None and selection.attempt.status in SATISFIED_STATUSES:
+        if selection.attempt is not None and attempt_is_integrated_winner(selection.attempt):
             selection.attempt.status = "shipped"
             selection.attempt.updated_at = shipped_at
         db.session.commit()

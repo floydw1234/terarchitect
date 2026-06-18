@@ -43,6 +43,11 @@ INTEGRATED_STATUSES: frozenset[str] = frozenset(["accepted", "composed", "releas
 SATISFIED_STATUSES: frozenset[str] = INTEGRATED_STATUSES
 
 
+def _agenthub_auth_headers(api_key: str | None) -> dict[str, str]:
+    key = (api_key or "").strip()
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
 def _iso_or_none(value) -> Optional[str]:
     return value.isoformat() if isinstance(value, datetime) else None
 
@@ -74,6 +79,10 @@ def attempt_is_integrated(attempt: TicketAttempt | None) -> bool:
 
 def attempt_satisfies_dependencies(attempt: TicketAttempt | None) -> bool:
     return attempt_is_winner(attempt) and attempt_is_integrated(attempt)
+
+
+def attempt_is_integrated_winner(attempt: TicketAttempt | None) -> bool:
+    return attempt_satisfies_dependencies(attempt)
 
 
 def transition_attempt(attempt: TicketAttempt, new_status: str, reason: str = "") -> TicketAttempt:
@@ -145,7 +154,7 @@ def validate_attempt(attempt: TicketAttempt, agenthub_url: str = "") -> TicketAt
         try:
             resp = _requests.get(
                 f"{url}/api/git/commits/{attempt.agenthub_commit_hash}",
-                headers={"Authorization": f"Bearer {key}"},
+                headers=_agenthub_auth_headers(key) or None,
                 timeout=8,
             )
             if resp.status_code == 404:
@@ -265,7 +274,7 @@ def get_latest_attempt(ticket_id) -> Optional[TicketAttempt]:
     )
 
 
-def get_accepted_attempt(ticket_id) -> Optional[TicketAttempt]:
+def get_integrated_winner_attempt(ticket_id) -> Optional[TicketAttempt]:
     """Return the integrated winner attempt for a ticket, if any.
 
     Compatibility states like composed/release_pr_open/shipped still count as
@@ -278,9 +287,14 @@ def get_accepted_attempt(ticket_id) -> Optional[TicketAttempt]:
         .all()
     )
     for attempt in attempts:
-        if attempt_satisfies_dependencies(attempt):
+        if attempt_is_integrated_winner(attempt):
             return attempt
     return None
+
+
+def get_accepted_attempt(ticket_id) -> Optional[TicketAttempt]:
+    """Compatibility wrapper for callers using the older accepted naming."""
+    return get_integrated_winner_attempt(ticket_id)
 
 
 def list_wave_attempts(project_id, wave_num: int) -> list[TicketAttempt]:

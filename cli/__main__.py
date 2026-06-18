@@ -11,7 +11,7 @@ Commands:
     publish    <project-id> [--target github] [--attempt-id ID | --commit HASH] [--push]
     ticket     list | create | show | update | run | cancel | logs
                | attempts | evaluate-attempts | choose-winner | accept-winner
-               | accept-attempt | reject-attempt
+               | accept-attempt (legacy alias for accept-winner) | reject-attempt
                (Intent fields: --rationale, --acceptance-criteria, --constraints, --intent-status)
     attempt    list | show | files | diff
     status     <project-id> --ticket <ticket-id>
@@ -25,7 +25,7 @@ Commands:
 Product model:
     Tickets are intents: goal, rationale, acceptance criteria, constraints, architecture scope.
     Agents publish attempts to AgentHub (not GitHub PRs).
-    Ship Room turns accepted attempts into promotion candidates and ShipRuns.
+    Ship Room turns integrated winner attempts into promotion candidates and ShipRuns.
     Workspace lets you compose, preview, bless, and optionally promote candidate states
     without shipping to main.
 

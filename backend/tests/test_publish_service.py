@@ -34,6 +34,7 @@ def _create_project_with_attempts(app, tmp_path, *, project_path=None):
             attempt_num=1,
             status="accepted",
             summary="first",
+            is_winner=False,
         )
         second = TicketAttempt(
             project_id=project.id,
@@ -41,16 +42,29 @@ def _create_project_with_attempts(app, tmp_path, *, project_path=None):
             agenthub_commit_hash="c" * 40,
             base_hash="a" * 40,
             attempt_num=2,
-            status="accepted",
+            status="composed",
             summary="second",
+            is_winner=True,
+            integrated_at=db.func.now(),
+            integrated_frontier_id="c" * 40,
         )
-        db.session.add_all([first, second])
+        third = TicketAttempt(
+            project_id=project.id,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="d" * 40,
+            base_hash="c" * 40,
+            attempt_num=3,
+            status="accepted",
+            summary="third",
+            is_winner=False,
+        )
+        db.session.add_all([first, second, third])
         db.session.commit()
-        return str(project.id), str(first.id), str(second.id)
+        return str(project.id), str(first.id), str(second.id), str(third.id)
 
 
-def test_publish_project_dry_run_uses_latest_accepted_attempt(app, tmp_path):
-    project_id, _first_attempt_id, second_attempt_id = _create_project_with_attempts(app, tmp_path)
+def test_publish_project_dry_run_uses_latest_integrated_winner_attempt(app, tmp_path):
+    project_id, _first_attempt_id, second_attempt_id, _third_attempt_id = _create_project_with_attempts(app, tmp_path)
 
     def fake_run(args, **kwargs):
         git_args = args[1:]
@@ -87,7 +101,7 @@ def test_publish_project_dry_run_uses_latest_accepted_attempt(app, tmp_path):
 
 def test_publish_project_clones_missing_github_repo_into_ephemeral_repo_before_preflight(app, tmp_path):
     missing_repo = tmp_path / "projects" / "demo"
-    project_id, _first_attempt_id, second_attempt_id = _create_project_with_attempts(
+    project_id, _first_attempt_id, second_attempt_id, _third_attempt_id = _create_project_with_attempts(
         app,
         tmp_path,
         project_path=str(missing_repo),
@@ -140,7 +154,7 @@ def test_publish_project_clones_missing_github_repo_into_ephemeral_repo_before_p
 
 
 def test_publish_project_clones_blank_project_path_into_ephemeral_repo(app, tmp_path):
-    project_id, _first_attempt_id, _second_attempt_id = _create_project_with_attempts(
+    project_id, _first_attempt_id, _second_attempt_id, _third_attempt_id = _create_project_with_attempts(
         app,
         tmp_path,
         project_path="",
@@ -189,7 +203,7 @@ def test_publish_project_clones_blank_project_path_into_ephemeral_repo(app, tmp_
 
 
 def test_publish_project_refuses_dirty_repo(app, tmp_path):
-    project_id, _first_attempt_id, _second_attempt_id = _create_project_with_attempts(app, tmp_path)
+    project_id, _first_attempt_id, _second_attempt_id, _third_attempt_id = _create_project_with_attempts(app, tmp_path)
 
     def fake_run(args, **kwargs):
         git_args = args[1:]
@@ -212,7 +226,7 @@ def test_publish_project_refuses_dirty_repo(app, tmp_path):
 
 
 def test_publish_project_materializes_missing_commit_and_pushes(app, tmp_path):
-    project_id, _first_attempt_id, second_attempt_id = _create_project_with_attempts(app, tmp_path)
+    project_id, _first_attempt_id, second_attempt_id, _third_attempt_id = _create_project_with_attempts(app, tmp_path)
 
     def fake_run(args, **kwargs):
         git_args = args[1:]
@@ -271,7 +285,7 @@ def test_publish_project_materializes_missing_commit_and_pushes(app, tmp_path):
 
 
 def test_publish_project_rejects_non_fast_forward_without_force(app, tmp_path):
-    project_id, _first_attempt_id, _second_attempt_id = _create_project_with_attempts(app, tmp_path)
+    project_id, _first_attempt_id, _second_attempt_id, _third_attempt_id = _create_project_with_attempts(app, tmp_path)
 
     def fake_run(args, **kwargs):
         git_args = args[1:]
@@ -306,7 +320,7 @@ def test_publish_project_rejects_non_fast_forward_without_force(app, tmp_path):
 
 
 def test_publish_project_rejects_mismatched_origin_before_fetch(app, tmp_path):
-    project_id, _first_attempt_id, _second_attempt_id = _create_project_with_attempts(app, tmp_path)
+    project_id, _first_attempt_id, _second_attempt_id, _third_attempt_id = _create_project_with_attempts(app, tmp_path)
 
     def fake_run(args, **kwargs):
         git_args = args[1:]
@@ -326,3 +340,29 @@ def test_publish_project_rejects_mismatched_origin_before_fetch(app, tmp_path):
 
     assert exc.value.phase == "project"
     assert "origin does not match" in exc.value.message
+
+
+def test_publish_project_rejects_non_integrated_winner_attempt_id(app, tmp_path):
+    project_id, _first_attempt_id, _second_attempt_id, third_attempt_id = _create_project_with_attempts(app, tmp_path)
+
+    with app.app_context():
+        project = db.session.get(Project, project_id)
+        with pytest.raises(PublishError) as exc:
+            publish_project(project, attempt_id=third_attempt_id)
+
+    assert exc.value.phase == "selection"
+    assert exc.value.status_code == 409
+    assert "Selected attempt is not an integrated winner" == exc.value.message
+
+
+def test_publish_project_rejects_non_integrated_winner_commit(app, tmp_path):
+    project_id, _first_attempt_id, _second_attempt_id, _third_attempt_id = _create_project_with_attempts(app, tmp_path)
+
+    with app.app_context():
+        project = db.session.get(Project, project_id)
+        with pytest.raises(PublishError) as exc:
+            publish_project(project, commit_hash="d" * 40)
+
+    assert exc.value.phase == "selection"
+    assert exc.value.status_code == 409
+    assert "integrated winner" in exc.value.message.lower()

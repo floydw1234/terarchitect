@@ -298,8 +298,32 @@ def test_attempt_show_404_reports_actionable_hint(capsys):
     assert "ta ticket attempts proj <ticket_id>" in stderr
 
 
-def test_ticket_accept_attempt_hits_accept_endpoint(capsys):
-    api = FakeAPI()
+def test_ticket_accept_attempt_is_legacy_alias_for_accept_winner(capsys):
+    class WinnerAliasAPI(FakeAPI):
+        def get(self, path):
+            self.calls.append(("GET", path, None))
+            if path == "/api/projects/proj":
+                return {"id": "proj", "accepted_frontier_id": "frontier-123"}
+            if path == "/api/projects/proj/tickets/ticket-1":
+                return {"id": "ticket-1"}
+            if path == "/api/projects/proj/tickets/ticket-1/attempts":
+                return [{"id": "attempt-1", "attempt_num": 1, "status": "validated"}]
+            if path == "/api/projects/proj/attempts/attempt-1":
+                return {
+                    "id": "attempt-1",
+                    "attempt_id": "attempt-1",
+                    "ticket_id": "ticket-1",
+                    "status": "validated",
+                    "validated": True,
+                    "is_winner": True,
+                    "integrated": False,
+                    "agenthub_commit_hash": "abc123def4567890",
+                    "base_hash": "frontier-123",
+                    "attempt_num": 1,
+                }
+            raise AssertionError(f"Unexpected GET path: {path}")
+
+    api = WinnerAliasAPI()
     args = argparse.Namespace(
         ticket_cmd="accept-attempt",
         project_id="proj",
@@ -312,12 +336,15 @@ def test_ticket_accept_attempt_hits_accept_endpoint(capsys):
 
     ticket._dispatch(args, api)
 
-    assert api.calls[0] == (
+    assert api.calls[-1] == (
         "POST",
         "/api/projects/proj/tickets/ticket-1/attempts/attempt-1/accept",
         {},
     )
-    assert "ta ship candidates proj" in capsys.readouterr().out
+    stdout = capsys.readouterr().out
+    assert "Legacy alias:" in stdout
+    assert "choose-winner" in stdout
+    assert "ta ship candidates proj" in stdout
 
 
 def test_attempt_show_guides_agents_through_evaluate_flow_without_choose_winner(capsys):

@@ -807,6 +807,13 @@ def test_choose_winner_dry_run_rejects_integrated_sibling_locally_in_json_mode(c
     payload = json.loads(capsys.readouterr().err)
     assert "already has an integrated sibling attempt" in payload["error"]["message"]
     assert "release_pr_open" in payload["error"]["message"]
+    assert "cannot choose a new winner" in payload["error"]["detail"]
+    assert "rerun from the current frontier" in payload["error"]["hint"]
+    assert payload["error"]["next_commands"] == [
+        "ta ticket attempts proj-1 ticket-1",
+        "ta ticket evaluate-attempts proj-1 ticket-1 --include-diff --include-files",
+        "ta ticket rerun-current-frontier proj-1 ticket-1",
+    ]
     assert api.post_calls == []
 
 
@@ -845,6 +852,15 @@ def test_choose_winner_rejects_frontier_mismatch_locally_in_json_mode(capsys):
         ticket_cmd._cmd_choose_winner(args, api)
 
     payload = json.loads(capsys.readouterr().err)
+    assert payload["error"]["message"] == (
+        "Expected frontier frontier-expected, but project.accepted_frontier_id is now frontier-live."
+    )
+    assert "frontier changed" in payload["error"]["detail"]
+    assert "Inspect the latest attempts" in payload["error"]["hint"]
+    assert payload["error"]["next_commands"] == [
+        "ta ticket attempts proj-1 ticket-1",
+        "ta ticket evaluate-attempts proj-1 ticket-1 --include-diff --include-files",
+    ]
     assert "frontier-expected" in payload["error"]["message"]
     assert api.post_calls == []
 
@@ -882,7 +898,54 @@ def test_accept_winner_requires_chosen_winner_before_posting(capsys):
         ticket_cmd._cmd_accept_winner(args, api)
 
     payload = json.loads(capsys.readouterr().err)
-    assert "chosen winner" in payload["error"]["message"]
+    assert payload["error"]["message"] == "Attempt attempt-2 is not the chosen winner for ticket ticket-1."
+    assert "separate lifecycle steps" in payload["error"]["detail"]
+    assert payload["error"]["hint"] == (
+        "Choose this attempt as the winner first: ta ticket choose-winner proj-1 ticket-1 attempt-2"
+    )
+    assert payload["error"]["next_commands"] == [
+        "ta ticket choose-winner proj-1 ticket-1 attempt-2",
+        "ta ticket evaluate-attempts proj-1 ticket-1 --include-diff --include-files",
+    ]
+    assert api.post_calls == []
+
+
+def test_accept_attempt_alias_requires_chosen_winner_before_posting(capsys):
+    api = RouteStubAPI(
+        get_map={
+            "/api/projects/proj-1": {"id": "proj-1", "accepted_frontier_id": "frontier-123"},
+            "/api/projects/proj-1/tickets/ticket-1": {"id": "ticket-1"},
+            "/api/projects/proj-1/tickets/ticket-1/attempts": [{"id": "attempt-2", "attempt_num": 2, "status": "validated"}],
+            "/api/projects/proj-1/attempts/attempt-2": {
+                "id": "attempt-2",
+                "attempt_id": "attempt-2",
+                "ticket_id": "ticket-1",
+                "status": "validated",
+                "validated": True,
+                "is_winner": False,
+                "integrated": False,
+                "agenthub_commit_hash": "commit-222222222222",
+                "base_hash": "frontier-123",
+                "attempt_num": 2,
+            },
+        }
+    )
+    args = SimpleNamespace(
+        project_id="proj-1",
+        ticket_id="ticket-1",
+        attempt_id="attempt-2",
+        expect_frontier=None,
+        reason=None,
+        json=False,
+        output="human",
+    )
+
+    with pytest.raises(SystemExit):
+        ticket_cmd._cmd_accept_attempt(args, api)
+
+    stderr = capsys.readouterr().err
+    assert "Attempt attempt-2 is not the chosen winner for ticket ticket-1." in stderr
+    assert "Choose this attempt as the winner first: ta ticket choose-winner proj-1 ticket-1 attempt-2" in stderr
     assert api.post_calls == []
 
 
@@ -921,7 +984,14 @@ def test_accept_winner_rejects_stale_attempt_locally_before_posting(capsys):
         ticket_cmd._cmd_accept_winner(args, api)
 
     payload = json.loads(capsys.readouterr().err)
-    assert "stale" in payload["error"]["message"].lower()
+    assert payload["error"]["message"] == "Attempt attempt-2 is stale and cannot be accepted locally."
+    assert payload["error"]["detail"] == "Project frontier moved."
+    assert "rerun from the current frontier" in payload["error"]["hint"]
+    assert payload["error"]["next_commands"] == [
+        "ta ticket attempts proj-1 ticket-1",
+        "ta ticket evaluate-attempts proj-1 ticket-1 --include-diff --include-files",
+        "ta ticket rerun-current-frontier proj-1 ticket-1",
+    ]
     assert api.post_calls == []
 
 
@@ -960,7 +1030,13 @@ def test_accept_winner_rejects_stale_base_mismatch_signal_before_posting(capsys)
         ticket_cmd._cmd_accept_winner(args, api)
 
     payload = json.loads(capsys.readouterr().err)
-    assert "base_hash differs" in payload["error"]["message"]
+    assert payload["error"]["message"] == "Attempt attempt-2 is stale and cannot be accepted locally."
+    assert "base_hash differs" in payload["error"]["detail"]
+    assert payload["error"]["next_commands"] == [
+        "ta ticket attempts proj-1 ticket-1",
+        "ta ticket evaluate-attempts proj-1 ticket-1 --include-diff --include-files",
+        "ta ticket rerun-current-frontier proj-1 ticket-1",
+    ]
     assert api.post_calls == []
 
 
@@ -1027,7 +1103,13 @@ def test_accept_winner_rejects_indeterminate_staleness_locally_before_posting(
         ticket_cmd._cmd_accept_winner(args, api)
 
     payload = json.loads(capsys.readouterr().err)
-    assert expected_message in payload["error"]["message"]
+    assert payload["error"]["message"] == "Attempt attempt-2 is stale and cannot be accepted locally."
+    assert expected_message in payload["error"]["detail"]
+    assert payload["error"]["next_commands"] == [
+        "ta ticket attempts proj-1 ticket-1",
+        "ta ticket evaluate-attempts proj-1 ticket-1 --include-diff --include-files",
+        "ta ticket rerun-current-frontier proj-1 ticket-1",
+    ]
     assert api.post_calls == []
 
 

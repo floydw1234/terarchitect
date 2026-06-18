@@ -1,4 +1,4 @@
-"""publish subcommand: explicit downstream publication of accepted AgentHub commits."""
+"""publish subcommand: explicit downstream publication of integrated-winner AgentHub commits."""
 
 from cli._api import API, APIError
 from cli._output import die, print_json, print_receipt
@@ -7,12 +7,12 @@ from cli._output import die, print_json, print_receipt
 def register(subparsers) -> None:
     p = subparsers.add_parser(
         "publish",
-        help="Publish an accepted/stable AgentHub commit to a downstream target",
+        help="Publish an integrated-winner AgentHub commit to a downstream target",
     )
     p.add_argument("project_id", help="Project ID")
     p.add_argument("--target", default="github", help="Publish target (default: github)")
-    p.add_argument("--attempt-id", dest="attempt_id", help="Explicit accepted attempt ID to publish")
-    p.add_argument("--commit", dest="commit", help="Explicit accepted/stable AgentHub commit to publish")
+    p.add_argument("--attempt-id", dest="attempt_id", help="Explicit integrated winner attempt ID to publish")
+    p.add_argument("--commit", dest="commit", help="Explicit integrated winner or current frontier AgentHub commit to publish")
     p.add_argument("--branch", help="Override target branch (default: project github_ref or main)")
     p.add_argument("--push", action="store_true", help="Actually push to the downstream target (default: dry-run)")
     p.add_argument("--force", action="store_true", help="Allow non-fast-forward replacement when supported")
@@ -60,4 +60,3 @@ def _dispatch(args, api: API) -> None:
             ("Pushed", result.get("pushed")),
         ],
     )
-
