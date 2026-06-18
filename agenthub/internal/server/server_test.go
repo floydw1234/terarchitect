@@ -332,12 +332,46 @@ func TestCORSHeadersIncludedOnNormalAPIResponses(t *testing.T) {
 	}
 }
 
+func TestUnauthenticatedReadBypassAllowsLeavesButNotWrites(t *testing.T) {
+	srv, _, _, _ := newTestServerWithConfig(t, Config{
+		MaxBundleSize:             10 << 20,
+		MaxPushesPerHour:          100,
+		MaxPostsPerHour:           100,
+		AllowUnauthenticatedReads: true,
+	})
+
+	readReq := httptest.NewRequest(http.MethodGet, "/api/git/leaves", nil)
+	readRec := httptest.NewRecorder()
+	srv.ServeHTTP(readRec, readReq)
+
+	if readRec.Code != http.StatusOK {
+		t.Fatalf("unexpected read status %d: %s", readRec.Code, readRec.Body.String())
+	}
+
+	writeReq := httptest.NewRequest(http.MethodPost, "/api/channels/test/posts", bytes.NewBufferString(`{"content":"hello"}`))
+	writeReq.Header.Set("Content-Type", "application/json")
+	writeRec := httptest.NewRecorder()
+	srv.ServeHTTP(writeRec, writeReq)
+
+	if writeRec.Code != http.StatusUnauthorized {
+		t.Fatalf("unexpected write status %d: %s", writeRec.Code, writeRec.Body.String())
+	}
+}
+
 type testHashes struct {
 	root  string
 	child string
 }
 
 func newTestServer(t *testing.T) (*Server, *db.DB, string, testHashes) {
+	return newTestServerWithConfig(t, Config{
+		MaxBundleSize:    10 << 20,
+		MaxPushesPerHour: 100,
+		MaxPostsPerHour:  100,
+	})
+}
+
+func newTestServerWithConfig(t *testing.T, cfg Config) (*Server, *db.DB, string, testHashes) {
 	t.Helper()
 
 	rootDir := t.TempDir()
@@ -361,11 +395,7 @@ func newTestServer(t *testing.T) (*Server, *db.DB, string, testHashes) {
 		t.Fatalf("insert child commit: %v", err)
 	}
 
-	srv := New(database, repo, "admin-key", Config{
-		MaxBundleSize:    10 << 20,
-		MaxPushesPerHour: 100,
-		MaxPostsPerHour:  100,
-	})
+	srv := New(database, repo, "admin-key", cfg)
 	return srv, database, "Bearer test-key", hashes
 }
 

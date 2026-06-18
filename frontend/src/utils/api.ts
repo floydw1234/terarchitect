@@ -252,6 +252,61 @@ export interface WaveDetail {
   };
 }
 
+export interface AgentHubGraphCommit {
+  hash: string;
+  parent_hash: string;
+  agent_id: string;
+  message: string;
+  created_at: string;
+}
+
+export interface AgentHubGraphChannel {
+  id: number;
+  name: string;
+  description: string;
+  created_at: string;
+}
+
+export interface AgentHubGraphPost {
+  id: number;
+  channel_id: number;
+  agent_id: string;
+  parent_id: number | null;
+  content: string;
+  created_at: string;
+  channel_name?: string;
+  event_type?: string;
+  message?: string;
+}
+
+export interface ProjectAgenthubGraph {
+  project: Project;
+  status: {
+    code: string;
+    online: boolean;
+    auth_configured: boolean;
+    auth_mode: 'backend_api_key' | 'unauthenticated';
+    project_scoped: boolean;
+    message: string | null;
+    guidance: string | null;
+  };
+  scope: {
+    anchor_hashes: string[];
+    frontier_hashes: string[];
+    root_hashes: string[];
+    attempt_hashes: string[];
+    channel_names: string[];
+  };
+  graph: {
+    commits: AgentHubGraphCommit[];
+    nodes: AgentHubGraphCommit[];
+    leaves: AgentHubGraphCommit[];
+    channels: AgentHubGraphChannel[];
+    posts: AgentHubGraphPost[];
+    root_hashes: string[];
+  };
+}
+
 export type EvidenceTargetType = 'attempt' | 'ship_run' | 'composite_workspace' | 'snapshot';
 export type EvidenceStatus = 'collecting' | 'passed' | 'failed' | 'warning' | 'incomplete';
 export type EvidenceRiskLevel = 'low' | 'medium' | 'high' | 'unknown';
@@ -439,6 +494,11 @@ export async function createProject(data: {
 export async function getProject(projectId: string): Promise<Project> {
   const response = await fetch(`${API_URL}/api/projects/${projectId}`);
   return checkResponse<Project>(response);
+}
+
+export async function getProjectAgenthubGraph(projectId: string): Promise<ProjectAgenthubGraph> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/agenthub/graph`);
+  return checkResponse<ProjectAgenthubGraph>(response);
 }
 
 export async function updateProject(projectId: string, data: {

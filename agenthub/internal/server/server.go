@@ -13,10 +13,11 @@ import (
 )
 
 type Config struct {
-	MaxBundleSize    int64  // max bundle upload size in bytes
-	MaxPushesPerHour int    // per agent
-	MaxPostsPerHour  int    // per agent
-	ListenAddr       string // e.g. ":8080"
+	MaxBundleSize             int64  // max bundle upload size in bytes
+	MaxPushesPerHour          int    // per agent
+	MaxPostsPerHour           int    // per agent
+	ListenAddr                string // e.g. ":8080"
+	AllowUnauthenticatedReads bool   // dev-only read bypass for GET graph/board endpoints
 }
 
 type Server struct {
@@ -43,6 +44,10 @@ func New(database *db.DB, repo *gitrepo.Repo, adminKey string, cfg Config) *Serv
 
 func (s *Server) setupRoutes() {
 	authMw := auth.Middleware(s.db)
+	readMw := authMw
+	if s.config.AllowUnauthenticatedReads {
+		readMw = auth.OptionalMiddleware(s.db)
+	}
 	adminMw := auth.AdminMiddleware(s.adminKey)
 
 	// Git endpoints
@@ -50,24 +55,24 @@ func (s *Server) setupRoutes() {
 	s.mux.Handle("POST /api/git/seed", authMw(http.HandlerFunc(s.handleGitSeed)))
 	s.mux.Handle("POST /api/git/import/github", authMw(http.HandlerFunc(s.handleGitImportGitHub)))
 	s.mux.Handle("GET /api/git/fetch/{hash}", authMw(http.HandlerFunc(s.handleGitFetch)))
-	s.mux.Handle("GET /api/git/commits", authMw(http.HandlerFunc(s.handleListCommits)))
-	s.mux.Handle("GET /api/git/commits/{hash}", authMw(http.HandlerFunc(s.handleGetCommit)))
-	s.mux.Handle("GET /api/git/receipts/{hash}", authMw(http.HandlerFunc(s.handleGetCommitReceipt)))
-	s.mux.Handle("GET /api/git/commits/{hash}/children", authMw(http.HandlerFunc(s.handleGetChildren)))
-	s.mux.Handle("GET /api/git/commits/{hash}/lineage", authMw(http.HandlerFunc(s.handleGetLineage)))
-	s.mux.Handle("GET /api/git/leaves", authMw(http.HandlerFunc(s.handleGetLeaves)))
+	s.mux.Handle("GET /api/git/commits", readMw(http.HandlerFunc(s.handleListCommits)))
+	s.mux.Handle("GET /api/git/commits/{hash}", readMw(http.HandlerFunc(s.handleGetCommit)))
+	s.mux.Handle("GET /api/git/receipts/{hash}", readMw(http.HandlerFunc(s.handleGetCommitReceipt)))
+	s.mux.Handle("GET /api/git/commits/{hash}/children", readMw(http.HandlerFunc(s.handleGetChildren)))
+	s.mux.Handle("GET /api/git/commits/{hash}/lineage", readMw(http.HandlerFunc(s.handleGetLineage)))
+	s.mux.Handle("GET /api/git/leaves", readMw(http.HandlerFunc(s.handleGetLeaves)))
 	s.mux.Handle("GET /api/git/diff/{hash_a}/{hash_b}", authMw(http.HandlerFunc(s.handleDiff)))
-	s.mux.Handle("GET /api/doctor", authMw(http.HandlerFunc(s.handleDoctor)))
+	s.mux.Handle("GET /api/doctor", readMw(http.HandlerFunc(s.handleDoctor)))
 
 	// Message board endpoints
-	s.mux.Handle("GET /api/channels", authMw(http.HandlerFunc(s.handleListChannels)))
+	s.mux.Handle("GET /api/channels", readMw(http.HandlerFunc(s.handleListChannels)))
 	s.mux.Handle("POST /api/channels", authMw(http.HandlerFunc(s.handleCreateChannel)))
-	s.mux.Handle("GET /api/channels/{name}/posts", authMw(http.HandlerFunc(s.handleListPosts)))
-	s.mux.Handle("GET /api/channels/{name}/events", authMw(http.HandlerFunc(s.handleListChannelEvents)))
+	s.mux.Handle("GET /api/channels/{name}/posts", readMw(http.HandlerFunc(s.handleListPosts)))
+	s.mux.Handle("GET /api/channels/{name}/events", readMw(http.HandlerFunc(s.handleListChannelEvents)))
 	s.mux.Handle("POST /api/channels/{name}/posts", authMw(http.HandlerFunc(s.handleCreatePost)))
-	s.mux.Handle("GET /api/events", authMw(http.HandlerFunc(s.handleListRecentEvents)))
-	s.mux.Handle("GET /api/posts/{id}", authMw(http.HandlerFunc(s.handleGetPost)))
-	s.mux.Handle("GET /api/posts/{id}/replies", authMw(http.HandlerFunc(s.handleGetReplies)))
+	s.mux.Handle("GET /api/events", readMw(http.HandlerFunc(s.handleListRecentEvents)))
+	s.mux.Handle("GET /api/posts/{id}", readMw(http.HandlerFunc(s.handleGetPost)))
+	s.mux.Handle("GET /api/posts/{id}/replies", readMw(http.HandlerFunc(s.handleGetReplies)))
 
 	// Admin endpoints
 	s.mux.Handle("POST /api/admin/agents", adminMw(http.HandlerFunc(s.handleCreateAgent)))

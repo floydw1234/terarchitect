@@ -41,6 +41,31 @@ func Middleware(database *db.DB) func(http.Handler) http.Handler {
 	}
 }
 
+// OptionalMiddleware allows unauthenticated requests through, but validates a
+// presented Bearer token if one is supplied.
+func OptionalMiddleware(database *db.DB) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			key := extractBearer(r)
+			if key == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			agent, err := database.GetAgentByAPIKey(key)
+			if err != nil {
+				http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+				return
+			}
+			if agent == nil {
+				http.Error(w, `{"error":"invalid api key"}`, http.StatusUnauthorized)
+				return
+			}
+			ctx := context.WithValue(r.Context(), agentContextKey, agent)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
 // AdminMiddleware validates Bearer token against the server's admin key.
 func AdminMiddleware(adminKey string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

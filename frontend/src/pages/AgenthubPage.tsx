@@ -1,51 +1,32 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   Box,
-  Button,
   Card,
   CardContent,
   Chip,
   CircularProgress,
   Divider,
+  FormControl,
   IconButton,
+  InputLabel,
+  MenuItem,
+  Select,
   Stack,
-  TextField,
   Tooltip,
   Typography,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
-import { AGENTHUB_URL } from '../utils/api';
+import { LineageField } from '../components/LineageField';
 import CommitDagGraph from '../components/graph/CommitDagGraph';
 import { accentFromString, graphGlassPanelSx } from '../components/graph/graphVisuals';
-
-const AGENTHUB_KEY_STORAGE = 'terarchitect.agenthub.key';
-const AUTH_REQUIRED_MESSAGE = 'AgentHub requires an API key. Enter or update it below, then save to reload the DAG.';
-
-interface Commit {
-  hash: string;
-  parent_hash: string;
-  agent_id: string;
-  message: string;
-  created_at: string;
-}
-
-interface Channel {
-  id: number;
-  name: string;
-  description: string;
-  created_at: string;
-}
-
-interface Post {
-  id: number;
-  channel_id: number;
-  agent_id: string;
-  parent_id: number | null;
-  content: string;
-  created_at: string;
-}
+import {
+  getProjectAgenthubGraph,
+  getProjects,
+  type Project,
+  type ProjectAgenthubGraph,
+} from '../utils/api';
 
 function short(hash: string) {
   return hash ? hash.slice(0, 10) : '';
@@ -57,21 +38,6 @@ function timeAgo(iso: string) {
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   return `${Math.floor(diff / 86400)}d ago`;
-}
-
-async function ahGet(path: string) {
-  const storedKey = window.localStorage.getItem(AGENTHUB_KEY_STORAGE)?.trim();
-  const key = storedKey || (window as any).__AH_KEY__ || '';
-  const resp = await fetch(AGENTHUB_URL + path, {
-    headers: key ? { Authorization: `Bearer ${key}` } : undefined,
-  });
-  if (resp.status === 401) {
-    const authError = new Error(AUTH_REQUIRED_MESSAGE);
-    (authError as Error & { code?: string }).code = 'AUTH_REQUIRED';
-    throw authError;
-  }
-  if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
-  return resp.json();
 }
 
 const StatCard: React.FC<{ label: string; value: number; accent: string }> = ({ label, value, accent }) => (
@@ -87,104 +53,88 @@ const StatCard: React.FC<{ label: string; value: number; accent: string }> = ({ 
   </Card>
 );
 
+function statusSeverity(code: string | undefined): 'info' | 'warning' | 'error' {
+  if (code === 'agenthub_unreachable' || code === 'agenthub_not_configured') {
+    return 'error';
+  }
+  if (code === 'agenthub_auth_required' || code === 'agenthub_http_error') {
+    return 'warning';
+  }
+  return 'info';
+}
+
 const AgenthubPage: React.FC = () => {
-  const [online, setOnline] = useState<boolean | null>(null);
-  const [leaves, setLeaves] = useState<Commit[]>([]);
-  const [log, setLog] = useState<Commit[]>([]);
-  const [channels, setChannels] = useState<Channel[]>([]);
-  const [recentPosts, setRecentPosts] = useState<Post[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [graphData, setGraphData] = useState<ProjectAgenthubGraph | null>(null);
+  const [loadingProjects, setLoadingProjects] = useState(true);
+  const [loadingGraph, setLoadingGraph] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
-  const [keyDraft, setKeyDraft] = useState('');
-  const [hasSavedKey, setHasSavedKey] = useState(() => Boolean(window.localStorage.getItem(AGENTHUB_KEY_STORAGE)?.trim()));
-  const [usingDevFallback, setUsingDevFallback] = useState(
-    () => !window.localStorage.getItem(AGENTHUB_KEY_STORAGE)?.trim() && Boolean((window as any).__AH_KEY__),
-  );
-  const resetProtectedData = useCallback(() => {
-    setLeaves([]);
-    setLog([]);
-    setChannels([]);
-    setRecentPosts([]);
-    setLastRefresh(null);
-  }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const loadProjects = useCallback(async () => {
+    setLoadingProjects(true);
     setError(null);
-    const storedKey = window.localStorage.getItem(AGENTHUB_KEY_STORAGE)?.trim();
-    setHasSavedKey(Boolean(storedKey));
-    setUsingDevFallback(!storedKey && Boolean((window as any).__AH_KEY__));
     try {
-      const health = await fetch(AGENTHUB_URL + '/api/health');
-      setOnline(health.ok);
-
-      if (!health.ok) {
-        setLoading(false);
-        return;
-      }
-
-      const [leavesData, logData, channelsData] = await Promise.all([
-        ahGet('/api/git/leaves'),
-        ahGet('/api/git/commits?limit=30'),
-        ahGet('/api/channels'),
-      ]);
-
-      setLeaves(leavesData ?? []);
-      setLog(logData ?? []);
-      setChannels(channelsData ?? []);
-
-      const posts: Post[] = [];
-      for (const channel of (channelsData ?? []).slice(0, 5)) {
-        try {
-          const channelPosts = await ahGet(`/api/channels/${channel.name}/posts?limit=5`);
-          posts.push(...(channelPosts ?? []));
-        } catch {
-          // Ignore channel-specific post failures and keep the dashboard usable.
+      const data = await getProjects();
+      setProjects(data);
+      setSelectedProjectId((current) => {
+        if (current && data.some((project) => project.id === current)) {
+          return current;
         }
-      }
-      posts.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      setRecentPosts(posts.slice(0, 20));
-
-      setLastRefresh(new Date());
+        return data[0]?.id ?? '';
+      });
     } catch (e: any) {
-      if (e?.code === 'AUTH_REQUIRED') {
-        resetProtectedData();
-        setOnline(true);
-      } else {
-        setOnline(false);
-      }
+      setProjects([]);
+      setSelectedProjectId('');
+      setGraphData(null);
       setError(e.message);
     } finally {
-      setLoading(false);
+      setLoadingProjects(false);
     }
-  }, [resetProtectedData]);
+  }, []);
+
+  const loadGraph = useCallback(async (projectId: string) => {
+    setLoadingGraph(true);
+    setError(null);
+    try {
+      const data = await getProjectAgenthubGraph(projectId);
+      setGraphData(data);
+      setLastRefresh(new Date());
+    } catch (e: any) {
+      setGraphData(null);
+      setError(e.message);
+    } finally {
+      setLoadingGraph(false);
+    }
+  }, []);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    void loadProjects();
+  }, [loadProjects]);
 
-  const uniqueAgents = Array.from(
-    new Set([...log.map((commit) => commit.agent_id), ...recentPosts.map((post) => post.agent_id)].filter(Boolean)),
-  );
-
-  const handleSaveKey = () => {
-    const nextKey = keyDraft.trim();
-    if (nextKey) {
-      window.localStorage.setItem(AGENTHUB_KEY_STORAGE, nextKey);
-    } else {
-      window.localStorage.removeItem(AGENTHUB_KEY_STORAGE);
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setGraphData(null);
+      return;
     }
-    setKeyDraft('');
-    void load();
-  };
+    void loadGraph(selectedProjectId);
+  }, [selectedProjectId, loadGraph]);
 
-  const handleClearKey = () => {
-    window.localStorage.removeItem(AGENTHUB_KEY_STORAGE);
-    setKeyDraft('');
-    resetProtectedData();
-    void load();
-  };
+  const selectedProject =
+    (graphData?.project?.id === selectedProjectId ? graphData.project : null) ??
+    projects.find((project) => project.id === selectedProjectId) ??
+    null;
+
+  const status = graphData?.status;
+  const commits = graphData?.graph.commits ?? [];
+  const leaves = graphData?.graph.leaves ?? [];
+  const channels = graphData?.graph.channels ?? [];
+  const recentPosts = graphData?.graph.posts ?? [];
+  const uniqueAgents = Array.from(
+    new Set([...commits.map((commit) => commit.agent_id), ...recentPosts.map((post) => post.agent_id)].filter(Boolean)),
+  );
+  const loading = loadingProjects || loadingGraph;
 
   return (
     <Box sx={{ maxWidth: 1440, mx: 'auto', display: 'flex', flexDirection: 'column', gap: 2.25 }}>
@@ -200,33 +150,63 @@ const AgenthubPage: React.FC = () => {
               Multi-agent Operations
             </Typography>
             <Typography variant="h4" sx={{ mt: 0.5 }}>
-              AgentHub
+              {selectedProject ? `AgentHub DAG for ${selectedProject.name}` : 'AgentHub DAG'}
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1, maxWidth: 760 }}>
-              Recent frontier state, active channels, and commit lineage from the AgentHub swarm in a shared graph visual language.
+              Project-scoped frontier, attempt lineage, and related AgentHub channels served through the Terarchitect backend.
             </Typography>
           </Box>
 
-          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-            <Chip
-              size="small"
-              label={online === null ? 'Checking' : online ? 'Online' : 'Offline'}
-              color={online ? 'success' : online === false ? 'error' : 'default'}
-            />
-            {lastRefresh && (
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }}>
+            <FormControl size="small" sx={{ minWidth: { xs: '100%', sm: 260 } }}>
+              <InputLabel id="agenthub-project-select-label">Project</InputLabel>
+              <Select
+                labelId="agenthub-project-select-label"
+                label="Project"
+                value={selectedProjectId}
+                onChange={(event) => setSelectedProjectId(event.target.value)}
+                disabled={!projects.length}
+              >
+                {projects.map((project) => (
+                  <MenuItem key={project.id} value={project.id}>
+                    {project.name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
               <Chip
                 size="small"
-                label={`Refreshed ${timeAgo(lastRefresh.toISOString())}`}
-                sx={{ bgcolor: 'rgba(255, 255, 255, 0.05)' }}
+                label={status ? (status.online ? 'Online' : 'Offline') : loading ? 'Loading' : 'Idle'}
+                color={status ? (status.online ? 'success' : 'error') : 'default'}
               />
-            )}
-            <Tooltip title="Refresh AgentHub data">
-              <span>
-                <IconButton onClick={load} disabled={loading} size="small">
-                  <RefreshRoundedIcon fontSize="small" />
-                </IconButton>
-              </span>
-            </Tooltip>
+              <Chip size="small" label="Project-scoped" color="info" variant="outlined" />
+              {lastRefresh && (
+                <Chip
+                  size="small"
+                  label={`Refreshed ${timeAgo(lastRefresh.toISOString())}`}
+                  sx={{ bgcolor: 'rgba(255, 255, 255, 0.05)' }}
+                />
+              )}
+              <Tooltip title="Refresh project DAG">
+                <span>
+                  <IconButton
+                    onClick={() => {
+                      if (selectedProjectId) {
+                        void loadGraph(selectedProjectId);
+                      } else {
+                        void loadProjects();
+                      }
+                    }}
+                    disabled={loading}
+                    size="small"
+                  >
+                    <RefreshRoundedIcon fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            </Stack>
           </Stack>
         </Stack>
       </Box>
@@ -235,54 +215,63 @@ const AgenthubPage: React.FC = () => {
         <CardContent>
           <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} alignItems={{ xs: 'stretch', lg: 'center' }}>
             <Box sx={{ flex: 1, minWidth: 0 }}>
-              <Typography variant="subtitle1">Connection</Typography>
+              <Typography variant="subtitle1">Backend AgentHub Auth</Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                Store an AgentHub API key in this browser to load protected DAG data. The key is not shown in page text.
-              </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
-                {hasSavedKey
-                  ? 'A saved key is available in local storage.'
-                  : usingDevFallback
-                    ? 'Using the development fallback from window.__AH_KEY__.'
-                    : 'No saved key is configured.'}
+                The browser never stores or sends an AgentHub API key. Terarchitect reads AgentHub from the backend using
+                <code> AGENTHUB_API_KEY </code>
+                when configured, or no auth header for local read-only dev bypass.
               </Typography>
             </Box>
-            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} sx={{ width: { xs: '100%', lg: 'auto' } }}>
-              <TextField
-                type="password"
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <Chip
                 size="small"
-                label="API key"
-                value={keyDraft}
-                onChange={(event) => setKeyDraft(event.target.value)}
-                autoComplete="off"
-                sx={{ minWidth: { xs: '100%', sm: 280 } }}
+                label={status?.auth_mode === 'backend_api_key' ? 'Backend key configured' : 'No backend key'}
+                color={status?.auth_mode === 'backend_api_key' ? 'success' : 'default'}
+                variant={status?.auth_mode === 'backend_api_key' ? 'filled' : 'outlined'}
               />
-              <Button variant="contained" onClick={handleSaveKey} disabled={loading}>
-                Save key
-              </Button>
-              <Button variant="outlined" onClick={handleClearKey} disabled={loading || (!hasSavedKey && !usingDevFallback)}>
-                Clear key
-              </Button>
+              {status?.guidance && <Chip size="small" label="Backend action needed" color="warning" variant="outlined" />}
             </Stack>
           </Stack>
         </CardContent>
       </Card>
 
       {error && <Alert severity="warning">{error}</Alert>}
-      {online === false && !error && (
-        <Alert severity="info">
-          AgentHub is not reachable at {AGENTHUB_URL}. Start it with <code>docker compose --profile swarm up agenthub</code>.
+      {!error && status?.message && status.code !== 'ok' && (
+        <Alert severity={statusSeverity(status.code)}>
+          {status.message}
+          {status.guidance ? ` ${status.guidance}` : ''}
         </Alert>
       )}
+      {!loading && !projects.length && (
+        <Alert severity="info">Create a project first. This page shows one AgentHub DAG per Terarchitect project.</Alert>
+      )}
 
-      {loading && !log.length && (
+      {loading && !graphData && (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 7 }}>
           <CircularProgress size={34} />
         </Box>
       )}
 
-      {online && (
+      {selectedProject && graphData && (
         <>
+          <Card>
+            <CardContent>
+              <Typography variant="subtitle1" sx={{ mb: 1.5 }}>
+                Project Frontier
+              </Typography>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} flexWrap="wrap" useFlexGap>
+                <LineageField label="Accepted frontier" value={selectedProject.accepted_frontier_id} width={16} />
+                <LineageField label="Shipped frontier" value={selectedProject.shipped_frontier} width={16} />
+                <LineageField label="Source SHA" value={selectedProject.github_resolved_sha} width={16} />
+              </Stack>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 1.5 }}>
+                <Chip size="small" label={`${graphData.scope.anchor_hashes.length} anchor hashes`} variant="outlined" />
+                <Chip size="small" label={`${graphData.scope.attempt_hashes.length} attempt leaves`} variant="outlined" />
+                <Chip size="small" label={`${graphData.graph.root_hashes.length} scoped roots`} variant="outlined" />
+              </Stack>
+            </CardContent>
+          </Card>
+
           <Box
             sx={{
               display: 'grid',
@@ -290,8 +279,8 @@ const AgenthubPage: React.FC = () => {
               gap: 2,
             }}
           >
-            <StatCard label="Recent commits" value={log.length} accent="#8b5cf6" />
-            <StatCard label="Frontier leaves" value={leaves.length} accent="#22d3ee" />
+            <StatCard label="Scoped commits" value={commits.length} accent="#8b5cf6" />
+            <StatCard label="Project frontier" value={leaves.length} accent="#22d3ee" />
             <StatCard label="Channels" value={channels.length} accent="#38bdf8" />
             <StatCard label="Agents seen" value={uniqueAgents.length} accent="#a78bfa" />
           </Box>
@@ -326,7 +315,15 @@ const AgenthubPage: React.FC = () => {
 
           <Card>
             <CardContent sx={{ p: 1.25 }}>
-              <CommitDagGraph commits={log} leaves={leaves} />
+              <CommitDagGraph
+                commits={commits}
+                leaves={leaves}
+                title={selectedProject ? `Commit DAG · ${selectedProject.name}` : 'Commit DAG'}
+                subtitle="Only commits related to this project's frontier, source SHA, and ticket attempts"
+                emptyTitle="No project-scoped commits yet"
+                emptyDescription="This project has no visible AgentHub lineage in the backend-scoped DAG yet."
+                emptyHint="Accept a frontier, import a source SHA, or publish an attempt to anchor the graph."
+              />
             </CardContent>
           </Card>
 
@@ -340,11 +337,11 @@ const AgenthubPage: React.FC = () => {
             <Card>
               <CardContent>
                 <Typography variant="subtitle1" sx={{ mb: 1.5 }}>
-                  Frontier leaves
+                  Project frontier leaves
                 </Typography>
                 {leaves.length === 0 ? (
                   <Typography variant="body2" color="text.secondary">
-                    No commits on the frontier yet.
+                    No project frontier leaves are visible yet.
                   </Typography>
                 ) : (
                   <Stack spacing={1.25}>
@@ -371,15 +368,15 @@ const AgenthubPage: React.FC = () => {
             <Card>
               <CardContent>
                 <Typography variant="subtitle1" sx={{ mb: 1.5 }}>
-                  Recent commits
+                  Scoped commits
                 </Typography>
-                {log.length === 0 ? (
+                {commits.length === 0 ? (
                   <Typography variant="body2" color="text.secondary">
-                    No recent commits yet.
+                    No project-scoped commits yet.
                   </Typography>
                 ) : (
                   <Stack spacing={1} divider={<Divider />}>
-                    {log.slice(0, 15).map((commit) => {
+                    {commits.slice(0, 15).map((commit) => {
                       const accent = accentFromString(commit.agent_id);
                       return (
                         <Box key={commit.hash} sx={{ display: 'flex', gap: 1.25, alignItems: 'flex-start' }}>
@@ -394,9 +391,7 @@ const AgenthubPage: React.FC = () => {
                               <span style={{ color: accent }}>{commit.agent_id || 'seed'}</span>
                               {' · '}
                               {timeAgo(commit.created_at)}
-                              {commit.parent_hash && (
-                                <span style={{ opacity: 0.58 }}>{` · ← ${short(commit.parent_hash)}`}</span>
-                              )}
+                              {commit.parent_hash && <span style={{ opacity: 0.58 }}>{` · ← ${short(commit.parent_hash)}`}</span>}
                             </Typography>
                           </Box>
                         </Box>
@@ -410,11 +405,11 @@ const AgenthubPage: React.FC = () => {
             <Card>
               <CardContent>
                 <Typography variant="subtitle1" sx={{ mb: 1.5 }}>
-                  Channels
+                  Project channels
                 </Typography>
                 {channels.length === 0 ? (
                   <Typography variant="body2" color="text.secondary">
-                    No channels registered.
+                    No project-related channels were found in AgentHub.
                   </Typography>
                 ) : (
                   <Stack spacing={1}>
@@ -438,11 +433,11 @@ const AgenthubPage: React.FC = () => {
             <Card>
               <CardContent>
                 <Typography variant="subtitle1" sx={{ mb: 1.5 }}>
-                  Recent board posts
+                  Recent project posts
                 </Typography>
                 {recentPosts.length === 0 ? (
                   <Typography variant="body2" color="text.secondary">
-                    No recent posts yet.
+                    No recent project posts yet.
                   </Typography>
                 ) : (
                   <Stack spacing={1} divider={<Divider />}>
@@ -454,6 +449,7 @@ const AgenthubPage: React.FC = () => {
                             <Typography variant="caption" sx={{ color: accent, fontWeight: 700 }}>
                               {post.agent_id || 'unknown'}
                             </Typography>
+                            {post.channel_name && <Chip size="small" label={`#${post.channel_name}`} sx={{ height: 18, fontSize: 10 }} />}
                             {post.parent_id && <Chip size="small" label="Reply" sx={{ height: 18, fontSize: 10 }} />}
                             <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
                               {timeAgo(post.created_at)}

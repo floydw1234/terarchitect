@@ -36,6 +36,7 @@ services:
       DOCKER_NETWORK: ${DOCKER_NETWORK:-terarchitect_default}
       AGENTHUB_URL: ${AGENTHUB_URL:-http://agenthub:8080}
       AGENTHUB_API_KEY: ${AGENTHUB_API_KEY:-}
+      AGENTHUB_AUTH_DISABLED: ${AGENTHUB_AUTH_DISABLED:-0}
       AGENTHUB_API_KEY_PATH: ${AGENTHUB_API_KEY_PATH:-}
       AGENTHUB_AGENT_ID: ${AGENTHUB_AGENT_ID:-}
       DIRECTOR_PROVIDER: ${DIRECTOR_PROVIDER:-}
@@ -101,6 +102,7 @@ services:
       MEMORY_SAVE_DIR: /tmp/terarchitect
       AGENTHUB_URL: ${AGENTHUB_URL:-http://agenthub:8080}
       AGENTHUB_API_KEY: ${AGENTHUB_API_KEY:-}
+      AGENTHUB_AUTH_DISABLED: ${AGENTHUB_AUTH_DISABLED:-0}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GH_TOKEN: ${GH_TOKEN:-}
       GITHUB_AGENT_TOKEN: ${GITHUB_AGENT_TOKEN:-}
@@ -157,6 +159,7 @@ services:
     container_name: terarchitect-agenthub
     environment:
       AGENTHUB_ADMIN_KEY: ${AGENTHUB_ADMIN_KEY:-changeme}
+      AGENTHUB_AUTH_DISABLED: ${AGENTHUB_AUTH_DISABLED:-0}
     volumes:
       - ./data/agenthub:/data
     ports:

@@ -65,6 +65,11 @@ def _agenthub_key() -> str:
     return (os.environ.get("AGENTHUB_API_KEY") or "").strip()
 
 
+def _agenthub_auth_headers() -> dict[str, str]:
+    key = _agenthub_key()
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
 def event_content(event_type: str, message: str, metadata: dict[str, Any] | None = None) -> str:
     """Encode a structured Terarchitect event as channel post content."""
     payload = {
@@ -134,7 +139,7 @@ def post_event(channel: str, content: str, background: bool = True) -> None:
             requests.post(
                 f"{url}/api/channels/{channel}/posts",
                 json={"content": content},
-                headers={"Authorization": f"Bearer {_agenthub_key()}"},
+                headers=_agenthub_auth_headers() or None,
                 timeout=5,
             )
         except Exception:
@@ -167,7 +172,7 @@ def fetch_channel_posts(channel: str, limit: int = 50) -> list[dict]:
         resp = requests.get(
             f"{url}/api/channels/{channel}/posts",
             params={"limit": limit},
-            headers={"Authorization": f"Bearer {_agenthub_key()}"},
+            headers=_agenthub_auth_headers() or None,
             timeout=8,
         )
         if resp.ok:

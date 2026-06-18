@@ -15,6 +15,10 @@ _FRONTIER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{6,254}$")
 _SOURCE_TYPES = {"github", "local_path", "agenthub_leaf"}
 
 
+def _truthy_env(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def normalize_frontier_id(value) -> str | None:
     if value is None:
         return None
@@ -184,9 +188,10 @@ def project_doctor_report(project: Project) -> dict:
         (os.environ.get("AGENTHUB_API_KEY") or "").strip()
         or (os.environ.get("AGENTHUB_ADMIN_KEY") or "").strip()
     )
+    agenthub_auth_disabled = _truthy_env(os.environ.get("AGENTHUB_AUTH_DISABLED"))
     if not agenthub_url:
         readiness_issues.append("AGENTHUB_URL is not configured in backend runtime.")
-    if not agenthub_key:
+    if not agenthub_key and not agenthub_auth_disabled:
         readiness_issues.append("AGENTHUB_API_KEY or AGENTHUB_ADMIN_KEY is not configured in backend runtime.")
     if latest_attempt_payload and latest_attempt_payload.get("stale") is True:
         readiness_issues.append("Latest attempt is stale against project.accepted_frontier_id.")

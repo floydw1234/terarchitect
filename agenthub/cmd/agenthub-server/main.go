@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"agenthub/internal/db"
@@ -62,11 +63,21 @@ func main() {
 
 	// Start server
 	srv := server.New(database, repo, key, server.Config{
-		MaxBundleSize:    int64(*maxBundleMB) * 1024 * 1024,
-		MaxPushesPerHour: *maxPushesPerHour,
-		MaxPostsPerHour:  *maxPostsPerHour,
-		ListenAddr:       *listenAddr,
+		MaxBundleSize:             int64(*maxBundleMB) * 1024 * 1024,
+		MaxPushesPerHour:          *maxPushesPerHour,
+		MaxPostsPerHour:           *maxPostsPerHour,
+		ListenAddr:                *listenAddr,
+		AllowUnauthenticatedReads: truthyEnv(os.Getenv("AGENTHUB_AUTH_DISABLED")),
 	})
 
 	log.Fatal(srv.ListenAndServe())
+}
+
+func truthyEnv(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }

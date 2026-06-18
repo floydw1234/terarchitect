@@ -25,6 +25,11 @@ export interface DagCommit {
 interface CommitDagGraphProps {
   commits: DagCommit[];
   leaves: DagCommit[];
+  title?: string;
+  subtitle?: string;
+  emptyTitle?: string;
+  emptyDescription?: string;
+  emptyHint?: string;
 }
 
 interface CommitLayoutNode {
@@ -136,7 +141,15 @@ export function buildCommitDagLayout(commits: DagCommit[]) {
   };
 }
 
-const CommitDagGraph: React.FC<CommitDagGraphProps> = ({ commits, leaves }) => {
+const CommitDagGraph: React.FC<CommitDagGraphProps> = ({
+  commits,
+  leaves,
+  title = 'Commit DAG',
+  subtitle = 'Parent to child lineage from the recent AgentHub log',
+  emptyTitle = 'No recent commits',
+  emptyDescription = 'The AgentHub DAG will appear here once commit history is available.',
+  emptyHint = 'This view only needs the recent commit log and parent hashes. It does not require separate lineage endpoints.',
+}) => {
   const layout = buildCommitDagLayout(commits);
   const leafHashes = new Set(leaves.map((leaf) => leaf.hash));
   const scope = 'agenthub-dag';
@@ -152,19 +165,19 @@ const CommitDagGraph: React.FC<CommitDagGraphProps> = ({ commits, leaves }) => {
       <Box sx={{ ...graphGlassPanelSx, position: 'absolute', top: 16, left: 16, zIndex: 2, px: 2, py: 1.25 }}>
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', sm: 'center' }}>
           <Typography variant="subtitle2" fontWeight={700}>
-            Commit DAG
+            {title}
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            Parent to child lineage from the recent AgentHub log
+            {subtitle}
           </Typography>
         </Stack>
       </Box>
 
       {commits.length === 0 && (
         <GraphEmptyState
-          title="No recent commits"
-          description="The AgentHub DAG will appear here once commit history is available."
-          hint="This view only needs the recent commit log and parent hashes. It does not require separate lineage endpoints."
+          title={emptyTitle}
+          description={emptyDescription}
+          hint={emptyHint}
         />
       )}
 

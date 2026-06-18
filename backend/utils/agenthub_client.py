@@ -20,18 +20,20 @@ class AgenthubError(Exception):
 
 
 class AgenthubClient:
-    def __init__(self, base_url: str, api_key: str, timeout: int = 30):
+    def __init__(self, base_url: str, api_key: str | None, timeout: int = 30):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self._session = requests.Session()
-        self._session.headers["Authorization"] = f"Bearer {api_key}"
+        key = (api_key or "").strip()
+        if key:
+            self._session.headers["Authorization"] = f"Bearer {key}"
 
     @classmethod
     def from_env(cls) -> "AgenthubClient":
         """Build from AGENTHUB_URL + AGENTHUB_API_KEY env vars."""
         return cls(
             base_url=os.environ["AGENTHUB_URL"],
-            api_key=os.environ["AGENTHUB_API_KEY"],
+            api_key=os.environ.get("AGENTHUB_API_KEY", ""),
         )
 
     @classmethod
