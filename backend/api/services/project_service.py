@@ -126,6 +126,7 @@ def project_to_json(project: Project):
         "execution_mode": getattr(project, "execution_mode", None) or "docker",
         "git_mode": getattr(project, "git_mode", None) or "swarm",
         "project_path": project.project_path,
+        "workflow_file": getattr(project, "workflow_file", None),
         "accepted_frontier_id": get_project_frontier_id(project),
         "shipped_frontier": frontier,
         "shipped_frontier_updated_at": frontier_updated.isoformat() if frontier_updated else None,

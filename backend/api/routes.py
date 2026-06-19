@@ -634,6 +634,7 @@ def projects():
             execution_mode="local" if (data.get("execution_mode") or "").strip().lower() == "local" else "docker",
             git_mode="swarm",
             project_path=project_path_val,
+            workflow_file=(data.get("workflow_file") or "").strip() or None,
             accepted_frontier_id=accepted_frontier_id,
         )
         if accepted_frontier_id is not None:
@@ -737,6 +738,8 @@ def project_detail(project_id):
             project.git_mode = "swarm"
         if "project_path" in data:
             project.project_path = data.get("project_path") or None
+        if "workflow_file" in data:
+            project.workflow_file = (data.get("workflow_file") or "").strip() or None
         if "github_ref" in data or "base_ref" in data:
             github_ref = _normalize_github_ref(data.get("github_ref"))
             base_ref = _normalize_github_ref(data.get("base_ref"))

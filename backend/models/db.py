@@ -42,6 +42,7 @@ class Project(db.Model):
     github_resolved_sha = db.Column(db.String(255))
     execution_mode = db.Column(db.String(50), nullable=False, default="docker")  # "docker" | "local"
     git_mode = db.Column(db.String(20), nullable=False, default="swarm")
+    workflow_file = db.Column(db.Text)
     # Canonical AgentHub leaf/frontier selected for future ticket execution.
     accepted_frontier_id = db.Column(db.String(255))
     # Canonical DAG-native noun: the currently shipped frontier commit for this project.

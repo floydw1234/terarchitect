@@ -40,6 +40,7 @@ _FEEDBACK_STYLE_PATH = os.path.join(_PROMPTS_DIR, "feedback_example.txt")
 _REQUIRED_PROMPT_KEYS = ("agent_system_prompt", "worker_first_prompt_prefix")
 # Optional keys for planning phase (fallbacks used if missing).
 _OPTIONAL_PLANNING_KEYS = ("worker_research_prompt_prefix", "worker_plan_prompt_prefix", "agent_plan_review_instructions")
+_WORKFLOW_STAGE_TYPES = {"worker_prompt", "plan_review", "execution", "finalize"}
 
 
 def _load_prompts() -> Dict[str, str]:
@@ -158,6 +159,58 @@ def _get_task_plan_path(project_path: Optional[str], ticket_id: Optional[uuid.UU
         base_dir = os.path.join(tempfile.gettempdir(), "terarchitect-middle-agent", "plan")
     os.makedirs(base_dir, exist_ok=True)
     return os.path.join(base_dir, f"{ticket_id}_task_plan.md")
+
+
+def _default_workflow_definition() -> Dict[str, Any]:
+    setup_prompt = (
+        "This is the Project setup ticket. Do exactly what the description says: create folder structure and configuration only (e.g. .gitignore). "
+        "Do not write application code. Output what you did.\n\n"
+        "Ticket: {ticket_title}\n\n"
+        "Description:\n{ticket_description}\n\n"
+    )
+    return {
+        "version": 1,
+        "stages": [
+            {
+                "id": "research",
+                "type": "worker_prompt",
+                "prompt_key": "worker_research_prompt_prefix",
+                "resume": False,
+                "condition": "not_setup_ticket",
+            },
+            {
+                "id": "planning",
+                "type": "worker_prompt",
+                "prompt_key": "worker_plan_prompt_prefix",
+                "resume": True,
+                "uses_task_plan_path": True,
+                "condition": "not_setup_ticket",
+            },
+            {
+                "id": "plan_review",
+                "type": "plan_review",
+                "max_turns": 50,
+                "condition": "not_setup_ticket",
+            },
+            {
+                "id": "setup_prompt",
+                "type": "worker_prompt",
+                "prompt": setup_prompt,
+                "resume": False,
+                "condition": "setup_ticket",
+            },
+            {
+                "id": "work",
+                "type": "execution",
+                "required": True,
+            },
+            {
+                "id": "push",
+                "type": "finalize",
+                "required": True,
+            },
+        ],
+    }
 
 
 def _worker_lineage_env() -> dict[str, str]:
@@ -1150,6 +1203,339 @@ class MiddleAgent:
             flow_label="Setup",
         )
 
+    @staticmethod
+    def _should_run_workflow_stage(condition: Any, *, ticket: Any, is_setup_ticket: bool) -> bool:
+        """Evaluate a small, safe condition language for workflow stages.
+
+        Supported forms are intentionally limited so workflow files can steer the
+        director without becoming an arbitrary-code execution surface:
+          - string: always | never | setup_ticket | not_setup_ticket
+          - dict: {"setup_ticket": bool}
+          - dict: {"title_equals": "..."}
+          - dict: {"title_contains": "..."}
+          - dict: {"description_contains": "..."}
+          - dict: {"not": <condition>}
+          - dict: {"all": [<condition>, ...]}
+          - dict: {"any": [<condition>, ...]}
+        """
+        if condition is None:
+            return True
+        if isinstance(condition, str):
+            normalized = condition.strip() or "always"
+            if normalized == "always":
+                return True
+            if normalized == "never":
+                return False
+            if normalized == "setup_ticket":
+                return is_setup_ticket
+            if normalized == "not_setup_ticket":
+                return not is_setup_ticket
+            raise ValueError(f"Unsupported workflow condition: {normalized}")
+        if isinstance(condition, dict):
+            if "not" in condition:
+                return not MiddleAgent._should_run_workflow_stage(
+                    condition["not"], ticket=ticket, is_setup_ticket=is_setup_ticket
+                )
+            if "all" in condition:
+                values = condition["all"]
+                if not isinstance(values, list):
+                    raise ValueError("Workflow condition 'all' must be a list")
+                return all(
+                    MiddleAgent._should_run_workflow_stage(value, ticket=ticket, is_setup_ticket=is_setup_ticket)
+                    for value in values
+                )
+            if "any" in condition:
+                values = condition["any"]
+                if not isinstance(values, list):
+                    raise ValueError("Workflow condition 'any' must be a list")
+                return any(
+                    MiddleAgent._should_run_workflow_stage(value, ticket=ticket, is_setup_ticket=is_setup_ticket)
+                    for value in values
+                )
+            if "setup_ticket" in condition:
+                expected = bool(condition["setup_ticket"])
+                return is_setup_ticket is expected
+            title = (ticket.title or "").casefold()
+            description = (ticket.description or "").casefold()
+            if "title_equals" in condition:
+                return title == str(condition["title_equals"]).casefold()
+            if "title_contains" in condition:
+                return str(condition["title_contains"]).casefold() in title
+            if "description_contains" in condition:
+                return str(condition["description_contains"]).casefold() in description
+            raise ValueError(f"Unsupported workflow condition object: {condition!r}")
+        raise ValueError(f"Unsupported workflow condition type: {type(condition).__name__}")
+
+    @staticmethod
+    def _resolve_workflow_path(project_path: str, workflow_file: Optional[str]) -> Optional[str]:
+        value = (workflow_file or "").strip()
+        if not value:
+            return None
+        if os.path.isabs(value):
+            if os.path.isfile(value):
+                return value
+            raise FileNotFoundError(f"Workflow file not found: {value}")
+        resolved = os.path.abspath(os.path.join(project_path, value))
+        if os.path.isfile(resolved):
+            return resolved
+        raise FileNotFoundError(f"Workflow file not found: {resolved}")
+
+    def _load_workflow_definition(self, project_path: str, workflow_file: Optional[str]) -> Dict[str, Any]:
+        workflow_path = self._resolve_workflow_path(project_path, workflow_file)
+        if workflow_path is None:
+            return _default_workflow_definition()
+        suffix = os.path.splitext(workflow_path)[1].lower()
+        with open(workflow_path, encoding="utf-8") as handle:
+            if suffix in {".yaml", ".yml"}:
+                try:
+                    import yaml
+                except ImportError as exc:
+                    raise ValueError(
+                        f"Workflow file {workflow_path} requires PyYAML, which is not installed"
+                    ) from exc
+                data = yaml.safe_load(handle)
+            else:
+                data = json.load(handle)
+        if not isinstance(data, dict):
+            raise ValueError("Workflow file must contain a JSON/YAML object")
+        return data
+
+    @staticmethod
+    def _validate_workflow_definition(workflow: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if workflow.get("version") != 1:
+            raise ValueError(f"Unsupported workflow version: {workflow.get('version')!r}")
+        stages = workflow.get("stages")
+        if not isinstance(stages, list) or not stages:
+            raise ValueError("Workflow must define a non-empty stages list")
+        stage_ids: set[str] = set()
+        execution_indexes: List[int] = []
+        finalize_indexes: List[int] = []
+        normalized: List[Dict[str, Any]] = []
+        for index, raw_stage in enumerate(stages):
+            if not isinstance(raw_stage, dict):
+                raise ValueError(f"Workflow stage #{index + 1} must be an object")
+            stage_id = str(raw_stage.get("id") or "").strip()
+            if not stage_id:
+                raise ValueError(f"Workflow stage #{index + 1} is missing id")
+            if stage_id in stage_ids:
+                raise ValueError(f"Workflow stage ids must be unique: {stage_id}")
+            stage_type = str(raw_stage.get("type") or "").strip()
+            if stage_type not in _WORKFLOW_STAGE_TYPES:
+                raise ValueError(f"Unknown workflow stage type: {stage_type or raw_stage.get('type')!r}")
+            stage_ids.add(stage_id)
+            stage = dict(raw_stage)
+            stage["id"] = stage_id
+            stage["type"] = stage_type
+            normalized.append(stage)
+            if stage_type == "execution":
+                execution_indexes.append(index)
+            elif stage_type == "finalize":
+                finalize_indexes.append(index)
+        if len(execution_indexes) != 1:
+            raise ValueError("Workflow must contain exactly one execution stage")
+        if len(finalize_indexes) != 1:
+            raise ValueError("Workflow must contain exactly one finalize stage")
+        if finalize_indexes[0] < execution_indexes[0]:
+            raise ValueError("Finalize stage must come after execution")
+        if finalize_indexes[0] != len(normalized) - 1:
+            raise ValueError("Finalize stage must be the last stage")
+        return normalized
+
+    def _resolve_worker_prompt(self, stage: Dict[str, Any], *, ticket: TicketLike, project_path: str) -> str:
+        prompt = stage.get("prompt")
+        prompt_key = (stage.get("prompt_key") or "").strip()
+        task_plan_path = _get_task_plan_path(project_path, ticket.id) if stage.get("uses_task_plan_path") else None
+        if prompt is None:
+            if not prompt_key:
+                raise ValueError(f"Workflow stage {stage['id']} must define prompt or prompt_key")
+            if prompt_key == "worker_research_prompt_prefix":
+                prompt = get_worker_research_prompt_prefix()
+            elif prompt_key == "worker_plan_prompt_prefix":
+                prompt = get_worker_plan_prompt_prefix(task_plan_path=task_plan_path)
+            else:
+                prompts = _load_prompts()
+                prompt = (prompts.get(prompt_key) or "").strip()
+                if not prompt:
+                    raise ValueError(f"Workflow stage {stage['id']} references unknown prompt_key: {prompt_key}")
+        prompt_text = str(prompt)
+        if task_plan_path and "{task_plan_path}" in prompt_text:
+            prompt_text = prompt_text.replace("{task_plan_path}", task_plan_path)
+        prompt_text = prompt_text.replace("{ticket_title}", ticket.title or "")
+        prompt_text = prompt_text.replace("{ticket_description}", (ticket.description or "").strip())
+        return prompt_text
+
+    def _run_worker_prompt_stage(
+        self,
+        *,
+        stage: Dict[str, Any],
+        ticket: TicketLike,
+        session_id: str,
+        project_path: str,
+        context_json: str,
+        prompt_history: List[str],
+        conversation_history: List[str],
+    ) -> None:
+        phase = stage["id"]
+        self._current_phase = phase
+        instruction = self._resolve_worker_prompt(stage, ticket=ticket, project_path=project_path) + context_json
+        self._trace_log(session_id, f"[Director -> Worker] {phase}:\n{instruction}", project_path)
+        self._log(
+            ticket.project_id,
+            ticket.id,
+            session_id,
+            f"worker_{phase}_prompt",
+            f"{phase} prompt sent to worker",
+            raw_output=instruction,
+        )
+        response = self._send_to_worker(
+            instruction,
+            session_id,
+            project_path,
+            resume=stage.get("resume") is True,
+        )
+        worker_out = response.get("output") or ""
+        prompt_history.append(instruction)
+        conversation_history.append(worker_out)
+        self._trace_log(session_id, f"[Worker -> Director] {phase} response:\n{worker_out}", project_path)
+        self._log(
+            ticket.project_id,
+            ticket.id,
+            session_id,
+            f"worker_{phase}_done",
+            f"{phase} turn completed",
+            raw_output=response.get("output"),
+        )
+        self._emit_ticket_run_event(
+            ticket.project_id,
+            ticket.id,
+            session_id,
+            phase=phase,
+            status="completed",
+            message=f"{phase.replace('_', ' ').title()} completed",
+            detail=(worker_out[:500] or None),
+        )
+
+    def _run_plan_review_loop(
+        self,
+        *,
+        ticket: TicketLike,
+        session_id: str,
+        context: dict,
+        prompt_history: List[str],
+        conversation_history: List[str],
+        start_memory_passages: List[str],
+        base_save_dir: Optional[str],
+        memory_kwargs: dict,
+        project_path: str,
+        max_turns: int,
+    ) -> str:
+        self._current_phase = "plan_review"
+        director_messages_plan: List[Dict[str, str]] = []
+        approved_plan_text = ""
+        for plan_turn in range(max_turns):
+            if self._backend.cancel_requested(ticket.project_id, ticket.id):
+                self._log(ticket.project_id, ticket.id, session_id, "cancelled", "Execution cancelled during plan review")
+                return ""
+            latest_output = conversation_history[-1] if conversation_history else ""
+            last_prompt = prompt_history[-1] if prompt_history else ""
+            combined_query = f"{last_prompt[:500]}\n{latest_output[:500]}".strip()
+            turn_memory_passages = self._retrieve_memory_passages(
+                ticket=ticket,
+                queries=[combined_query],
+                base_save_dir=base_save_dir,
+                memory_kwargs=memory_kwargs,
+                session_id=session_id,
+                ticket_id=ticket.id,
+                step_name=f"memory_retrieve_plan_review_{plan_turn}",
+            )
+            memory_passages = list(start_memory_passages)
+            for passage in turn_memory_passages:
+                if passage not in memory_passages:
+                    memory_passages.append(passage)
+            memories = self._format_memories(memory_passages)
+            agent_response, director_messages_plan = self._agent_assess(
+                context,
+                prompt_history,
+                conversation_history,
+                memories=memories,
+                director_messages=director_messages_plan,
+                session_id=session_id,
+                project_path=project_path,
+                phase="plan_review",
+            )
+            if agent_response.get("plan_approved"):
+                approved_plan_text = self._read_task_plan(project_path, ticket.id)
+                if not approved_plan_text:
+                    full_plan_prompt = (
+                        "The plan has been approved. Please output a concise execution checklist (bullet points or short steps with file paths), "
+                        "not the full plan file contents. Summarize the key steps only so the execution phase can follow them. No preamble."
+                    )
+                    self._trace_log(session_id, f"[Director -> Worker] Request full plan:\n{full_plan_prompt}", project_path)
+                    response = self._send_to_worker(full_plan_prompt, session_id, project_path, resume=True)
+                    full_plan_out = (response.get("output") or "").strip()
+                    approved_plan_text = full_plan_out
+                    prompt_history.append(full_plan_prompt)
+                    conversation_history.append(response.get("output") or "")
+                    self._trace_log(session_id, f"[Worker -> Director] Full plan response:\n{full_plan_out}", project_path)
+                if not approved_plan_text:
+                    approved_plan_text = (agent_response.get("approved_plan_text") or "").strip() or latest_output[:8000]
+                self._log(ticket.project_id, ticket.id, session_id, "plan_approved", "Plan approved, entering execution")
+                self._emit_ticket_run_event(
+                    ticket.project_id,
+                    ticket.id,
+                    session_id,
+                    phase="plan_review",
+                    status="completed",
+                    message="Plan approved",
+                    detail=(approved_plan_text[:500] or None),
+                )
+                plan_summary = (approved_plan_text or "")[:400].strip()
+                git_backend.post_ticket_event(
+                    str(ticket.id),
+                    "plan_review",
+                    "Plan approved",
+                    {"plan_summary": plan_summary} if plan_summary else None,
+                )
+                break
+            next_prompt = agent_response.get("next_prompt")
+            if not next_prompt:
+                raise AgentAPIError("Director API returned no next_prompt during plan review")
+            self._trace_log(session_id, f"[Director -> Worker] Plan-review turn {plan_turn + 1}:\n{next_prompt}", project_path)
+            self._log(
+                ticket.project_id,
+                ticket.id,
+                session_id,
+                f"worker_plan_review_{plan_turn + 1}_prompt",
+                f"Plan review feedback (turn {plan_turn + 1})",
+                raw_output=next_prompt,
+            )
+            response = self._send_to_worker(next_prompt, session_id, project_path, resume=True)
+            plan_review_out = response.get("output") or ""
+            prompt_history.append(next_prompt)
+            conversation_history.append(plan_review_out)
+            self._trace_log(session_id, f"[Worker -> Director] Plan-review turn {plan_turn + 1} response:\n{plan_review_out}", project_path)
+            self._log(
+                ticket.project_id,
+                ticket.id,
+                session_id,
+                f"worker_plan_review_{plan_turn + 1}",
+                f"Plan review turn {plan_turn + 1} completed",
+                raw_output=response.get("output"),
+            )
+        if not approved_plan_text:
+            approved_plan_text = self._read_task_plan(project_path, ticket.id)
+        if not approved_plan_text:
+            approved_plan_text = conversation_history[-1][:8000] if conversation_history else ""
+        if not approved_plan_text:
+            self._log(
+                ticket.project_id,
+                ticket.id,
+                session_id,
+                "plan_review_exhausted",
+                "Plan review ended without approval and no plan text; proceeding with empty plan context",
+            )
+        return approved_plan_text
+
     def process_ticket(
         self,
         ticket_id: uuid.UUID,
@@ -1225,6 +1611,7 @@ class MiddleAgent:
             worker_context = {
                 "project_name": context.get("project_name"),
                 "project_path": project_path,
+                "workflow_file": context.get("workflow_file"),
                 "current_ticket": context.get("current_ticket"),
                 "graph_relevant_to_current_ticket": context.get("graph_relevant_to_current_ticket"),
             }
@@ -1253,226 +1640,80 @@ class MiddleAgent:
             _title = (ticket.title or "").strip()
             is_setup_ticket = _title.lower() == PROJECT_SETUP_TICKET_TITLE.lower()
             self._debug_log(f"Ticket title={_title!r}, is_setup_ticket={is_setup_ticket}")
-            if is_setup_ticket:
-                self._debug_log("Flow: Setup (execution-only, no research/plan)")
-                completion_summary = self._run_setup_ticket_flow(
-                    ticket=ticket,
-                    session_id=session_id,
-                    context=context,
-                    project_path=project_path,
-                    base_save_dir=base_save_dir,
-                    memory_kwargs=memory_kwargs,
-                    start_memory_passages=start_memory_passages,
-                    context_json=context_json,
-                )
-            else:
-                # --- Normal flow: research → plan → plan-review → execution ---
-                self._debug_log("Flow: Normal (research → plan → plan-review → execution)")
-                # --- Phase: Research (one worker turn) ---
-                self._current_phase = "research"
-                self._debug_log("Phase: Research (1 worker turn)")
-                research_instruction = get_worker_research_prompt_prefix() + context_json
-                self._trace_log(session_id, f"[Director -> Worker] Research:\n{research_instruction}", project_path)
-                self._debug_log("[Director -> Worker] Research prompt:\n" + (research_instruction[:800] + "..." if len(research_instruction) > 800 else research_instruction))
-                self._log(
-                    ticket.project_id, ticket_id, session_id, "worker_research_prompt",
-                    "Research prompt sent to worker", raw_output=research_instruction,
-                )
-                response = self._send_to_worker(research_instruction, session_id, project_path, resume=False)
-                worker_out = response.get("output") or ""
-                prompt_history = [research_instruction]
-                conversation_history = [worker_out]
-                self._trace_log(session_id, f"[Worker -> Director] Research response:\n{worker_out}", project_path)
-                self._debug_log("[Worker -> Director] Research response:\n" + (worker_out[:800] + "..." if len(worker_out) > 800 else worker_out))
-                self._log(
-                    ticket.project_id, ticket_id, session_id, "worker_research_done",
-                    "Research turn completed", raw_output=response.get("output"),
-                )
-                self._emit_ticket_run_event(
-                    ticket.project_id,
-                    ticket_id,
-                    session_id,
-                    phase="research",
-                    status="completed",
-                    message="Research completed",
-                    detail=(worker_out[:500] or None),
-                )
-                self._debug_log("Phase: Planning (1 worker turn)")
-
-                # --- Phase: Planning (one worker turn) ---
-                self._current_phase = "planning"
+            workflow_definition = self._load_workflow_definition(project_path, context.get("workflow_file"))
+            workflow_stages = self._validate_workflow_definition(workflow_definition)
+            workflow_path = self._resolve_workflow_path(project_path, context.get("workflow_file"))
+            self._log(
+                ticket.project_id,
+                ticket.id,
+                session_id,
+                "workflow_loaded",
+                f"Loaded workflow: {workflow_path or '<default>'}",
+                raw_output=json.dumps(workflow_definition),
+            )
+            prompt_history: List[str] = []
+            conversation_history: List[str] = []
+            director_messages: List[Dict[str, str]] = []
+            approved_plan_text = ""
+            execution_ran = False
+            for stage in workflow_stages:
+                if not self._should_run_workflow_stage(
+                    stage.get("condition"), ticket=ticket, is_setup_ticket=is_setup_ticket
+                ):
+                    continue
+                stage_type = stage["type"]
+                if stage_type == "finalize":
+                    continue
                 if self._backend.cancel_requested(ticket.project_id, ticket.id):
-                    self._log(ticket.project_id, ticket_id, session_id, "cancelled", "Execution cancelled before planning")
+                    self._log(ticket.project_id, ticket_id, session_id, "cancelled", f"Execution cancelled before {stage['id']}")
                     return
-                plan_path = _get_task_plan_path(project_path, ticket_id)
-                plan_instruction = get_worker_plan_prompt_prefix(task_plan_path=plan_path) + context_json
-                self._trace_log(session_id, f"[Director -> Worker] Planning:\n{plan_instruction}", project_path)
-                self._debug_log("[Director -> Worker] Plan prompt:\n" + (plan_instruction[:800] + "..." if len(plan_instruction) > 800 else plan_instruction))
-                self._log(
-                    ticket.project_id, ticket_id, session_id, "worker_plan_prompt",
-                    "Plan prompt sent to worker", raw_output=plan_instruction,
-                )
-                response = self._send_to_worker(plan_instruction, session_id, project_path, resume=True)
-                plan_out = response.get("output") or ""
-                prompt_history.append(plan_instruction)
-                conversation_history.append(plan_out)
-                self._trace_log(session_id, f"[Worker -> Director] Plan response:\n{plan_out}", project_path)
-                self._debug_log("[Worker -> Director] Plan response:\n" + (plan_out[:800] + "..." if len(plan_out) > 800 else plan_out))
-                self._log(
-                    ticket.project_id, ticket_id, session_id, "worker_plan_done",
-                    "Plan turn completed", raw_output=response.get("output"),
-                )
-                self._emit_ticket_run_event(
-                    ticket.project_id,
-                    ticket_id,
-                    session_id,
-                    phase="planning",
-                    status="completed",
-                    message="Planning completed",
-                    detail=(plan_out[:500] or None),
-                )
-                self._debug_log("Phase: Plan-review (agent judges plan; loop until approved)")
-
-                # --- Phase: Plan-review loop ---
-                self._current_phase = "plan_review"
-                director_messages_plan = []
-                approved_plan_text = ""
-                max_plan_review_turns = 50
-                for plan_turn in range(max_plan_review_turns):
-                    self._debug_log(f"Plan-review turn {plan_turn + 1}")
-                    if self._backend.cancel_requested(ticket.project_id, ticket.id):
-                        self._log(ticket.project_id, ticket_id, session_id, "cancelled", "Execution cancelled during plan review")
-                        return
-                    latest_output = conversation_history[-1] if conversation_history else ""
-                    last_prompt = prompt_history[-1] if prompt_history else ""
-                    combined_query = f"{last_prompt[:500]}\n{latest_output[:500]}".strip()
-                    turn_memory_passages = self._retrieve_memory_passages(
+                if stage_type == "worker_prompt":
+                    self._run_worker_prompt_stage(
+                        stage=stage,
                         ticket=ticket,
-                        queries=[combined_query],
-                        base_save_dir=base_save_dir,
-                        memory_kwargs=memory_kwargs,
-                        session_id=session_id,
-                        ticket_id=ticket_id,
-                        step_name=f"memory_retrieve_plan_review_{plan_turn}",
-                    )
-                    memory_passages = list(start_memory_passages)
-                    for passage in turn_memory_passages:
-                        if passage not in memory_passages:
-                            memory_passages.append(passage)
-                    memories = self._format_memories(memory_passages)
-                    agent_response, director_messages_plan = self._agent_assess(
-                        context,
-                        prompt_history,
-                        conversation_history,
-                        memories=memories,
-                        director_messages=director_messages_plan,
                         session_id=session_id,
                         project_path=project_path,
-                        phase="plan_review",
+                        context_json=context_json,
+                        prompt_history=prompt_history,
+                        conversation_history=conversation_history,
                     )
-                    if agent_response.get("plan_approved"):
-                        approved_plan_text = self._read_task_plan(project_path, ticket_id)
-                        if not approved_plan_text:
-                            # File missing or empty; ask the worker for a concise checklist (not a full-file dump).
-                            full_plan_prompt = (
-                                "The plan has been approved. Please output a concise execution checklist (bullet points or short steps with file paths), "
-                                "not the full plan file contents. Summarize the key steps only so the execution phase can follow them. No preamble."
-                            )
-                            self._trace_log(session_id, f"[Director -> Worker] Request full plan:\n{full_plan_prompt}", project_path)
-                            self._debug_log("[Director -> Worker] Request full plan (plan file missing)")
-                            response = self._send_to_worker(full_plan_prompt, session_id, project_path, resume=True)
-                            full_plan_out = (response.get("output") or "").strip()
-                            approved_plan_text = full_plan_out
-                            prompt_history.append(full_plan_prompt)
-                            conversation_history.append(response.get("output") or "")
-                            self._trace_log(session_id, f"[Worker -> Director] Full plan response:\n{full_plan_out}", project_path)
-                            self._debug_log("[Worker -> Director] Full plan response:\n" + (full_plan_out[:800] + "..." if len(full_plan_out) > 800 else full_plan_out))
-                        if not approved_plan_text:
-                            approved_plan_text = (agent_response.get("approved_plan_text") or "").strip() or latest_output[:8000]
-                        self._debug_log("Plan approved, entering execution")
-                        self._log(ticket.project_id, ticket_id, session_id, "plan_approved", "Plan approved, entering execution")
-                        self._emit_ticket_run_event(
-                            ticket.project_id,
-                            ticket_id,
-                            session_id,
-                            phase="plan_review",
-                            status="completed",
-                            message="Plan approved",
-                            detail=(approved_plan_text[:500] or None),
-                        )
-                        plan_summary = (approved_plan_text or "")[:400].strip()
-                        git_backend.post_ticket_event(
-                            str(ticket_id),
-                            "plan_review",
-                            "Plan approved",
-                            {"plan_summary": plan_summary} if plan_summary else None,
-                        )
-                        break
-                    else:
-                        next_prompt = agent_response.get("next_prompt")
-                        if not next_prompt:
-                            raise AgentAPIError("Director API returned no next_prompt during plan review")
-                        self._trace_log(session_id, f"[Director -> Worker] Plan-review turn {plan_turn + 1}:\n{next_prompt}", project_path)
-                        self._debug_log(f"[Director -> Worker] Plan-review turn {plan_turn + 1}:\n" + (next_prompt[:800] + "..." if len(next_prompt) > 800 else next_prompt))
-                        self._log(
-                            ticket.project_id,
-                            ticket_id,
-                            session_id,
-                            f"worker_plan_review_{plan_turn + 1}_prompt",
-                            f"Plan review feedback (turn {plan_turn + 1})",
-                            raw_output=next_prompt,
-                        )
-                        response = self._send_to_worker(next_prompt, session_id, project_path, resume=True)
-                        plan_review_out = response.get("output") or ""
-                        prompt_history.append(next_prompt)
-                        conversation_history.append(plan_review_out)
-                        self._trace_log(session_id, f"[Worker -> Director] Plan-review turn {plan_turn + 1} response:\n{plan_review_out}", project_path)
-                        self._debug_log(
-                            "[Worker -> Director] Plan-review turn {plan_turn_plus_one} response:\n".format(
-                                plan_turn_plus_one=plan_turn + 1
-                            )
-                            + (plan_review_out[:800] + "..." if len(plan_review_out) > 800 else plan_review_out)
-                        )
-                        self._log(
-                            ticket.project_id,
-                            ticket_id,
-                            session_id,
-                            f"worker_plan_review_{plan_turn + 1}",
-                            f"Plan review turn {plan_turn + 1} completed",
-                            raw_output=response.get("output"),
-                        )
-
-                # If plan was never approved (e.g. max_plan_review_turns exhausted), use plan file as fallback so execution still has a plan to follow.
-                if not approved_plan_text:
-                    approved_plan_text = self._read_task_plan(project_path, ticket_id)
-                if not approved_plan_text:
-                    approved_plan_text = (conversation_history[-1][:8000] if conversation_history else "")
-                if not approved_plan_text:
-                    self._log(
-                        ticket.project_id, ticket_id, session_id,
-                        "plan_review_exhausted",
-                        "Plan review ended without approval and no plan text; proceeding with empty plan context",
+                    continue
+                if stage_type == "plan_review":
+                    approved_plan_text = self._run_plan_review_loop(
+                        ticket=ticket,
+                        session_id=session_id,
+                        context=context,
+                        prompt_history=prompt_history,
+                        conversation_history=conversation_history,
+                        start_memory_passages=start_memory_passages,
+                        base_save_dir=base_save_dir,
+                        memory_kwargs=memory_kwargs,
+                        project_path=project_path,
+                        max_turns=int(stage.get("max_turns") or 50),
                     )
+                    director_messages = []
+                    continue
+                if stage_type == "execution":
+                    execution_ran = True
+                    completion_summary = self._run_execution_loop(
+                        ticket=ticket,
+                        session_id=session_id,
+                        context=context,
+                        prompt_history=prompt_history,
+                        conversation_history=conversation_history,
+                        director_messages=director_messages,
+                        approved_plan_text=approved_plan_text,
+                        start_memory_passages=start_memory_passages,
+                        base_save_dir=base_save_dir,
+                        memory_kwargs=memory_kwargs,
+                        project_path=project_path,
+                        setup_ticket=is_setup_ticket,
+                        flow_label="Setup" if is_setup_ticket else None,
+                    )
+                    continue
 
-                # Agent context reset: clear planning-phase director messages. Execution phase gets fresh director_messages with plan always injected.
-                director_messages = []
-
-                self._debug_log("Phase: Execution (worker follows plan; loop until ticket complete)")
-                completion_summary = self._run_execution_loop(
-                    ticket=ticket,
-                    session_id=session_id,
-                    context=context,
-                    prompt_history=prompt_history,
-                    conversation_history=conversation_history,
-                    director_messages=director_messages,
-                    approved_plan_text=approved_plan_text,
-                    start_memory_passages=start_memory_passages,
-                    base_save_dir=base_save_dir,
-                    memory_kwargs=memory_kwargs,
-                    project_path=project_path,
-                    setup_ticket=False,
-                    flow_label=None,
-                )
+            if not execution_ran:
+                raise ValueError("Workflow execution stage was skipped by conditions; every ticket must run work before finalize")
 
             self._debug_log("Finalizing: commit and publish AgentHub attempt")
             self._finalize(
@@ -2728,6 +2969,7 @@ def build_worker_context(ticket: Any) -> dict:
         "project_name": project.name,
         "project_description": project.description,
         "github_url": project.github_url,
+        "workflow_file": project.workflow_file,
         "current_ticket": MiddleAgent._ticket_summary(ticket, mark_current=True),
         "graph": None,
         "notes": [],

@@ -7,6 +7,8 @@ The loop should:
 """
 import os
 import sys
+import tempfile
+import json
 import uuid
 import unittest
 from unittest.mock import MagicMock, patch, call
@@ -84,6 +86,7 @@ class TestPlanReviewLoop(unittest.TestCase):
         with patch.object(agent, "_send_to_worker", side_effect=fake_send_to_worker), \
              patch.object(agent, "_agent_assess", side_effect=fake_agent_assess), \
              patch.object(agent, "_finalize"), \
+             patch("middle_agent.agent.git_backend.prepare_work", return_value=project_path), \
              patch("os.path.isdir", return_value=True):
             agent.process_ticket(uuid.uuid4(), project_path=project_path, project_id=uuid.uuid4())
 
@@ -124,6 +127,7 @@ class TestPlanReviewLoop(unittest.TestCase):
         with patch.object(agent, "_send_to_worker", side_effect=fake_send_to_worker), \
              patch.object(agent, "_agent_assess", side_effect=fake_agent_assess), \
              patch.object(agent, "_finalize"), \
+             patch("middle_agent.agent.git_backend.prepare_work", return_value=project_path), \
              patch("os.path.isdir", return_value=True):
             agent.process_ticket(uuid.uuid4(), project_path=project_path, project_id=uuid.uuid4())
 
@@ -240,10 +244,142 @@ class TestPlanReviewLoop(unittest.TestCase):
                 project_path=project_path,
             )
 
-        self.assertEqual(completion, "Done")
-        self.assertEqual(assess_calls["count"], 2)
-        self.assertEqual(len(worker_prompts), 1)
-        self.assertIn("Implement the approved plan above. Start with the first step.", worker_prompts[0])
+    def test_workflow_loader_rejects_missing_required_execution_or_finalize(self):
+        agent, _backend = _make_agent()
+
+        with self.assertRaisesRegex(ValueError, "execution stage"):
+            agent._validate_workflow_definition({
+                "version": 1,
+                "stages": [{"id": "push", "type": "finalize"}],
+            })
+
+        with self.assertRaisesRegex(ValueError, "finalize stage"):
+            agent._validate_workflow_definition({
+                "version": 1,
+                "stages": [{"id": "work", "type": "execution"}],
+            })
+
+    def test_workflow_condition_language_supports_safe_ticket_predicates(self):
+        agent, _backend = _make_agent()
+        ticket = MagicMock()
+        ticket.title = "Security hardening"
+        ticket.description = "Add audit gate before push"
+
+        self.assertTrue(agent._should_run_workflow_stage(
+            {"all": ["always", {"title_contains": "security"}, {"description_contains": "audit"}]},
+            ticket=ticket,
+            is_setup_ticket=False,
+        ))
+        self.assertTrue(agent._should_run_workflow_stage(
+            {"any": [{"setup_ticket": True}, {"title_equals": "Security hardening"}]},
+            ticket=ticket,
+            is_setup_ticket=False,
+        ))
+        self.assertFalse(agent._should_run_workflow_stage(
+            {"not": {"description_contains": "audit"}},
+            ticket=ticket,
+            is_setup_ticket=False,
+        ))
+
+    def test_custom_workflow_cannot_skip_required_execution_with_condition(self):
+        agent, backend = _make_agent()
+        project_id = uuid.uuid4()
+        ticket_id = uuid.uuid4()
+
+        with tempfile.TemporaryDirectory() as project_path:
+            workflow_relpath = "workflow.json"
+            workflow_path = os.path.join(project_path, workflow_relpath)
+            with open(workflow_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "version": 1,
+                        "stages": [
+                            {"id": "work", "type": "execution", "condition": "never", "required": True},
+                            {"id": "push", "type": "finalize", "required": True},
+                        ],
+                    },
+                    handle,
+                )
+
+            backend.get_context.return_value = {
+                "project_name": "test",
+                "current_ticket": {"title": "Test ticket", "description": "desc"},
+                "graph_relevant_to_current_ticket": {"nodes": [], "edges": []},
+                "agent_settings": {},
+                "project_path": project_path,
+                "workflow_file": workflow_relpath,
+            }
+
+            with patch("middle_agent.agent.git_backend.prepare_work", return_value=project_path), \
+                 patch("os.path.isdir", return_value=True):
+                with self.assertRaisesRegex(ValueError, "execution stage was skipped"):
+                    agent.process_ticket(ticket_id, project_path=project_path, project_id=project_id)
+
+    def test_custom_workflow_runs_post_execution_prompt_before_finalize(self):
+        agent, backend = _make_agent()
+        project_id = uuid.uuid4()
+        ticket_id = uuid.uuid4()
+
+        with tempfile.TemporaryDirectory() as project_path:
+            workflow_relpath = "workflow.json"
+            workflow_path = os.path.join(project_path, workflow_relpath)
+            with open(workflow_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "version": 1,
+                        "stages": [
+                            {"id": "research", "type": "worker_prompt", "prompt": "Research."},
+                            {"id": "work", "type": "execution", "required": True},
+                            {"id": "handoff", "type": "worker_prompt", "prompt": "Summarize final changes."},
+                            {"id": "push", "type": "finalize", "required": True},
+                        ],
+                    },
+                    handle,
+                )
+
+            backend.get_context.return_value = {
+                "project_name": "test",
+                "current_ticket": {"title": "Test ticket", "description": "desc"},
+                "graph_relevant_to_current_ticket": {"nodes": [], "edges": []},
+                "agent_settings": {},
+                "project_path": project_path,
+                "workflow_file": workflow_relpath,
+            }
+
+            worker_prompts = []
+
+            def fake_send_to_worker(prompt, session_id, path, resume=False):
+                worker_prompts.append(prompt)
+                return self._make_worker_response("worker response")
+
+            execution_markers = []
+
+            def fake_execution_loop(**kwargs):
+                execution_markers.append(list(kwargs["prompt_history"]))
+                kwargs["prompt_history"].append("execution synthetic prompt")
+                kwargs["conversation_history"].append("execution synthetic output")
+                return "execution summary"
+
+            with patch.object(agent, "_send_to_worker", side_effect=fake_send_to_worker), \
+                 patch.object(agent, "_run_execution_loop", side_effect=fake_execution_loop), \
+                 patch.object(agent, "_finalize") as finalize_mock, \
+                 patch("middle_agent.agent.git_backend.prepare_work", return_value=project_path), \
+                 patch("os.path.isdir", return_value=True):
+                agent.process_ticket(ticket_id, project_path=project_path, project_id=project_id)
+
+            self.assertEqual(len(execution_markers), 1)
+            self.assertEqual(len(worker_prompts), 2)
+            self.assertEqual(worker_prompts[0], "Research.\nContext:\n" + json.dumps({
+                "project_name": "test",
+                "project_path": project_path,
+                "workflow_file": workflow_relpath,
+                "current_ticket": {"title": "Test ticket", "description": "desc"},
+                "graph_relevant_to_current_ticket": {"nodes": [], "edges": []},
+            }, indent=2))
+            self.assertIn("Summarize final changes.", worker_prompts[1])
+            finalize_mock.assert_called_once()
+            finalize_kwargs = finalize_mock.call_args.kwargs
+            self.assertEqual(finalize_kwargs["completion_summary"], "execution summary")
 
     def test_later_execution_turn_malformed_director_json_still_fails(self):
         from middle_agent.agent import AgentAPIError

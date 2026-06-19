@@ -80,6 +80,32 @@ def test_create_project_accepts_explicit_frontier_id(client):
     assert detail.get_json()["accepted_frontier_id"] == frontier_id
 
 
+def test_project_workflow_file_round_trips_through_create_and_update(client):
+    response = client.post(
+        "/api/projects",
+        json={
+            "name": "workflow-project",
+            "workflow_file": "config/workflow.json",
+            "is_existing_repo": True,
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload["workflow_file"] == "config/workflow.json"
+
+    detail = client.get(f"/api/projects/{payload['id']}")
+    assert detail.status_code == 200
+    assert detail.get_json()["workflow_file"] == "config/workflow.json"
+
+    update = client.put(
+        f"/api/projects/{payload['id']}",
+        json={"workflow_file": "ops/workflows/handoff.json"},
+    )
+    assert update.status_code == 200
+    assert update.get_json()["workflow_file"] == "ops/workflows/handoff.json"
+
+
 def test_create_project_does_not_infer_frontier_from_local_checkout(client):
     with patch("api.routes._read_local_git_tip") as read_local_tip:
         response = client.post(
