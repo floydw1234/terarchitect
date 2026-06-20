@@ -30,9 +30,6 @@ class TicketLike(Protocol):
     status: Optional[str]
     associated_node_ids: Optional[List[str]]
 
-# Ticket title that triggers execution-only flow (no research/plan). Must match default_tickets.json "Project setup".
-PROJECT_SETUP_TICKET_TITLE = "Project setup"
-
 # Prompts loaded from prompts.json (same dir as this module). Fails if file missing or invalid.
 _PROMPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROMPTS_PATH = os.path.join(_PROMPTS_DIR, "prompts.json")
@@ -176,7 +173,7 @@ def _default_workflow_definition() -> Dict[str, Any]:
                 "type": "worker_prompt",
                 "prompt_key": "worker_research_prompt_prefix",
                 "resume": False,
-                "condition": "not_setup_ticket",
+                "condition": {"not": {"title_equals": "Project setup"}},
             },
             {
                 "id": "planning",
@@ -184,20 +181,20 @@ def _default_workflow_definition() -> Dict[str, Any]:
                 "prompt_key": "worker_plan_prompt_prefix",
                 "resume": True,
                 "uses_task_plan_path": True,
-                "condition": "not_setup_ticket",
+                "condition": {"not": {"title_equals": "Project setup"}},
             },
             {
                 "id": "plan_review",
                 "type": "plan_review",
                 "max_turns": 50,
-                "condition": "not_setup_ticket",
+                "condition": {"not": {"title_equals": "Project setup"}},
             },
             {
                 "id": "setup_prompt",
                 "type": "worker_prompt",
                 "prompt": setup_prompt,
                 "resume": False,
-                "condition": "setup_ticket",
+                "condition": {"title_equals": "Project setup"},
             },
             {
                 "id": "work",
@@ -991,7 +988,6 @@ class MiddleAgent:
         base_save_dir: Optional[str],
         memory_kwargs: dict,
         project_path: str,
-        setup_ticket: bool = False,
         flow_label: Optional[str] = None,
     ) -> Optional[str]:
         """Run the execution loop until the agent marks the ticket complete. Returns completion_summary or None.
@@ -1042,7 +1038,6 @@ class MiddleAgent:
                     project_path=project_path,
                     phase="execution",
                     approved_plan_text=approved_plan_text,
-                    setup_ticket=setup_ticket,
                 )
             except AgentAPIError as e:
                 if not (
@@ -1148,69 +1143,13 @@ class MiddleAgent:
             self._commit_if_changes(project_path, commit_msg)
         return completion_summary
 
-    def _run_setup_ticket_flow(
-        self,
-        ticket: TicketLike,
-        session_id: str,
-        context: dict,
-        project_path: str,
-        base_save_dir: Optional[str],
-        memory_kwargs: dict,
-        start_memory_passages: List[str],
-        context_json: str,
-    ) -> Optional[str]:
-        """Run the execution-only flow for the Project setup ticket (no research, no plan, no tests required). Returns completion_summary."""
-        ticket_id = ticket.id
-        self._log(
-            ticket.project_id, ticket_id, session_id,
-            "project_setup_flow",
-            "Project setup ticket: execution-only flow (no research/plan, no tests required)",
-        )
-        setup_instruction = (
-            "This is the Project setup ticket. Do exactly what the description says: create folder structure and configuration only (e.g. .gitignore). "
-            "Do not write application code. Output what you did.\n\n"
-            f"Ticket: {ticket.title}\n\n"
-            f"Description:\n{(ticket.description or '').strip()}\n\n"
-            + context_json
-        )
-        self._trace_log(session_id, f"[Director -> Worker] Project setup (single turn):\n{setup_instruction}", project_path)
-        self._log(
-            ticket.project_id, ticket_id, session_id, "worker_setup_prompt",
-            "Project setup prompt sent to worker", raw_output=setup_instruction,
-        )
-        response = self._send_to_worker(setup_instruction, session_id, project_path, resume=False)
-        worker_out = response.get("output") or ""
-        prompt_history = [setup_instruction]
-        conversation_history = [worker_out]
-        self._trace_log(session_id, f"[Worker -> Director] Project setup response:\n{worker_out}", project_path)
-        self._log(
-            ticket.project_id, ticket_id, session_id, "worker_setup_done",
-            "Project setup turn completed", raw_output=response.get("output"),
-        )
-        return self._run_execution_loop(
-            ticket=ticket,
-            session_id=session_id,
-            context=context,
-            prompt_history=prompt_history,
-            conversation_history=conversation_history,
-            director_messages=[],
-            approved_plan_text="",
-            start_memory_passages=start_memory_passages,
-            base_save_dir=base_save_dir,
-            memory_kwargs=memory_kwargs,
-            project_path=project_path,
-            setup_ticket=True,
-            flow_label="Setup",
-        )
-
     @staticmethod
-    def _should_run_workflow_stage(condition: Any, *, ticket: Any, is_setup_ticket: bool) -> bool:
+    def _should_run_workflow_stage(condition: Any, *, ticket: Any) -> bool:
         """Evaluate a small, safe condition language for workflow stages.
 
         Supported forms are intentionally limited so workflow files can steer the
         director without becoming an arbitrary-code execution surface:
-          - string: always | never | setup_ticket | not_setup_ticket
-          - dict: {"setup_ticket": bool}
+          - string: always | never
           - dict: {"title_equals": "..."}
           - dict: {"title_contains": "..."}
           - dict: {"description_contains": "..."}
@@ -1226,22 +1165,18 @@ class MiddleAgent:
                 return True
             if normalized == "never":
                 return False
-            if normalized == "setup_ticket":
-                return is_setup_ticket
-            if normalized == "not_setup_ticket":
-                return not is_setup_ticket
             raise ValueError(f"Unsupported workflow condition: {normalized}")
         if isinstance(condition, dict):
             if "not" in condition:
                 return not MiddleAgent._should_run_workflow_stage(
-                    condition["not"], ticket=ticket, is_setup_ticket=is_setup_ticket
+                    condition["not"], ticket=ticket
                 )
             if "all" in condition:
                 values = condition["all"]
                 if not isinstance(values, list):
                     raise ValueError("Workflow condition 'all' must be a list")
                 return all(
-                    MiddleAgent._should_run_workflow_stage(value, ticket=ticket, is_setup_ticket=is_setup_ticket)
+                    MiddleAgent._should_run_workflow_stage(value, ticket=ticket)
                     for value in values
                 )
             if "any" in condition:
@@ -1249,12 +1184,9 @@ class MiddleAgent:
                 if not isinstance(values, list):
                     raise ValueError("Workflow condition 'any' must be a list")
                 return any(
-                    MiddleAgent._should_run_workflow_stage(value, ticket=ticket, is_setup_ticket=is_setup_ticket)
+                    MiddleAgent._should_run_workflow_stage(value, ticket=ticket)
                     for value in values
                 )
-            if "setup_ticket" in condition:
-                expected = bool(condition["setup_ticket"])
-                return is_setup_ticket is expected
             title = (ticket.title or "").casefold()
             description = (ticket.description or "").casefold()
             if "title_equals" in condition:
@@ -1636,10 +1568,6 @@ class MiddleAgent:
                 step_name="memory_retrieve_start",
             )
 
-            # Match "Project setup" case-insensitively so edited or legacy tickets still get the light flow
-            _title = (ticket.title or "").strip()
-            is_setup_ticket = _title.lower() == PROJECT_SETUP_TICKET_TITLE.lower()
-            self._debug_log(f"Ticket title={_title!r}, is_setup_ticket={is_setup_ticket}")
             workflow_definition = self._load_workflow_definition(project_path, context.get("workflow_file"))
             workflow_stages = self._validate_workflow_definition(workflow_definition)
             workflow_path = self._resolve_workflow_path(project_path, context.get("workflow_file"))
@@ -1658,7 +1586,7 @@ class MiddleAgent:
             execution_ran = False
             for stage in workflow_stages:
                 if not self._should_run_workflow_stage(
-                    stage.get("condition"), ticket=ticket, is_setup_ticket=is_setup_ticket
+                    stage.get("condition"), ticket=ticket
                 ):
                     continue
                 stage_type = stage["type"]
@@ -1707,8 +1635,6 @@ class MiddleAgent:
                         base_save_dir=base_save_dir,
                         memory_kwargs=memory_kwargs,
                         project_path=project_path,
-                        setup_ticket=is_setup_ticket,
-                        flow_label="Setup" if is_setup_ticket else None,
                     )
                     continue
 
@@ -2595,11 +2521,9 @@ Output a single concise narrative under 200 words. No JSON, no labels—just pro
         project_path: Optional[str] = None,
         phase: Optional[str] = None,
         approved_plan_text: str = "",
-        setup_ticket: bool = False,
     ) -> tuple[Dict[str, Any], List[Dict[str, str]]]:
         """Call OpenAI-compatible API to assess completion and generate next prompt. Returns (response_dict, updated director_messages).
-        phase: None (default) = normal ticket assessment; 'plan_review' = judge plan; 'execution' = inject approved_plan_text and assess completion.
-        setup_ticket: when True with phase='execution', do not require tests; judge completion against ticket description only (structure/config)."""
+        phase: None (default) = normal ticket assessment; 'plan_review' = judge plan; 'execution' = inject approved_plan_text and assess completion."""
         director_messages = director_messages or []
         is_plan_review = phase == "plan_review"
         is_execution = phase == "execution"
@@ -2617,9 +2541,6 @@ Output a single concise narrative under 200 words. No JSON, no labels—just pro
         plan_block = ""
         if is_execution and approved_plan_text:
             plan_block = f"Approved plan (worker must follow this; it is never summarized away):\n\n{approved_plan_text}\n\n---\n\n"
-        setup_hint = ""
-        if is_execution and setup_ticket:
-            setup_hint = "This is the Project setup ticket (structure/config only). Do not require tests; judge completion only against the ticket description (folder structure, .gitignore, minimal config).\n\n"
 
         if not director_messages:
             turns = []
@@ -2663,7 +2584,7 @@ Judge the plan.
                     "Assess: Is the ticket complete?\n\n"
                     + _director_json_user_instructions(phase)
                 )
-                user_msg_content = f"""{setup_hint}{plan_block}Context:
+                user_msg_content = f"""{plan_block}Context:
 {json.dumps(context, indent=2)}
 
 {memory_block}Full conversation with Worker:
@@ -2695,7 +2616,7 @@ Judge the plan.
                     + "\n"
                     "If the worker has been stuck on the same sub-step for 3+ turns, escalate: either simplify the ask, skip it, or call it done if it is a minor nit."
                 )
-                user_msg_content = f"""{setup_hint}{plan_block}{memory_block}{anchor}New worker turn (turn {n} of this session):
+                user_msg_content = f"""{plan_block}{memory_block}{anchor}New worker turn (turn {n} of this session):
 
 ### Turn {n} - Prompt to Worker:
 {prompt}

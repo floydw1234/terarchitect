@@ -259,7 +259,26 @@ class TestPlanReviewLoop(unittest.TestCase):
                 "stages": [{"id": "work", "type": "execution"}],
             })
 
-    def test_workflow_condition_language_supports_safe_ticket_predicates(self):
+    def test_default_workflow_uses_generic_title_conditions_for_setup(self):
+        from middle_agent import agent as middle_agent_module
+
+        workflow = middle_agent_module._default_workflow_definition()
+        conditions = [stage.get("condition") for stage in workflow["stages"] if "condition" in stage]
+
+        self.assertNotIn("setup_ticket", conditions)
+        self.assertNotIn("not_setup_ticket", conditions)
+
+        setup_stage = next(
+            (stage for stage in workflow["stages"] if stage["id"] == "setup_prompt"),
+            None,
+        )
+        self.assertIsNotNone(setup_stage)
+        self.assertEqual(setup_stage.get("condition"), {"title_equals": "Project setup"})
+        for stage_id in ("research", "planning", "plan_review"):
+            stage = next(stage for stage in workflow["stages"] if stage["id"] == stage_id)
+            self.assertEqual(stage.get("condition"), {"not": {"title_equals": "Project setup"}})
+
+    def test_workflow_condition_language_rejects_setup_ticket_magic_predicates(self):
         agent, _backend = _make_agent()
         ticket = MagicMock()
         ticket.title = "Security hardening"
@@ -268,18 +287,27 @@ class TestPlanReviewLoop(unittest.TestCase):
         self.assertTrue(agent._should_run_workflow_stage(
             {"all": ["always", {"title_contains": "security"}, {"description_contains": "audit"}]},
             ticket=ticket,
-            is_setup_ticket=False,
-        ))
-        self.assertTrue(agent._should_run_workflow_stage(
-            {"any": [{"setup_ticket": True}, {"title_equals": "Security hardening"}]},
-            ticket=ticket,
-            is_setup_ticket=False,
         ))
         self.assertFalse(agent._should_run_workflow_stage(
             {"not": {"description_contains": "audit"}},
             ticket=ticket,
-            is_setup_ticket=False,
         ))
+        with self.assertRaisesRegex(ValueError, "Unsupported workflow condition"):
+            agent._should_run_workflow_stage(
+                "setup_ticket",
+                ticket=ticket,
+            )
+        with self.assertRaisesRegex(ValueError, "Unsupported workflow condition"):
+            agent._should_run_workflow_stage(
+                {"setup_ticket": True},
+                ticket=ticket,
+            )
+
+    def test_middle_agent_module_no_longer_exposes_setup_ticket_special_path(self):
+        from middle_agent import agent as middle_agent_module
+
+        self.assertFalse(hasattr(middle_agent_module, "PROJECT_SETUP_TICKET_TITLE"))
+        self.assertFalse(hasattr(middle_agent_module.MiddleAgent, "_run_setup_ticket_flow"))
 
     def test_custom_workflow_cannot_skip_required_execution_with_condition(self):
         agent, backend = _make_agent()

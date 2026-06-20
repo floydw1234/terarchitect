@@ -1,17 +1,43 @@
 """Shared Alembic helpers for version table compatibility."""
 
 from alembic.ddl.impl import DefaultImpl
+from alembic.runtime.migration import MigrationContext
 from sqlalchemy import Column, MetaData, PrimaryKeyConstraint, String, Table, inspect
 
 ALEMBIC_VERSION_TABLE = "alembic_version"
 ALEMBIC_VERSION_NUM_LENGTH = 255
 
 _VERSION_TABLE_PATCHED = False
+_MIGRATION_CONTEXT_INIT_PATCHED = False
 
 
 def configure_alembic_version_table_storage() -> None:
     """Ensure newly created Alembic version tables allow longer revision ids."""
-    global _VERSION_TABLE_PATCHED
+    global _VERSION_TABLE_PATCHED, _MIGRATION_CONTEXT_INIT_PATCHED
+
+    if not _MIGRATION_CONTEXT_INIT_PATCHED:
+        original_init = MigrationContext.__init__
+
+        def _patched_migration_context_init(self, dialect, connection, opts, environment_context=None):
+            original_init(self, dialect, connection, opts, environment_context=environment_context)
+            version_num = self._version.c.version_num
+            if getattr(version_num.type, "length", None) != ALEMBIC_VERSION_NUM_LENGTH:
+                self._version = Table(
+                    self.version_table,
+                    MetaData(),
+                    Column("version_num", String(ALEMBIC_VERSION_NUM_LENGTH), nullable=False),
+                    schema=self.version_table_schema,
+                )
+                if opts.get("version_table_pk", True):
+                    self._version.append_constraint(
+                        PrimaryKeyConstraint(
+                            "version_num",
+                            name=f"{self.version_table}_pkc",
+                        )
+                    )
+
+        MigrationContext.__init__ = _patched_migration_context_init
+        _MIGRATION_CONTEXT_INIT_PATCHED = True
 
     if _VERSION_TABLE_PATCHED:
         return
