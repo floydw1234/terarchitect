@@ -163,11 +163,15 @@ def test_promotion_candidate_graph_blocks_ambiguous_multi_parent_ancestry():
 # 12.1b  TicketAttempt state transitions
 # ---------------------------------------------------------------------------
 
-def test_transition_proposed_to_accepted():
+def test_transition_proposed_to_validated_then_accepted():
     from api.services.attempt_service import transition_attempt
     attempt = MagicMock()
     attempt.status = "proposed"
     attempt.id = "test-id"
+
+    result = transition_attempt(attempt, "validated")
+    assert result.status == "validated"
+
     result = transition_attempt(attempt, "accepted")
     assert result.status == "accepted"
 

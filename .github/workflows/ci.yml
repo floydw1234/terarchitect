@@ -31,7 +31,10 @@ jobs:
             tests/test_cli_output.py \
             tests/test_cli_api_errors.py \
             backend/tests/test_unit.py \
+            backend/tests/test_project_frontier.py \
+            backend/tests/test_alembic_version_storage.py \
             agent/tests/test_director_request_payload.py \
+            agent/tests/test_plan_review_loop.py \
             coordinator/tests/test_fetch_max_concurrent.py
 
   agenthub-go:
