@@ -227,8 +227,15 @@ def test_ticket_context_includes_agent_channels_recent_events_and_recovery_hints
         candidate_id = str(candidate.id)
         ship_run_id = str(ship_run.id)
 
-    project_update = client.put(f"/api/projects/{pid}", json={"project_path": "/repo/app", "execution_mode": "local"})
-    assert project_update.status_code == 200
+    project_update = client.put(
+        f"/api/projects/{pid}",
+        json={
+            "project_path": "/repo/app",
+            "execution_mode": "local",
+            "source_type": "local_path",
+        },
+    )
+    assert project_update.status_code == 200, project_update.get_json()
 
     fake_posts = [
         {
