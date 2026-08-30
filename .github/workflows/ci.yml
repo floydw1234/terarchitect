@@ -23,19 +23,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r backend/requirements.txt -r agent/requirements.txt -r coordinator/requirements.txt
-      - name: Run focused Python checks
+      - name: Run Python unit checks
         env:
           PYTHONPATH: backend:agent
         run: |
+          # All in-process unit/API tests. Skip compose-backed integration
+          # suites and live HippoRAG/embedding tests (need docker/postgres/LLMs).
           python -m pytest -q \
-            tests/test_cli_output.py \
-            tests/test_cli_api_errors.py \
-            backend/tests/test_unit.py \
-            backend/tests/test_project_frontier.py \
-            backend/tests/test_alembic_version_storage.py \
-            agent/tests/test_director_request_payload.py \
-            agent/tests/test_plan_review_loop.py \
-            coordinator/tests/test_fetch_max_concurrent.py
+            tests \
+            backend/tests \
+            agent/tests \
+            coordinator/tests \
+            --ignore=tests/integration \
+            --ignore=backend/tests/test_memory_hipporag.py
 
   agenthub-go:
     name: AgentHub Go tests

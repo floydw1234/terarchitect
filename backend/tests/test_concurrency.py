@@ -13,7 +13,7 @@ Scenarios covered:
 """
 import os
 import sys
-import uuid
+from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -165,7 +165,7 @@ def test_compose_incomplete_wave_rejected(client, project):
 
     r = client.post(f"/api/projects/{pid}/ship/waves/0/compose", json={})
     assert r.status_code == 409
-    assert "No accepted attempts" in r.get_json().get("error", "")
+    assert "No integrated winner attempts" in r.get_json().get("error", "")
 
 
 # ---------------------------------------------------------------------------
@@ -315,9 +315,8 @@ def test_ship_direct_requires_composed_commit(client, project, wave_with_accepte
 # ---------------------------------------------------------------------------
 
 def test_accept_attempt_while_compose_running(client, project, wave_with_accepted_attempt):
-    """Accepting a new attempt after compose started does not change the running compose."""
+    """Accepting a winner on another ticket after compose started does not change the running compose."""
     pid = project["id"]
-    ticket_id, attempt_id = wave_with_accepted_attempt
 
     # Put a run in "running" state (simulate shipper mid-run)
     from models.db import db, ShipRun
@@ -327,28 +326,43 @@ def test_accept_attempt_while_compose_running(client, project, wave_with_accepte
         db.session.commit()
         run_id = str(run.id)
 
-    # Accept a different (new) attempt — should succeed
+    # Accept a validated winner on a different ticket — should succeed without
+    # touching the in-flight compose. A second attempt on the same ticket cannot
+    # supersede an already-integrated winner.
     from models.db import TicketAttempt, Ticket
+    now = datetime.now(timezone.utc)
     with client.application.app_context():
-        t = Ticket.query.filter_by(project_id=pid).first()
+        other = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="T2",
+            intent_status="active",
+            base_leaf_id=project["accepted_frontier_id"],
+        )
+        db.session.add(other)
+        db.session.flush()
         new_attempt = TicketAttempt(
             project_id=pid,
-            ticket_id=t.id,
+            ticket_id=other.id,
             agenthub_commit_hash="c" * 40,
             base_hash=project["accepted_frontier_id"],
             wave_num=0,
-            attempt_num=2,
-            status="proposed",
+            attempt_num=1,
+            status="validated",
+            validated_at=now,
+            is_winner=True,
+            winner_chosen_at=now,
         )
         db.session.add(new_attempt)
         db.session.commit()
+        other_ticket_id = str(other.id)
         new_attempt_id = str(new_attempt.id)
 
     r = client.post(
-        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{new_attempt_id}/accept",
+        f"/api/projects/{pid}/tickets/{other_ticket_id}/attempts/{new_attempt_id}/accept",
         json={},
     )
-    assert r.status_code == 200
+    assert r.status_code == 200, r.get_json()
 
     # Running ship run should still be running (compose not cancelled)
     with client.application.app_context():
