@@ -5,9 +5,11 @@ Flask API + DB for the Terarchitect visual SDLC orchestrator. **The app does not
 ## Setup
 
 ```bash
-cd backend
-pip install -r requirements.txt
+cd ..
+./scripts/bootstrap-python-env.sh
 ```
+
+This installs backend/agent/coordinator requirements into the repo-local `.venv`; do not use bare `pip install` from Hermes or another shared venv.
 
 ## Run
 
@@ -16,9 +18,7 @@ pip install -r requirements.txt
 docker compose up -d
 
 # Run backend on host
-cd backend
-flask run --host=0.0.0.0 --port=5010
-# Or: ./run.sh
+./backend/run.sh
 ```
 
 ## Environment Variables (.env in backend/)
@@ -61,11 +61,11 @@ Integration test uses an OpenAI-compatible LLM (for OpenIE) and an OpenAI-compat
 3. From `backend/` run:
 
    ```bash
-   OPENAI_API_KEY=sk-... MEMORY_SAVE_DIR=/tmp/terarchitect_memory_test python -m pytest tests/test_memory_hipporag.py -v -s
+   OPENAI_API_KEY=sk-... MEMORY_SAVE_DIR=/tmp/terarchitect_memory_test ../.venv/bin/python -m pytest tests/test_memory_hipporag.py -v -s
    ```
 
 4. `test_01_embedding_adapter` verifies the `/v1/embeddings` adapter. `test_02_memory_index_and_retrieve` is skipped unless both embedding and LLM are reachable; it indexes docs and asserts retrieval relevance.
 
 ## Execution (coordinator + agent image)
 
-When a ticket is moved to "In Progress", the app inserts a row into `agent_jobs`. In the normal GitHub-first flow, a **coordinator** claims jobs via `POST /api/worker/jobs/start` and runs the **agent image** (`terarchitect-agent`) for each job. The worker uses the queued `REPO_URL` plus explicit `BASE_LEAF_ID`/`BASE_HASH` to materialize the AgentHub DAG base in its workspace, runs the Director + worker, and publishes a child attempt without bind-mounting a host repo into the worker container. Local project paths remain legacy/debug only and are not the runtime source of truth for normal Docker execution. Run the coordinator in Compose with `docker compose build agent coordinator && docker compose up -d coordinator`, or from the **repo root** as a host process: `PYTHONPATH=/path/to/terarchitect TERARCHITECT_API_URL=... PROJECT_ID=... python -m coordinator`. See [docs/RUNBOOK.md](../docs/RUNBOOK.md) and [docs/PHASE1_WORKER_API.md](../docs/PHASE1_WORKER_API.md).
+When a ticket is moved to "In Progress", the app inserts a row into `agent_jobs`. In the normal GitHub-first flow, a **coordinator** claims jobs via `POST /api/worker/jobs/start` and runs the **agent image** (`terarchitect-agent`) for each job. The worker uses the queued `REPO_URL` plus explicit `BASE_LEAF_ID`/`BASE_HASH` to materialize the AgentHub DAG base in its workspace, runs the Director + worker, and publishes a child attempt without bind-mounting a host repo into the worker container. Local project paths remain legacy/debug only and are not the runtime source of truth for normal Docker execution. Run the coordinator in Compose with `docker compose build agent coordinator && docker compose up -d coordinator`, or from the **repo root** as a host process with `make setup-venv` then `TERARCHITECT_API_URL=... PROJECT_ID=... make python ARGS='-m coordinator'`. See [docs/RUNBOOK.md](../docs/RUNBOOK.md) and [docs/PHASE1_WORKER_API.md](../docs/PHASE1_WORKER_API.md).

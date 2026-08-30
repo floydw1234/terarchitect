@@ -34,6 +34,7 @@ const ProjectPage: React.FC = () => {
   const [editExecutionMode, setEditExecutionMode] = useState<ProjectExecutionMode>('docker');
   const [editGitMode, setEditGitMode] = useState<ProjectGitMode>('swarm');
   const [editProjectPath, setEditProjectPath] = useState('');
+  const [editWorkflowFile, setEditWorkflowFile] = useState('');
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteConfirmName, setDeleteConfirmName] = useState('');
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
@@ -71,6 +72,7 @@ const ProjectPage: React.FC = () => {
       setEditExecutionMode(data.execution_mode ?? 'docker');
       setEditGitMode(data.git_mode ?? 'swarm');
       setEditProjectPath(data.project_path ?? '');
+      setEditWorkflowFile(data.workflow_file ?? '');
       setEditOpen(true);
     } catch (error) {
       console.error('Failed to fetch project for edit:', error);
@@ -87,6 +89,7 @@ const ProjectPage: React.FC = () => {
         execution_mode: editExecutionMode,
         git_mode: editGitMode,
         project_path: editExecutionMode === 'local' ? (editProjectPath.trim() || null) : null,
+        workflow_file: editWorkflowFile.trim() || null,
       });
       setProject(data);
       setEditOpen(false);
@@ -473,6 +476,15 @@ const ProjectPage: React.FC = () => {
               onChange={(e) => setEditGithubUrl(e.target.value)}
               placeholder="https://github.com/..."
               helperText={editExecutionMode === 'docker' ? 'Required for Docker (clone). Optional for Local.' : undefined}
+              fullWidth
+              size="small"
+            />
+            <TextField
+              label="Workflow file"
+              value={editWorkflowFile}
+              onChange={(e) => setEditWorkflowFile(e.target.value)}
+              placeholder=".terarchitect/workflow.yaml"
+              helperText="Path to custom workflow definition relative to project root (JSON/YAML). Leave empty for default + auto-discover."
               fullWidth
               size="small"
             />

@@ -4,7 +4,10 @@ flask-cors==4.0.0
 flask-sqlalchemy==3.1.1
 psycopg2-binary==2.9.9
 gunicorn==21.2.0
-openai==1.12.0
+# Keep Terarchitect on a modern OpenAI SDK inside its own project venv/container.
+# openai 1.12.0 is incompatible with current httpx and can crash at client
+# construction with: TypeError: Client.__init__() got an unexpected keyword argument 'proxies'.
+openai>=2.0,<3
 requests==2.31.0
 # Project memory (hipporag_minimal in backend/hipporag_minimal)
 numpy>=1.20.0
@@ -12,7 +15,7 @@ tqdm
 pandas
 pyarrow
 python-igraph
-httpx
+httpx>=0.28,<1
 filelock
 tenacity
 pydantic>=2.0

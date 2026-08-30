@@ -38,6 +38,8 @@ def register(subparsers) -> None:
     c.add_argument("--accepted-frontier-id", metavar="ID", help="Canonical AgentHub frontier id for the project")
     c.add_argument("--existing-repo", action="store_true",
                    help="Skip creating default setup ticket (existing repo)")
+    c.add_argument("--workflow-file", metavar="PATH",
+                   help="Path to custom workflow definition JSON/YAML relative to project root")
 
     # show
     s = sub.add_parser("show", help="Show project details")
@@ -57,6 +59,10 @@ def register(subparsers) -> None:
     u.add_argument("--git-mode", choices=["swarm"])
     u.add_argument("--project-path", metavar="PATH")
     u.add_argument("--accepted-frontier-id", metavar="ID")
+    u.add_argument("--workflow-file", metavar="PATH",
+                   help="Path to custom workflow definition JSON/YAML relative to project root")
+    u.add_argument("--clear-workflow-file", action="store_true",
+                   help="Clear the custom workflow file (revert to default)")
 
     # delete
     dd = sub.add_parser("delete", help="Delete a project")
@@ -195,6 +201,7 @@ def _cmd_create(args, api: API) -> None:
         ("Accepted frontier", project.get("accepted_frontier_id")),
         ("Git mode", project.get("git_mode", "swarm")),
         ("Exec", project.get("execution_mode", "docker")),
+        ("Workflow", project.get("workflow_file") or "default"),
     ]
     if default_tickets:
         fields.append(("Tickets created", len(default_tickets)))
@@ -217,6 +224,7 @@ def _build_create_payload(args, cfg: dict) -> dict:
         "accepted_frontier_id": getattr(args, "accepted_frontier_id", None) or cfg.get("accepted_frontier_id"),
         "is_existing_repo": getattr(args, "existing_repo", False) or cfg.get("is_existing_repo", False),
         "import_to_agenthub": getattr(args, "import_to_agenthub", False) or cfg.get("import_to_agenthub", False),
+        "workflow_file": getattr(args, "workflow_file", None) or cfg.get("workflow_file"),
     }
     return {
         k: v
@@ -342,6 +350,10 @@ def _cmd_update(args, api: API) -> None:
         payload["project_path"] = args.project_path
     if getattr(args, "accepted_frontier_id", None) is not None:
         payload["accepted_frontier_id"] = args.accepted_frontier_id
+    if getattr(args, "workflow_file", None) is not None:
+        payload["workflow_file"] = args.workflow_file
+    if getattr(args, "clear_workflow_file", False):
+        payload["workflow_file"] = None
     if not payload:
         die("No fields to update. Pass at least one option.")
     try:

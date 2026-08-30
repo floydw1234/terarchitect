@@ -17,6 +17,8 @@ _AGENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _AGENT_DIR not in sys.path:
     sys.path.insert(0, _AGENT_DIR)
 
+from middle_agent.agent import MiddleAgent  # noqa: E402
+
 
 def _make_agent():
     from middle_agent.agent import MiddleAgent
@@ -340,7 +342,7 @@ class TestPlanReviewLoop(unittest.TestCase):
 
             with patch("middle_agent.agent.git_backend.prepare_work", return_value=project_path), \
                  patch("os.path.isdir", return_value=True):
-                with self.assertRaisesRegex(ValueError, "execution stage was skipped"):
+                with self.assertRaisesRegex(ValueError, "Required workflow stage.*has condition 'never'"):
                     agent.process_ticket(ticket_id, project_path=project_path, project_id=project_id)
 
     def test_custom_workflow_runs_post_execution_prompt_before_finalize(self):
@@ -444,6 +446,151 @@ class TestPlanReviewLoop(unittest.TestCase):
                 )
 
         self.assertEqual(assess_calls["count"], 2)
+
+    def test_yaml_workflow_loads_and_validates(self):
+        """Custom workflow defined in .yaml is loaded and validated."""
+        agent, _ = _make_agent()
+        with tempfile.TemporaryDirectory() as project_path:
+            workflow_path = os.path.join(project_path, "workflow.yaml")
+            with open(workflow_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "version: 1\n"
+                    "stages:\n"
+                    '  - id: research\n'
+                    '    type: worker_prompt\n'
+                    '    prompt: "Research phase"\n'
+                    '  - id: work\n'
+                    '    type: execution\n'
+                    '    required: true\n'
+                    '  - id: push\n'
+                    '    type: finalize\n'
+                    '    required: true\n'
+                )
+            definition = agent._load_workflow_definition(project_path, "workflow.yaml")
+            # YAML is loaded as a dict with the same schema
+            self.assertEqual(definition["version"], 1)
+            self.assertEqual(len(definition["stages"]), 3)
+            stages = agent._validate_workflow_definition(definition)
+            self.assertEqual(len(stages), 3)
+            self.assertEqual(stages[0]["id"], "research")
+            self.assertEqual(stages[0]["type"], "worker_prompt")
+
+    def test_yaml_workflow_round_trips_through_validate(self):
+        """YAML-loaded workflow survives validate and preserves required flag."""
+        agent, _ = _make_agent()
+        with tempfile.TemporaryDirectory() as project_path:
+            workflow_path = os.path.join(project_path, "custom.yaml")
+            with open(workflow_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "version: 1\n"
+                    "stages:\n"
+                    '  - id: preflight\n'
+                    '    type: worker_prompt\n'
+                    '    prompt: "Run preflight checks"\n'
+                    '    required: true\n'
+                    '  - id: work\n'
+                    '    type: execution\n'
+                    '    required: true\n'
+                    '  - id: push\n'
+                    '    type: finalize\n'
+                    '    required: true\n'
+                )
+            definition = agent._load_workflow_definition(project_path, "custom.yaml")
+            stages = agent._validate_workflow_definition(definition)
+            preflight = next(s for s in stages if s["id"] == "preflight")
+            self.assertTrue(preflight["required"])
+
+    def test_convention_discovery_dot_terarchitect(self):
+        """Workflow file is auto-discovered under .terarchitect/ when no explicit workflow_file is set."""
+        agent, _ = _make_agent()
+        with tempfile.TemporaryDirectory() as project_path:
+            dot_dir = os.path.join(project_path, ".terarchitect")
+            os.makedirs(dot_dir)
+            workflow_path = os.path.join(dot_dir, "workflow.yaml")
+            with open(workflow_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "version: 1\n"
+                    "stages:\n"
+                    '  - id: work\n'
+                    '    type: execution\n'
+                    '    required: true\n'
+                    '  - id: push\n'
+                    '    type: finalize\n'
+                    '    required: true\n'
+                )
+            # No explicit workflow_file — should discover .terarchitect/workflow.yaml
+            definition = agent._load_workflow_definition(project_path, None)
+            self.assertEqual(definition["version"], 1)
+            stages = agent._validate_workflow_definition(definition)
+            self.assertEqual(len(stages), 2)
+
+    def test_validate_condition_rejects_unknown_string(self):
+        """Unknown condition string is rejected at validation time."""
+        with self.assertRaisesRegex(ValueError, "unknown condition string"):
+            MiddleAgent._validate_condition("maybe", 0, "stage1")
+
+    def test_validate_condition_rejects_unknown_dict_key(self):
+        """Condition dict with unknown keys is rejected."""
+        with self.assertRaisesRegex(ValueError, "unknown condition key"):
+            MiddleAgent._validate_condition({"bogus": "thing"}, 0, "stage1")
+
+    def test_validate_condition_rejects_conflicting_keys(self):
+        """Condition dict with mutually exclusive operators is rejected."""
+        with self.assertRaisesRegex(ValueError, "conflicting keys"):
+            MiddleAgent._validate_condition({"not": {"title_equals": "x"}, "all": []}, 0, "stage1")
+
+    def test_validate_condition_rejects_bad_all_type(self):
+        """condition 'all' must be a list."""
+        with self.assertRaisesRegex(ValueError, "must be a list"):
+            MiddleAgent._validate_condition({"all": "not_a_list"}, 0, "stage1")
+
+    def test_validate_condition_rejects_non_string_field_value(self):
+        """title_equals / title_contains / description_contains require string values."""
+        with self.assertRaisesRegex(ValueError, "must be a string"):
+            MiddleAgent._validate_condition({"title_equals": 42}, 0, "stage1")
+
+    def test_validate_condition_rejects_empty_dict(self):
+        """Empty condition dict is rejected."""
+        with self.assertRaisesRegex(ValueError, "condition dict is empty"):
+            MiddleAgent._validate_condition({}, 0, "stage1")
+
+    def test_validate_condition_rejects_non_string_non_dict(self):
+        """Condition must be string, dict, or None."""
+        with self.assertRaisesRegex(ValueError, "invalid condition type"):
+            MiddleAgent._validate_condition(True, 0, "stage1")
+
+    def test_validate_condition_none_passes(self):
+        """None condition passes validation (means 'always')."""
+        MiddleAgent._validate_condition(None, 0, "stage1")  # should not raise
+
+    def test_validate_condition_valid_strings_pass(self):
+        """'always' and 'never' pass validation."""
+        MiddleAgent._validate_condition("always", 0, "stage1")
+        MiddleAgent._validate_condition("never", 0, "stage1")
+
+    def test_validate_condition_nested_not_passes(self):
+        """Nested 'not' with valid sub-condition passes."""
+        MiddleAgent._validate_condition({"not": {"title_equals": "setup"}}, 0, "stage1")
+
+    def test_validate_condition_nested_any_passes(self):
+        """Nested 'any' with valid sub-conditions passes."""
+        MiddleAgent._validate_condition(
+            {"any": [{"title_equals": "bug"}, {"description_contains": "urgent"}]},
+            0, "stage1",
+        )
+
+    def test_validate_condition_in_workflow_definition_rejects_bad_condition(self):
+        """_validate_workflow_definition calls condition validation and rejects bad conditions."""
+        bad_workflow = {
+            "version": 1,
+            "stages": [
+                {"id": "check", "type": "worker_prompt", "prompt": "hello", "condition": {"bogus": True}},
+                {"id": "work", "type": "execution", "required": True},
+                {"id": "push", "type": "finalize", "required": True},
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "unknown condition key"):
+            MiddleAgent._validate_workflow_definition(bad_workflow)
 
 
 if __name__ == "__main__":

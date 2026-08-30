@@ -593,6 +593,45 @@ def _apply_root_refresh(project, new_hash: str, source: str = "wave_merge") -> N
         current_app.logger.warning("Root refresh dispatch failed: %s", exc)
 
 
+@api_bp.route("/validate-workflow", methods=["POST"])
+def validate_workflow():
+    """Validate a workflow definition without running a ticket.
+    
+    Accepts workflow content as YAML or JSON in the request body.
+    Returns the parsed stages and validation result.
+    """
+    data = request.json or {}
+    content = data.get("content", "").strip()
+    if not content:
+        return jsonify({"valid": False, "error": "Empty workflow content"}), 200
+    
+    import yaml
+    try:
+        # Accept either JSON or YAML
+        try:
+            definition = json.loads(content)
+        except json.JSONDecodeError:
+            definition = yaml.safe_load(content)
+        
+        if not isinstance(definition, dict) or "stages" not in definition:
+            return jsonify({"valid": False, "error": "Workflow must be a JSON/YAML object with a 'stages' list"}), 200
+        
+        if "version" in definition and not isinstance(definition["version"], int):
+            return jsonify({"valid": False, "error": "'version' must be an integer"}), 200
+        
+        from middle_agent.agent import MiddleAgent
+        stages = MiddleAgent._validate_workflow_definition(definition)
+        return jsonify({
+            "valid": True,
+            "stage_count": len(stages),
+            "stages": [{"id": s["id"], "type": s["type"], "required": s.get("required", False)} for s in stages],
+        })
+    except (yaml.YAMLError, ValueError) as exc:
+        return jsonify({"valid": False, "error": str(exc)}), 200
+    except Exception as exc:
+        return jsonify({"valid": False, "error": f"Unexpected error: {exc}"}), 200
+
+
 @api_bp.route("/projects", methods=["GET", "POST"])
 def projects():
     """List all projects or create a new one."""
@@ -800,6 +839,33 @@ def project_doctor(project_id):
 def project_agenthub_graph(project_id):
     project = _get_project_or_404(project_id)
     return jsonify(_build_project_agenthub_graph(project))
+
+
+@api_bp.route("/projects/<uuid:project_id>/validate-workflow", methods=["POST"])
+def validate_project_workflow(project_id):
+    """Validate the workflow file already associated with a project."""
+    project = db.session.get(Project, project_id)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+    if not project.workflow_file:
+        return jsonify({"valid": False, "error": "Project has no workflow file set"}), 200
+    if not project.project_path:
+        return jsonify({"valid": False, "error": "Project has no local checkout path"}), 200
+    
+    try:
+        from middle_agent.agent import MiddleAgent
+        definition = MiddleAgent._load_workflow_definition(project.project_path, project.workflow_file)
+        stages = MiddleAgent._validate_workflow_definition(definition)
+        return jsonify({
+            "valid": True,
+            "workflow_file": project.workflow_file,
+            "stage_count": len(stages),
+            "stages": [{"id": s["id"], "type": s["type"], "required": s.get("required", False)} for s in stages],
+        })
+    except FileNotFoundError:
+        return jsonify({"valid": False, "error": f"Workflow file not found: {project.workflow_file}"}), 200
+    except (ValueError, Exception) as exc:
+        return jsonify({"valid": False, "error": str(exc)}), 200
 
 
 @api_bp.route("/projects/<uuid:project_id>/publish", methods=["POST"])

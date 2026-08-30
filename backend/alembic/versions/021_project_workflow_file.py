@@ -1,7 +1,7 @@
 """Add project workflow file
 
 Revision ID: 021_project_workflow_file
-Revises: 020_ticket_attempt_lifecycle_columns
+Revises: 021_promotion_candidates
 Create Date: 2026-06-19
 """
 
@@ -9,7 +9,7 @@ from alembic import op
 
 
 revision = "021_project_workflow_file"
-down_revision = "020_ticket_attempt_lifecycle_columns"
+down_revision = "021_promotion_candidates"
 branch_labels = None
 depends_on = None
 

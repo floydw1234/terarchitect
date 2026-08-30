@@ -92,6 +92,22 @@ For explicit competing attempts, operators should see five pre-selected strategi
 
 ---
 
+## Configurable workflows
+
+Terarchitect supports per-project custom workflow definitions. A workflow file (JSON or YAML) defines the stages a ticket goes through: `worker_prompt`, `plan_review`, `execution`, and `finalize`, each with optional conditions controlling per-ticket execution.
+
+```bash
+# Create a project with a custom workflow
+ta project create my-project --workflow-file .terarchitect/workflow.yaml
+
+# Update an existing project
+ta project update my-project --workflow-file .terarchitect/custom.yaml
+```
+
+If no `--workflow-file` is set, Terarchitect checks for `.terarchitect/workflow.yaml` or `.terarchitect/workflow.json` in the project root automatically. If neither is found, the built-in default 6-stage workflow is used.
+
+Full reference: [`docs/workflow-definition.md`](docs/workflow-definition.md)
+
 ## System architecture (app + coordinator + agent)
 
 | Component | What it does | Where it runs |
@@ -139,15 +155,15 @@ The compose coordinator launches sibling worker containers onto `terarchitect_de
 Host-run path remains available for local-mode projects or for deployments that keep the coordinator outside Compose:
 
 ```bash
-pip install -r coordinator/requirements.txt
+make setup-venv
 TERARCHITECT_API_URL=http://localhost:5010 \
 PROJECT_ID=<your-project-uuid> \
 GITHUB_TOKEN=<token> \
 TERARCHITECT_WORKER_API_KEY=<optional-worker-api-key> \
-python -m coordinator
+make python ARGS='-m coordinator'
 ```
 
-Tip: set `PYTHONPATH=/path/to/terarchitect` if your environment needs it.
+Always use the repo-local `.venv` (`make python`, `make pip`, `make pytest`, or `.venv/bin/python`) for host-run Python. Do not install Terarchitect requirements into a shared/Hermes virtualenv.
 
 **Concurrency note:** the coordinator defaults to `MAX_CONCURRENT_AGENTS=1` but parallel runs are now safe. This is a global cap across all workers. Same-ticket competing attempts may run concurrently inside that cap, while unrelated ticket graph conflicts still block as usual. Each agent container runs its own isolated Docker daemon (DinD via `--privileged`), so concurrent jobs never conflict on container names, networks, or ports. Increase `MAX_CONCURRENT_AGENTS` to run multiple jobs in parallel; see the TODO section for tuning guidance.
 

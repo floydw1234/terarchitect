@@ -65,6 +65,8 @@ export interface Project {
   shipped_frontier_updated_at?: string | null;
   /** Set when the project lacks an explicit canonical DAG frontier. */
   frontier_warning?: string | null;
+  /** Custom workflow file path (relative to project root, JSON or YAML). */
+  workflow_file?: string | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -482,6 +484,8 @@ export async function createProject(data: {
   project_path?: string;
   /** If true, project is from an existing repo; default "Project setup" ticket is not created. */
   is_existing_repo?: boolean;
+  /** Optional custom workflow file path (relative to project root, JSON or YAML). */
+  workflow_file?: string;
 }): Promise<Project> {
   const response = await fetch(`${API_URL}/api/projects`, {
     method: 'POST',
@@ -513,6 +517,7 @@ export async function updateProject(projectId: string, data: {
   git_mode?: ProjectGitMode;
   accepted_frontier_id?: string | null;
   project_path?: string | null;
+  workflow_file?: string | null;
 }): Promise<Project> {
   const response = await fetch(`${API_URL}/api/projects/${projectId}`, {
     method: 'PUT',

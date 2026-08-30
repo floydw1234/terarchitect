@@ -60,8 +60,8 @@ This starts **postgres**, **backend** (Flask API on port 5010), and **frontend**
 
 ```bash
 docker compose up -d postgres frontend
-cd backend && pip install -r requirements.txt
-DATABASE_URL=postgresql://terarchitect:terarchitect@localhost:5433/terarchitect flask run --host=0.0.0.0 --port=5010
+make setup-venv
+DATABASE_URL=postgresql://terarchitect:***@localhost:5433/terarchitect backend/run.sh
 ```
 
 - **App (frontend):** http://localhost:3000  
@@ -94,23 +94,23 @@ Provide project scope and credentials through the shell or repo `.env` before st
 
 ```bash
 cd /path/to/terarchitect
-pip install -r coordinator/requirements.txt   # or use a venv
+make setup-venv
 TERARCHITECT_API_URL=http://localhost:5010 \
 PROJECT_ID=<your-project-uuid> \
 GITHUB_TOKEN=<token> \
-[TERARCHITECT_WORKER_API_KEY=<key>] \
-python -m coordinator
+TERARCHITECT_WORKER_API_KEY=<optional-key> \
+make python ARGS='-m coordinator'
 ```
 
-Set `PYTHONPATH` to the repo root if needed so `python -m coordinator` finds the package (e.g. `PYTHONPATH=/path/to/terarchitect`).
+Use the repo-local `.venv` (`make python`, `make pip`, `make pytest`, or `.venv/bin/python`) for every host-run Python command so Terarchitect dependencies never land in Hermes or another shared venv.
 
 ### Option B: Install as a Linux service (recommended for production)
 
 Use the provided systemd unit so the coordinator runs as a daemon and survives reboots:
 
 1. Copy the repo to the host (e.g. `/opt/terarchitect`).
-2. Create a venv and install deps:  
-   `cd /opt/terarchitect && python3 -m venv .venv && .venv/bin/pip install -r coordinator/requirements.txt`
+2. Create/update the repo-local venv and install deps:
+   `cd /opt/terarchitect && ./scripts/bootstrap-python-env.sh`
 3. Build the agent image on that host:  
    `docker build -f Dockerfile.agent -t terarchitect-agent .`
 4. Copy the service file:  
@@ -139,7 +139,7 @@ See comments in `coordinator/terarchitect-coordinator.service` for details.
 - **COORDINATOR_STATE_DIR** — Default `~/.terarchitect/coordinator`. Holds `project_images.json` (project_id → image tag). When a Docker run succeeds for a project, that image is saved so the next job for that project uses it.
 - **COORDINATOR_REPO_ROOT** — Repo root path (for direct agent run when Docker fails). Default: parent of coordinator package. Set if you install elsewhere (e.g. systemd override).
 
-**Fallback when Docker fails:** If `docker run` for a job fails (e.g. image not found, container exits on start), the coordinator runs the ticket agent **on the host** (`python -m agent.agent_runner ticket`) with the same job env and passes the Docker error in `TERARCHITECT_DOCKER_RUN_ERROR`. The agent logs that error to the ticket so the run can continue or you can fix the image. For fallback to work, install agent deps in the same venv: `pip install -r agent/requirements.txt`.
+**Fallback when Docker fails:** If `docker run` for a job fails (e.g. image not found, container exits on start), the coordinator runs the ticket agent **on the host** (`.venv/bin/python -m agent.agent_runner ticket`) with the same job env and passes the Docker error in `TERARCHITECT_DOCKER_RUN_ERROR`. The agent logs that error to the ticket so the run can continue or you can fix the image. For fallback to work, install all host-run deps in the repo-local venv with `./scripts/bootstrap-python-env.sh`.
 
 ---
 

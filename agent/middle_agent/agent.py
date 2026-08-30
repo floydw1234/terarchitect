@@ -1,6 +1,7 @@
 """
 Middle Agent for Terarchitect
 """
+import logging
 import os
 import re
 import sys
@@ -1199,21 +1200,110 @@ class MiddleAgent:
         raise ValueError(f"Unsupported workflow condition type: {type(condition).__name__}")
 
     @staticmethod
+    def _validate_condition(condition: Any, stage_index: int, stage_id: str) -> None:
+        """Validate a condition expression at definition-load time.
+        
+        Raises ValueError with a descriptive message if the condition
+        has an invalid structure. Recursively validates nested conditions
+        (not, all, any).
+        """
+        if condition is None:
+            return
+        if isinstance(condition, str):
+            normalized = condition.strip() or "always"
+            if normalized not in ("always", "never"):
+                raise ValueError(
+                    f"Workflow stage #{stage_index + 1} ({stage_id}): "
+                    f"unknown condition string {normalized!r}"
+                )
+            return
+        if isinstance(condition, dict):
+            known_keys = {"not", "all", "any", "title_equals", "title_contains", "description_contains"}
+            unknown = [k for k in condition if k not in known_keys]
+            if unknown:
+                raise ValueError(
+                    f"Workflow stage #{stage_index + 1} ({stage_id}): "
+                    f"unknown condition key(s): {', '.join(repr(k) for k in unknown)}"
+                )
+            # Check for mutually exclusive operators
+            operators = [k for k in condition if k in ("not", "all", "any")]
+            operators += [k for k in condition if k in ("title_equals", "title_contains", "description_contains")]
+            if len(operators) > 1:
+                raise ValueError(
+                    f"Workflow stage #{stage_index + 1} ({stage_id}): "
+                    f"condition has conflicting keys: {', '.join(operators)}"
+                )
+            if "not" in condition:
+                MiddleAgent._validate_condition(condition["not"], stage_index, stage_id)
+                return
+            for op in ("all", "any"):
+                if op in condition:
+                    values = condition[op]
+                    if not isinstance(values, list):
+                        raise ValueError(
+                            f"Workflow stage #{stage_index + 1} ({stage_id}): "
+                            f"condition '{op}' must be a list"
+                        )
+                    for i, sub in enumerate(values):
+                        try:
+                            MiddleAgent._validate_condition(sub, stage_index, stage_id)
+                        except ValueError as exc:
+                            raise ValueError(
+                                f"Workflow stage #{stage_index + 1} ({stage_id}): "
+                                f"condition '{op}[{i}]': {exc}"
+                            ) from exc
+                    return
+            for field_op in ("title_equals", "title_contains", "description_contains"):
+                if field_op in condition:
+                    val = condition[field_op]
+                    if not isinstance(val, str):
+                        raise ValueError(
+                            f"Workflow stage #{stage_index + 1} ({stage_id}): "
+                            f"condition '{field_op}' value must be a string, got {type(val).__name__}"
+                        )
+                    return
+            # Dict with no matching keys (empty dict)
+            if not condition:
+                raise ValueError(
+                    f"Workflow stage #{stage_index + 1} ({stage_id}): "
+                    f"condition dict is empty"
+                )
+            return
+        raise ValueError(
+            f"Workflow stage #{stage_index + 1} ({stage_id}): "
+            f"invalid condition type: {type(condition).__name__}"
+        )
+
+    @staticmethod
     def _resolve_workflow_path(project_path: str, workflow_file: Optional[str]) -> Optional[str]:
+        """Resolve workflow_file path. Returns None if no file is configured.
+
+        Does NOT raise FileNotFoundError — callers should expect None
+        for both "not configured" and "not found", and fall back to default.
+        """
         value = (workflow_file or "").strip()
         if not value:
             return None
         if os.path.isabs(value):
-            if os.path.isfile(value):
-                return value
-            raise FileNotFoundError(f"Workflow file not found: {value}")
+            return value if os.path.isfile(value) else None
         resolved = os.path.abspath(os.path.join(project_path, value))
-        if os.path.isfile(resolved):
-            return resolved
-        raise FileNotFoundError(f"Workflow file not found: {resolved}")
+        return resolved if os.path.isfile(resolved) else None
 
     def _load_workflow_definition(self, project_path: str, workflow_file: Optional[str]) -> Dict[str, Any]:
         workflow_path = self._resolve_workflow_path(project_path, workflow_file)
+        if workflow_path is None and workflow_file and workflow_file.strip():
+            logging.warning(
+                "Workflow file '%s' not found at %s. Falling back to default workflow.",
+                workflow_file, project_path,
+            )
+        # Convention-based discovery: if no explicit workflow_file set, look for
+        # well-known paths in the project root.
+        if workflow_path is None and not (workflow_file or "").strip():
+            for candidate in (".terarchitect/workflow.yaml", ".terarchitect/workflow.json"):
+                candidate_path = os.path.abspath(os.path.join(project_path, candidate))
+                if os.path.isfile(candidate_path):
+                    workflow_path = candidate_path
+                    break
         if workflow_path is None:
             return _default_workflow_definition()
         suffix = os.path.splitext(workflow_path)[1].lower()
@@ -1242,6 +1332,7 @@ class MiddleAgent:
         stage_ids: set[str] = set()
         execution_indexes: List[int] = []
         finalize_indexes: List[int] = []
+        required_ids: set[str] = set()
         normalized: List[Dict[str, Any]] = []
         for index, raw_stage in enumerate(stages):
             if not isinstance(raw_stage, dict):
@@ -1258,11 +1349,22 @@ class MiddleAgent:
             stage = dict(raw_stage)
             stage["id"] = stage_id
             stage["type"] = stage_type
+            stage['required'] = bool(stage.get('required'))
             normalized.append(stage)
-            if stage_type == "execution":
+            if stage_type == 'execution':
                 execution_indexes.append(index)
-            elif stage_type == "finalize":
+            elif stage_type == 'finalize':
                 finalize_indexes.append(index)
+            condition = stage.get('condition')
+            if condition is not None:
+                MiddleAgent._validate_condition(condition, index, stage_id)
+            if stage.get('required'):
+                required_ids.add(stage_id)
+                if isinstance(condition, str) and condition.strip() == 'never':
+                    raise ValueError(
+                        f'Required workflow stage #{index + 1} ({stage_id}) '
+                        f"has condition 'never' — it can never run"
+                    )
         if len(execution_indexes) != 1:
             raise ValueError("Workflow must contain exactly one execution stage")
         if len(finalize_indexes) != 1:
@@ -1584,10 +1686,13 @@ class MiddleAgent:
             director_messages: List[Dict[str, str]] = []
             approved_plan_text = ""
             execution_ran = False
+            skipped_required: List[str] = []
             for stage in workflow_stages:
                 if not self._should_run_workflow_stage(
                     stage.get("condition"), ticket=ticket
                 ):
+                    if stage.get("required") and stage["type"] != "finalize":
+                        skipped_required.append(stage["id"])
                     continue
                 stage_type = stage["type"]
                 if stage_type == "finalize":
@@ -1640,6 +1745,11 @@ class MiddleAgent:
 
             if not execution_ran:
                 raise ValueError("Workflow execution stage was skipped by conditions; every ticket must run work before finalize")
+            if skipped_required:
+                raise ValueError(
+                    "Required workflow stages skipped by conditions: "
+                    f"{', '.join(skipped_required)}"
+                )
 
             self._debug_log("Finalizing: commit and publish AgentHub attempt")
             self._finalize(

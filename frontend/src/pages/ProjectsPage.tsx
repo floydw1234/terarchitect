@@ -47,6 +47,7 @@ const ProjectsPage: React.FC = () => {
   const [gitMode, setGitMode] = useState<ProjectGitMode>('swarm');
   const [projectPath, setProjectPath] = useState('');
   const [projectType, setProjectType] = useState<'new' | 'existing'>('new');
+  const [workflowFile, setWorkflowFile] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [deleteConfirmName, setDeleteConfirmName] = useState('');
@@ -92,6 +93,7 @@ const ProjectsPage: React.FC = () => {
         git_mode: gitMode,
         project_path: sourceType === 'local_path' ? (projectPath.trim() || undefined) : undefined,
         is_existing_repo: projectType === 'existing',
+        workflow_file: workflowFile.trim() || undefined,
       });
 
       setName('');
@@ -104,6 +106,7 @@ const ProjectsPage: React.FC = () => {
       setGitMode('swarm');
       setProjectPath('');
       setProjectType('new');
+      setWorkflowFile('');
       setCreateOpen(false);
       setProjects((prev) => [...prev, data]);
       if (data.frontier_warning) {
@@ -450,6 +453,15 @@ const ProjectsPage: React.FC = () => {
                 <MenuItem value="swarm">AgentHub (swarm) — recommended</MenuItem>
               </Select>
             </FormControl>
+            <TextField
+              label="Workflow file (optional)"
+              value={workflowFile}
+              onChange={(e) => setWorkflowFile(e.target.value)}
+              placeholder=".terarchitect/workflow.yaml"
+              helperText="Path to custom workflow definition (JSON/YAML). Default discovered from .terarchitect/ if not set."
+              fullWidth
+              size="small"
+            />
           </Box>
         </DialogContent>
         <DialogActions>

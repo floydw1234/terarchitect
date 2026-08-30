@@ -1,9 +1,28 @@
-.PHONY: test-smoke test-full test-swarm test-real test-swarm-docker test-clean help
+.PHONY: setup-venv python pip pytest test-smoke test-full test-swarm test-real test-swarm-docker test-clean help
 
 COMPOSE      = docker compose -f docker-compose.yml -f docker-compose.test.yml --project-name terarchitect-test
 COMPOSE_SWARM = $(COMPOSE) --profile swarm
-# Clear ROS PYTHONPATH pollution so pytest doesn't pick up launch_testing etc.
-PYTEST       = PYTHONPATH= backend/.venv/bin/pytest
+VENV         = .venv
+PYTHON       = $(VENV)/bin/python
+PIP          = $(VENV)/bin/pip
+# Clear outside PYTHONPATH pollution so local runs never inherit Hermes/ROS packages.
+PYTEST       = PYTHONPATH= $(VENV)/bin/pytest
+
+## Create/update the repo-local Python venv. Never install Terarchitect deps into Hermes' venv.
+setup-venv:
+	./scripts/bootstrap-python-env.sh
+
+## Run Python from Terarchitect's repo-local venv: make python ARGS='-m coordinator'
+python: setup-venv
+	PYTHONPATH= $(PYTHON) $(ARGS)
+
+## Run pip from Terarchitect's repo-local venv: make pip ARGS='list'
+pip: setup-venv
+	$(PIP) $(ARGS)
+
+## Run pytest from Terarchitect's repo-local venv: make pytest ARGS='backend/tests/test_unit.py -q'
+pytest: setup-venv
+	$(PYTEST) $(ARGS)
 
 # ---------------------------------------------------------------------------
 # Test targets

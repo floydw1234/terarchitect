@@ -28,12 +28,12 @@ Useful local checks:
 
 ```bash
 # Python focused smoke/unit checks
-PYTHONPATH=backend:agent backend/.venv/bin/pytest -q \
+make pytest ARGS='\
   tests/test_cli_output.py \
   tests/test_cli_api_errors.py \
   backend/tests/test_unit.py \
   agent/tests/test_director_request_payload.py \
-  coordinator/tests/test_fetch_max_concurrent.py
+  coordinator/tests/test_fetch_max_concurrent.py'
 
 # AgentHub
 cd agenthub && go test ./...
@@ -42,12 +42,13 @@ cd agenthub && go test ./...
 cd frontend && npm test -- --watchAll=false --runInBand --silent
 ```
 
-If `backend/.venv` does not exist, create one and install the Python requirements first:
+If `.venv` does not exist, create one and install all Python requirements first:
 
 ```bash
-python3 -m venv backend/.venv
-backend/.venv/bin/pip install -r backend/requirements.txt -r agent/requirements.txt -r coordinator/requirements.txt
+./scripts/bootstrap-python-env.sh
 ```
+
+Do not run bare `pip install` for Terarchitect from Hermes or any other shared venv.
 
 ## Pull request expectations
 
