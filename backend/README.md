@@ -32,17 +32,24 @@ The backend uses **only** these env vars. Director/Worker/OpenCode URLs and keys
 | `GIT_USER_NAME`, `GIT_USER_EMAIL` | Git identity for agent commits (optional). |
 | `TERARCHITECT_WORKER_API_KEY` | Optional. When set, worker API endpoints require Bearer token auth. |
 | `MEMORY_SAVE_DIR` | Directory for HippoRAG project memory (default: `/tmp/terarchitect`). |
-| `MEMORY_EMBEDDING_MODEL` | Embedding model name (required for execution readiness). |
-| `MEMORY_LLM_MODEL` | LLM for HippoRAG OpenIE (default: `gpt-4o-mini`). |
-| `MEMORY_LLM_BASE_URL`, `MEMORY_LLM_API_KEY` | Optional LLM base URL and key for OpenIE (leave blank to use OpenAI via `OPENAI_API_KEY`). |
+| `MEMORY_EMBEDDING_MODEL` | Embedding model name. **Optional** — when not set, memory is disabled and endpoints return empty results. |
+| `MEMORY_LLM_MODEL` | LLM for HippoRAG OpenIE. **Optional** — required only when memory is enabled. |
+| `MEMORY_LLM_BASE_URL`, `MEMORY_LLM_API_KEY` | LLM base URL and key for OpenIE. **Optional** — required only when memory is enabled. |
 | `MEMORY_EMBEDDING_BASE_URL` | Optional embedding base URL (leave blank to use OpenAI or backend `/v1/embeddings`). |
 | `EMBEDDING_PROVIDER` | `openai` (default) or `custom`. For `custom`, set `EMBEDDING_SERVICE_URL` and `EMBEDDING_API_KEY`. |
 | `EMBEDDING_SERVICE_URL`, `EMBEDDING_API_KEY` | Used when `EMBEDDING_PROVIDER=custom` or by the `/v1/embeddings` route. |
-| `openai_api_key` / `OPENAI_API_KEY` | Used for embeddings when provider is OpenAI, and for memory LLM when `MEMORY_LLM_BASE_URL` is unset. |
+| `openai_api_key` / `OPENAI_API_KEY` | Used for embeddings when provider is OpenAI, and for memory LLM when `MEMORY_LLM_BASE_URL` is unset. **Optional** — only required when memory is enabled. |
 
-## Project memory (HippoRAG)
+## Project memory (HippoRAG) — Optional
 
-When `MEMORY_SAVE_DIR` is set, the API exposes locked read/write memory per project:
+Project memory is **optional**. When memory configuration is not set (no `MEMORY_EMBEDDING_MODEL`, no embedding API key, or no `MEMORY_LLM_BASE_URL`), the system uses a no-op backend:
+- Memory endpoints return success with `enabled: false` and empty results
+- Execution readiness (`check_execution_readiness`) does not require embedding config
+- Tickets can move to In Progress and run without memory configured
+
+To enable HippoRAG memory, set all of: `MEMORY_EMBEDDING_MODEL`, `MEMORY_LLM_BASE_URL`, `MEMORY_LLM_MODEL`, and either `OPENAI_API_KEY` or (`EMBEDDING_SERVICE_URL` + `EMBEDDING_API_KEY`).
+
+When `MEMORY_SAVE_DIR` is set and memory is enabled, the API exposes locked read/write memory per project:
 
 - **POST** `/api/projects/<project_id>/memory/index` — body: `{"docs": ["text1", "text2", ...]}`
 - **POST** `/api/projects/<project_id>/memory/retrieve` — body: `{"queries": ["query1", ...], "num_to_retrieve": 5}`
