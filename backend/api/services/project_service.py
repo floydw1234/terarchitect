@@ -228,18 +228,27 @@ def project_doctor_report(project: Project) -> dict:
 
 
 def bootstrap_project_memory(project: Project) -> None:
-    """Index one initial doc into project memory so retrieve has something to return. No-op if memory unavailable."""
+    """Index one initial doc into project memory so retrieve has something to return.
+
+    No-op if memory backend is disabled or unavailable.
+    """
     base_save_dir = current_app.config.get("MEMORY_SAVE_DIR")
     if not base_save_dir:
         return
+
+    from utils.memory_backend import get_memory_backend
+    backend = get_memory_backend()
+
+    if not backend.is_enabled:
+        return
+
     doc = f"Project: {project.name or 'Untitled'}."
     if project.description:
         doc += f" {project.description}"
     else:
         doc += " No description."
     try:
-        from utils.memory import index as memory_index_fn, get_hipporag_kwargs
-        memory_index_fn(project.id, [doc], base_save_dir, **get_hipporag_kwargs())
+        backend.index(project.id, [doc], base_save_dir)
         current_app.logger.info("Bootstrap project memory indexed for project %s", project.id)
     except Exception as e:
         current_app.logger.warning("Bootstrap project memory failed for %s: %s", project.id, e)

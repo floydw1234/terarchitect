@@ -83,23 +83,15 @@ def check_execution_readiness() -> Tuple[bool, List[MissingRequired]]:
     """Backend-side readiness before moving ticket to In Progress.
 
     This validates only backend-owned requirements, not coordinator/agent LLM config.
+
+    Note: Embedding/memory configuration is OPTIONAL. When not configured, the system
+    uses a no-op memory backend that returns empty results. Embedding keys are not
+    required for local/AgentHub execution; they are only needed for HippoRAG memory
+    and ticket/graph search features.
     """
     missing: List[MissingRequired] = []
 
     if not _env("github_agent_token") and not _env("GITHUB_TOKEN") and not _env("GH_TOKEN") and not _env("GITHUB_AGENT_TOKEN"):
         missing.append(("github_agent_token", "GitHub token"))
-
-    if not _env("MEMORY_EMBEDDING_MODEL"):
-        missing.append(("MEMORY_EMBEDDING_MODEL", "Embedding model"))
-
-    emb_provider = (_env("EMBEDDING_PROVIDER") or "openai").strip().lower()
-    if emb_provider == "openai":
-        if not _env("openai_api_key") and not _env("OPENAI_API_KEY"):
-            missing.append(("openai_api_key", "OpenAI API key (embeddings)"))
-    else:
-        if not _env("EMBEDDING_SERVICE_URL"):
-            missing.append(("EMBEDDING_SERVICE_URL", "Embedding service URL"))
-        if not _env("EMBEDDING_API_KEY") and not _env("openai_api_key") and not _env("OPENAI_API_KEY"):
-            missing.append(("EMBEDDING_API_KEY", "Embedding API key"))
 
     return (len(missing) == 0, missing)

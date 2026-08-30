@@ -47,18 +47,22 @@ LLM endpoints are configured via env (Director via `DIRECTOR_LLM_URL`, Worker vi
 
 ---
 
-## Memory system (HippoRAG)
+## Memory system (HippoRAG) — Optional
 
-Terarchitect includes a lightweight, file-backed project memory system built on **HippoRAG** (bundled as `backend/hipporag_minimal`). The API exposes locked per-project read/write endpoints:
+Terarchitect includes an **optional** file-backed project memory system built on **HippoRAG** (bundled as `backend/hipporag_minimal`). Memory is enabled when embedding/LLM env vars are configured; otherwise a no-op backend returns empty results.
 
+**Memory endpoints** (locked per project, Auth: Bearer when `TERARCHITECT_WORKER_API_KEY` set):
 - `POST /api/projects/<project_id>/memory/index` — body: `{"docs": ["text1", ...]}`
 - `POST /api/projects/<project_id>/memory/retrieve` — body: `{"queries": ["q1", ...], "num_to_retrieve": 5}`
 - `POST /api/projects/<project_id>/memory/delete` — body: `{"docs": ["exact text to remove", ...]}`
 
-Operational notes:
+**Operational notes:**
+- Memory is **optional** — tickets can move to In Progress and execute without embedding/memory configured.
+- When disabled, memory endpoints return `{"enabled": false, ...}` with empty results (no 500s).
+- To enable: set `MEMORY_EMBEDDING_MODEL`, `MEMORY_LLM_BASE_URL`, `MEMORY_LLM_MODEL`, and an embedding API key.
 - Memory is stored under `MEMORY_SAVE_DIR` (default `/tmp/terarchitect`).
 - HippoRAG uses your configured LLM + embedding service via HTTP (no heavyweight local ML dependencies in the backend).
-- The backend also exposes an OpenAI-compatible embeddings adapter at `POST /v1/embeddings` to forward to the configured embedding service.
+- The backend also exposes an OpenAI-compatible embeddings adapter at `POST /v1/embeddings`.
 
 Details: `backend/README.md` (Memory section).
 
