@@ -3001,7 +3001,10 @@ def rag_search():
 
 @api_bp.route("/projects/<uuid:project_id>/memory/index", methods=["POST"])
 def memory_index(project_id):
-    """Index documents into project memory (HippoRAG). Locked per project. Auth: Bearer (worker)."""
+    """Index documents into project memory. Locked per project. Auth: Bearer (worker).
+
+    When memory is disabled (no embedding configured), returns success with enabled=false.
+    """
     err, status = _require_worker_auth()
     if err is not None:
         return err, status
@@ -3014,20 +3017,29 @@ def memory_index(project_id):
     base_save_dir = current_app.config.get("MEMORY_SAVE_DIR")
     if not base_save_dir:
         return jsonify({"error": "MEMORY_SAVE_DIR not configured"}), 503
+
+    from utils.memory_backend import get_memory_backend
+    backend = get_memory_backend()
+
+    if not backend.is_enabled:
+        return jsonify({"message": "Memory disabled", "enabled": False, "count": 0})
+
     try:
-        from utils.memory import index as memory_index_fn, get_hipporag_kwargs
-        memory_index_fn(project_id, docs, base_save_dir, **get_hipporag_kwargs())
+        backend.index(project_id, docs, base_save_dir)
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 503
     except Exception as e:
         current_app.logger.exception("Memory index failed")
         return jsonify({"error": "Index failed", "detail": str(e)}), 500
-    return jsonify({"message": "Indexed", "count": len(docs)})
+    return jsonify({"message": "Indexed", "enabled": True, "count": len(docs)})
 
 
 @api_bp.route("/projects/<uuid:project_id>/memory/retrieve", methods=["POST"])
 def memory_retrieve(project_id):
-    """Retrieve relevant passages for queries (HippoRAG). Locked per project. Auth: Bearer (worker)."""
+    """Retrieve relevant passages for queries. Locked per project. Auth: Bearer (worker).
+
+    When memory is disabled, returns empty results with enabled=false.
+    """
     err, status = _require_worker_auth()
     if err is not None:
         return err, status
@@ -3041,34 +3053,42 @@ def memory_retrieve(project_id):
     base_save_dir = current_app.config.get("MEMORY_SAVE_DIR")
     if not base_save_dir:
         return jsonify({"error": "MEMORY_SAVE_DIR not configured"}), 503
+
+    from utils.memory_backend import get_memory_backend
+    backend = get_memory_backend()
+
+    if not backend.is_enabled:
+        results = [{"question": q, "docs": [], "doc_scores": []} for q in queries]
+        return jsonify({"results": results, "enabled": False})
+
     try:
-        from utils.memory import retrieve as memory_retrieve_fn, get_hipporag_kwargs
-        results = memory_retrieve_fn(
+        results = backend.retrieve(
             project_id, queries, base_save_dir,
             num_to_retrieve=num_to_retrieve,
-            **get_hipporag_kwargs(),
         )
         # If no memory yet (e.g. existing project), bootstrap one doc then retry so agent gets something
         if results and all(len((r.get("docs") or [])) == 0 for r in results):
             project = db.session.get(Project, project_id)
             if project:
                 _bootstrap_project_memory(project)
-                results = memory_retrieve_fn(
+                results = backend.retrieve(
                     project_id, queries, base_save_dir,
                     num_to_retrieve=num_to_retrieve,
-                    **get_hipporag_kwargs(),
                 )
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 503
     except Exception as e:
         current_app.logger.exception("Memory retrieve failed")
         return jsonify({"error": "Retrieve failed", "detail": str(e)}), 500
-    return jsonify({"results": results})
+    return jsonify({"results": results, "enabled": True})
 
 
 @api_bp.route("/projects/<uuid:project_id>/memory/delete", methods=["POST"])
 def memory_delete(project_id):
-    """Remove documents from project memory (HippoRAG). Locked per project. Auth: Bearer (worker)."""
+    """Remove documents from project memory. Locked per project. Auth: Bearer (worker).
+
+    When memory is disabled, returns success with enabled=false.
+    """
     err, status = _require_worker_auth()
     if err is not None:
         return err, status
@@ -3081,15 +3101,21 @@ def memory_delete(project_id):
     base_save_dir = current_app.config.get("MEMORY_SAVE_DIR")
     if not base_save_dir:
         return jsonify({"error": "MEMORY_SAVE_DIR not configured"}), 503
+
+    from utils.memory_backend import get_memory_backend
+    backend = get_memory_backend()
+
+    if not backend.is_enabled:
+        return jsonify({"message": "Memory disabled", "enabled": False, "count": 0})
+
     try:
-        from utils.memory import delete as memory_delete_fn, get_hipporag_kwargs
-        memory_delete_fn(project_id, docs, base_save_dir, **get_hipporag_kwargs())
+        backend.delete(project_id, docs, base_save_dir)
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 503
     except Exception as e:
         current_app.logger.exception("Memory delete failed")
         return jsonify({"error": "Delete failed", "detail": str(e)}), 500
-    return jsonify({"message": "Deleted", "count": len(docs)})
+    return jsonify({"message": "Deleted", "enabled": True, "count": len(docs)})
 
 
 @api_bp.route("/projects/<uuid:project_id>/start", methods=["POST"])
