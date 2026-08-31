@@ -16,6 +16,9 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import {
   acceptAttempt,
   composeShipCandidate,
+  dryComposeShipCandidate,
+  getCandidateDiff,
+  getCandidateTimeline,
   getProject,
   getShipCandidateDetail,
   getShipCandidates,
@@ -24,6 +27,9 @@ import {
   rerunTicketFromCurrentFrontier,
   sendCandidateFeedback,
   shipCandidate,
+  type AgentHubEvent,
+  type CandidateDiff,
+  type CandidateDryCompose,
   type Project,
   type ProjectFrontier,
   type PromotionCandidateDetail,
@@ -436,6 +442,9 @@ function CandidateDetailPanel({
   const [feedbackSent, setFeedbackSent] = useState(false);
   const [ticketAttempts, setTicketAttempts] = useState<Record<string, TicketAttempt[]>>({});
   const [attemptsLoading, setAttemptsLoading] = useState(true);
+  const [dryCompose, setDryCompose] = useState<CandidateDryCompose | null>(null);
+  const [candidateDiff, setCandidateDiff] = useState<CandidateDiff | null>(null);
+  const [timeline, setTimeline] = useState<AgentHubEvent[]>([]);
 
   const loadTicketAttempts = useCallback(async () => {
     setAttemptsLoading(true);
@@ -455,6 +464,33 @@ function CandidateDetailPanel({
   useEffect(() => {
     loadTicketAttempts();
   }, [loadTicketAttempts]);
+
+  useEffect(() => {
+    if (!candidate.candidateId) {
+      setDryCompose(null);
+      setCandidateDiff(null);
+      setTimeline([]);
+      return;
+    }
+    const candidateId = candidate.candidateId;
+    let cancelled = false;
+    (async () => {
+      const [preview, diff, events] = await Promise.all([
+        dryComposeShipCandidate(projectId, candidateId).catch(() => null),
+        candidate.shipRun?.composed_commit_hash
+          ? getCandidateDiff(projectId, candidateId).catch(() => null)
+          : Promise.resolve(null),
+        getCandidateTimeline(projectId, candidateId).catch(() => []),
+      ]);
+      if (cancelled) return;
+      setDryCompose(preview);
+      setCandidateDiff(diff);
+      setTimeline(events);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [candidate.candidateId, candidate.shipRun?.composed_commit_hash, projectId]);
 
   const handleRefresh = async () => {
     setError(null);
@@ -582,6 +618,65 @@ function CandidateDetailPanel({
         </Box>
       )}
 
+      {dryCompose && (
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            Compose preview
+          </Typography>
+          <Alert severity={dryCompose.safe_to_compose ? 'success' : 'warning'} sx={{ mb: 1 }}>
+            {dryCompose.safe_to_compose ? 'Safe to compose this candidate.' : 'This candidate is not ready to compose.'}
+          </Alert>
+          {dryCompose.blockers.length > 0 && (
+            <Stack spacing={0.5} sx={{ mb: 1 }}>
+              {dryCompose.blockers.map(blocker => (
+                <Typography key={blocker} variant="caption" color="text.secondary">
+                  {blocker}
+                </Typography>
+              ))}
+            </Stack>
+          )}
+          {dryCompose.next_actions.length > 0 && (
+            <Stack spacing={0.5}>
+              {dryCompose.next_actions.map(action => (
+                <Typography key={action} variant="caption">
+                  {action}
+                </Typography>
+              ))}
+            </Stack>
+          )}
+        </Box>
+      )}
+
+      {candidateDiff && (
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            Composed diff
+          </Typography>
+          {candidateDiff.note && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+              {candidateDiff.note}
+            </Typography>
+          )}
+          <Box
+            component="pre"
+            sx={{
+              m: 0,
+              p: 1.5,
+              borderRadius: 1,
+              bgcolor: 'background.default',
+              border: '1px solid rgba(148,163,184,0.18)',
+              fontSize: '0.75rem',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              overflow: 'auto',
+              maxHeight: 280,
+            }}
+          >
+            {candidateDiff.diff || (candidateDiff.changed_files.length ? candidateDiff.changed_files.join('\n') : '(no diff available)')}
+          </Box>
+        </Box>
+      )}
+
       <Box sx={{ mb: 2 }}>
         <Typography variant="subtitle2" sx={{ mb: 1 }}>
           Accepted attempts ({candidate.acceptedAttempts.length})
@@ -684,7 +779,7 @@ function CandidateDetailPanel({
       </Box>
 
       {candidate.candidateId ? (
-        <Box>
+        <Box sx={{ mb: 2 }}>
           <Typography variant="subtitle2" sx={{ mb: 1 }}>
             Send feedback
           </Typography>
@@ -710,6 +805,22 @@ function CandidateDetailPanel({
           </Stack>
         </Box>
       ) : null}
+
+      {timeline.length > 0 && (
+        <Box>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            Timeline
+          </Typography>
+          <Stack spacing={0.75}>
+            {timeline.slice(-20).map(event => (
+              <Typography key={`${event._channel}-${event.id}`} variant="caption" color="text.secondary">
+                {event._channel_type}
+                {event._ticket_title ? ` · ${event._ticket_title}` : ''}: {event.message || event.event_type || event.content}
+              </Typography>
+            ))}
+          </Stack>
+        </Box>
+      )}
     </Box>
   );
 }
@@ -894,7 +1005,7 @@ const ShipRoomPage: React.FC = () => {
               </Typography>
             )}
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-              Review promotion candidates, accept or reject attempts, compose candidate-backed ship runs, inspect failures, ship the ready run, or send feedback.
+              Review promotion candidates, accept or reject attempts, preview compose, inspect the composed diff and timeline, ship the ready run, or send feedback.
             </Typography>
           </Box>
           <Button size="small" onClick={load} startIcon={<RefreshIcon fontSize="small" />} sx={{ alignSelf: 'flex-start' }}>

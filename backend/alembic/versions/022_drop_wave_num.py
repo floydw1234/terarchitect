@@ -1,8 +1,11 @@
-"""Drop unused wave_num columns from ticket_attempts and ship_runs.
+"""Drop leftover wave_num columns if an older checkout created them.
 
 Revision ID: 022_drop_wave_num
 Revises: 021_project_workflow_file
 Create Date: 2026-08-31
+
+Current 001/003 no longer create wave_num. This revision is only for databases
+that already applied the old revisions.
 """
 
 from alembic import op

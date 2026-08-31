@@ -5,7 +5,7 @@ Revises: 005
 Create Date: 2026-05-22
 
 The shipped_frontier is the last known main commit from which all new agent work
-should build. It is updated whenever a wave is successfully shipped to main.
+should build. It is updated whenever a promotion candidate is successfully shipped to main.
 """
 from typing import Sequence, Union
 

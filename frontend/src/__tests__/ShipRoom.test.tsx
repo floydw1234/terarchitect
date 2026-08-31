@@ -12,6 +12,9 @@ jest.mock('../utils/api', () => ({
   composeShipCandidate: jest.fn(),
   shipCandidate: jest.fn(),
   sendCandidateFeedback: jest.fn(),
+  dryComposeShipCandidate: jest.fn(),
+  getCandidateDiff: jest.fn(),
+  getCandidateTimeline: jest.fn(),
   acceptAttempt: jest.fn(),
   rejectAttempt: jest.fn(),
   rerunTicketFromCurrentFrontier: jest.fn(),
@@ -176,6 +179,29 @@ beforeEach(() => {
   jest.clearAllMocks();
   (api.getProject as jest.Mock).mockResolvedValue(mockProject);
   (api.getTicketAttempts as jest.Mock).mockResolvedValue([]);
+  (api.dryComposeShipCandidate as jest.Mock).mockResolvedValue({
+    candidate_id: 'candidate-1',
+    safe_to_compose: true,
+    blockers: [],
+    next_actions: ['Compose this promotion candidate when you want a release-branch preview.'],
+    shipped_frontier: mockProject.shipped_frontier,
+    commit_hashes: [],
+    changed_files: [],
+    existing_ship_run: null,
+    tickets: [],
+  });
+  (api.getCandidateDiff as jest.Mock).mockResolvedValue({
+    candidate_id: 'candidate-1',
+    base_hash: 'base123',
+    composed_commit_hash: 'composed123',
+    changed_files: ['src/app.py'],
+    diff: ' src/app.py | 2 ++',
+    truncated: false,
+    note: null,
+    next_actions: [],
+    blockers: [],
+  });
+  (api.getCandidateTimeline as jest.Mock).mockResolvedValue([]);
 });
 
 test('Ship Room header shows the accepted frontier hash', async () => {
@@ -224,6 +250,9 @@ test('ready_to_ship run shows the release PR at ShipRun level', async () => {
   await waitFor(() => {
     expect(screen.getAllByText(/Candidate 1/i).length).toBeGreaterThan(0);
     expect(screen.getAllByRole('link', { name: /Release PR #42/i }).length).toBeGreaterThan(0);
+    expect(screen.getByText('Compose preview')).toBeInTheDocument();
+    expect(screen.getByText('Safe to compose this candidate.')).toBeInTheDocument();
+    expect(screen.getByText('Composed diff')).toBeInTheDocument();
   });
 
   fireEvent.click(screen.getAllByText(/Candidate 1/i).at(-1)!);
