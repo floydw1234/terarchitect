@@ -776,6 +776,40 @@ export async function shipCandidate(projectId: string, candidateId: string): Pro
   return checkResponse<ShipRunDetail>(response);
 }
 
+export interface CandidateDryCompose {
+  candidate_id: string;
+  safe_to_compose: boolean;
+  blockers: string[];
+  next_actions: string[];
+  shipped_frontier: string | null;
+  commit_hashes: string[];
+  changed_files: string[];
+  existing_ship_run: ShipRun | null;
+  tickets: CandidateMembershipTicket[];
+}
+
+export interface CandidateDiff {
+  candidate_id: string;
+  base_hash: string | null;
+  composed_commit_hash: string | null;
+  changed_files: string[];
+  diff: string | null;
+  truncated: boolean;
+  note: string | null;
+  next_actions: string[];
+  blockers: string[];
+}
+
+export async function dryComposeShipCandidate(projectId: string, candidateId: string): Promise<CandidateDryCompose> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/candidates/${candidateId}/dry-compose`);
+  return checkResponse<CandidateDryCompose>(response);
+}
+
+export async function getCandidateDiff(projectId: string, candidateId: string): Promise<CandidateDiff> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/candidates/${candidateId}/diff`);
+  return checkResponse<CandidateDiff>(response);
+}
+
 export async function sendCandidateFeedback(
   projectId: string,
   candidateId: string,
@@ -1317,8 +1351,8 @@ export interface AgentHubEvent {
   created_at: string;
   /** Channel the event was posted to */
   _channel: string;
-  /** 'ship' = ShipRun/candidate channel event, 'ticket' = per-ticket event */
-  _channel_type: 'ship' | 'ticket';
+  /** 'candidate' / 'ship_run' / 'ticket' AgentHub channel */
+  _channel_type: 'candidate' | 'ship_run' | 'ticket';
   /** Title of the ticket this event belongs to (ticket events only) */
   _ticket_title?: string;
   _ticket_id?: string;

@@ -5,7 +5,7 @@ Revises: 004
 Create Date: 2026-05-22
 
 Drops the pr_review_comments table and the review-job columns from agent_jobs.
-PR-per-ticket is gone. The prs table is kept for future release PRs (one per wave/ship-run).
+PR-per-ticket is gone. The prs table is kept for future release PRs (one per ShipRun).
 """
 from typing import Sequence, Union
 

@@ -165,7 +165,6 @@ def upgrade() -> None:
         CREATE TABLE IF NOT EXISTS merge_runs (
             id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
             project_id  UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-            wave_num    INTEGER NOT NULL,
             status      VARCHAR(50) NOT NULL DEFAULT 'queued',
             commit_hash VARCHAR(255),
             pr_url      TEXT,

@@ -28,6 +28,11 @@ def test_ship_parser_registers_doctor_and_happy_path_subcommands():
     help_text = parser._subparsers._group_actions[0].choices["ship"].format_help()
     assert "doctor" in help_text
     assert "happy-path" in help_text
+    dry_args = parser.parse_args(["ship", "dry-compose", "proj", "cand-1"])
+    assert dry_args.ship_cmd == "dry-compose"
+    assert dry_args.candidate_id == "cand-1"
+    assert parser.parse_args(["ship", "diff", "proj", "cand-1"]).ship_cmd == "diff"
+    assert parser.parse_args(["ship", "timeline", "proj", "cand-1"]).ship_cmd == "timeline"
 
 
 def test_ship_run_cli_preserves_api_error_context():

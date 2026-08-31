@@ -32,7 +32,6 @@ def upgrade() -> None:
             project_id,
             ticket_id,
             agenthub_commit_hash,
-            wave_num,
             attempt_num,
             status,
             created_at,
@@ -42,7 +41,6 @@ def upgrade() -> None:
             p.project_id,
             p.ticket_id,
             p.commit_hash,
-            0,
             1,
             CASE WHEN t.column_id = 'done' THEN 'accepted' ELSE 'proposed' END,
             p.created_at,
@@ -61,11 +59,10 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Remove only the rows that were inserted by this migration
-    # (wave_num=0, attempt_num=1, created from a prs row)
+    # (attempt_num=1, created from a prs row)
     op.execute("""
         DELETE FROM ticket_attempts ta
-        WHERE ta.wave_num = 0
-          AND ta.attempt_num = 1
+        WHERE ta.attempt_num = 1
           AND EXISTS (
               SELECT 1 FROM prs p
               WHERE p.ticket_id = ta.ticket_id
