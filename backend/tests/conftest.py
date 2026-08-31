@@ -49,7 +49,7 @@ def project(client):
 
 @pytest.fixture
 def accepted_ticket_and_attempt(client, project):
-    """Ticket with an accepted attempt in wave 0."""
+    """Ticket with an accepted attempt."""
     from models.db import db, Ticket, TicketAttempt
     with client.application.app_context():
         ticket = Ticket(
@@ -73,3 +73,29 @@ def accepted_ticket_and_attempt(client, project):
         db.session.add(attempt)
         db.session.commit()
         return str(ticket.id), str(attempt.id)
+
+
+def create_promotion_candidate(client, project_id, attempt_ids):
+    resp = client.post(
+        f"/api/projects/{project_id}/ship/candidates",
+        json={"selected_attempt_ids": list(attempt_ids)},
+    )
+    assert resp.status_code == 201, resp.get_json()
+    return resp.get_json()
+
+
+def compose_candidate(client, project_id, attempt_ids):
+    candidate = create_promotion_candidate(client, project_id, attempt_ids)
+    compose = client.post(
+        f"/api/projects/{project_id}/ship/candidates/{candidate['id']}/compose",
+        json={},
+    )
+    return candidate, compose
+
+
+def ship_candidate(client, project_id, candidate_id):
+    return client.post(
+        f"/api/projects/{project_id}/ship/candidates/{candidate_id}/ship",
+        json={},
+    )
+

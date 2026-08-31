@@ -1,6 +1,7 @@
 """Composite Workspace service: serialization and compatibility analysis (Phase 9)."""
 from models.db import CompositeWorkspace, Project, Ticket, TicketAttempt, db
 from .attempt_service import SATISFIED_STATUSES
+from .merge_service import topological_ticket_rank
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +96,6 @@ def analyze_compatibility(project_id: str, attempt_ids: list[str]) -> dict:
             "ticket_id": str(attempt.ticket_id),
             "commit_hash": (attempt.agenthub_commit_hash or "")[:12],
             "base_hash": (attempt.base_hash or "")[:12],
-            "wave_num": attempt.wave_num,
             "status": attempt.status,
             "summary": attempt.summary,
             "stale": (attempt.base_hash != frontier) if (frontier and attempt.base_hash) else None,
@@ -159,17 +159,26 @@ def analyze_compatibility(project_id: str, attempt_ids: list[str]) -> dict:
                 ),
             })
 
-    # Determine safe merge order (by wave_num, then attempt_num).
-    # Pre-build sort key map to avoid N+1 queries inside sorted().
-    sort_keys: dict[str, tuple] = {
-        s["attempt_id"]: (s["wave_num"], 0)
-        for s in selected
-    }
-    # Fill in attempt_num from DB objects already fetched above
+    selected_tickets = []
+    ticket_ids_for_rank = set()
     for s in selected:
         att = db.session.get(TicketAttempt, s["attempt_id"])
         if att:
-            sort_keys[s["attempt_id"]] = (att.wave_num, att.attempt_num)
+            ticket = db.session.get(Ticket, att.ticket_id)
+            if ticket is not None and str(ticket.id) not in ticket_ids_for_rank:
+                selected_tickets.append(ticket)
+                ticket_ids_for_rank.add(str(ticket.id))
+    ranks = topological_ticket_rank(selected_tickets)
+    sort_keys: dict[str, tuple] = {}
+    for s in selected:
+        att = db.session.get(TicketAttempt, s["attempt_id"])
+        if att:
+            sort_keys[s["attempt_id"]] = (
+                ranks.get(str(att.ticket_id), 0),
+                att.attempt_num,
+            )
+        else:
+            sort_keys[s["attempt_id"]] = (0, 0)
     dep_order = sorted(attempt_ids, key=lambda aid: sort_keys.get(str(aid), (0, 0)))
 
     errors = [i for i in issues if i["level"] == "error"]

@@ -3,7 +3,7 @@ import re
 
 from models.db import AgentJob, ExecutionLog, Ticket, TicketAttempt
 
-from .channel_service import parse_event_post, project_channel, ticket_channel, wave_channel
+from .channel_service import parse_event_post, project_channel, ticket_channel, candidate_channel
 from .job_service import job_to_response
 from .ledger_service import _candidate_for_ticket, _ship_run_for_candidate
 from .merge_service import promotion_candidate_to_json, ship_run_to_json
@@ -40,8 +40,8 @@ def build_ticket_context(
         "project": project_channel(str(project.id)),
         "ticket": ticket_channel(str(ticket.id)),
     }
-    if attempts:
-        channel_names["wave"] = wave_channel(project.name, attempts[0].wave_num)
+    if candidate is not None:
+        channel_names["candidate"] = candidate_channel(project.name, str(candidate.id))
 
     recent_events = []
     if fetch_posts is not None:

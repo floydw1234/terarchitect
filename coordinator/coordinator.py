@@ -279,12 +279,11 @@ def _run_shipper(base_url: str, run_data: dict) -> None:
     """Run the shipper agent as a subprocess on the host (needs project_path filesystem access).
     Coordinator pre-claimed the run; SHIP_RUN_ID tells shipper which run to process."""
     run_id = run_data["run"]["id"]
-    wave_num = run_data["run"].get("wave_num", "?")
     candidate_id = run_data["run"].get("promotion_candidate_id") or "-"
     project_name = run_data["project"].get("name", "")
     print(
         f"[coordinator] starting shipper run={run_id} candidate={candidate_id} "
-        f"wave={wave_num} project={project_name!r}",
+        f"project={project_name!r}",
         flush=True,
     )
 
@@ -503,7 +502,7 @@ def job_to_env(job: dict, for_docker: bool = False) -> dict:
     if job.get("accepted_frontier_id"):
         env["ACCEPTED_FRONTIER_ID"] = str(job["accepted_frontier_id"])
     # AgentHub DAG selection: ticket jobs always receive an explicit base commit
-    # and the current shipped root without any wave-derived meaning.
+    # and the current shipped root.
     if job.get("base_hash"):
         env["BASE_HASH"] = str(job["base_hash"])
     root_hash = job.get("agenthub_root_hash") or job.get("base_leaf_id") or job.get("base_hash")

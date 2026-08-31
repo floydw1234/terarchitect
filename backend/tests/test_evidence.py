@@ -736,7 +736,7 @@ def test_ship_requires_policy_evidence_when_configured(client, project, accepted
         db.session.commit()
         run_id = str(run.id)
 
-    blocked = client.post(f"/api/projects/{pid}/ship/waves/0/ship", json={})
+    blocked = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
 
     assert blocked.status_code == 409
     body = blocked.get_json()
@@ -754,7 +754,7 @@ def test_ship_requires_policy_evidence_when_configured(client, project, accepted
         "status": "passed",
     }).status_code == 201
 
-    allowed = client.post(f"/api/projects/{pid}/ship/waves/0/ship", json={})
+    allowed = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
 
     assert allowed.status_code == 200
     assert allowed.get_json()["status"] == "shipped"
@@ -826,7 +826,7 @@ def test_collect_ship_run_evidence_allows_policy_gated_ship(client, project, acc
         "target_id": run_id,
         "check_type": "unit",
     })
-    ship_resp = client.post(f"/api/projects/{pid}/ship/waves/0/ship", json={})
+    ship_resp = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
 
     assert collect_resp.status_code == 201
     bundle = collect_resp.get_json()

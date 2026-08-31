@@ -109,23 +109,23 @@ func TestRecentEventsEndpointReturnsTypedEventsWithChannelFilter(t *testing.T) {
 	srv, database, authHeader, hashes := newTestServer(t)
 
 	ticketChannel := "ticket-123456789012345678901234"
-	waveChannel := "wave-demo-1"
+	shipChannel := "ship-demo-1"
 	if err := database.CreateChannel(ticketChannel, ""); err != nil {
 		t.Fatalf("create ticket channel: %v", err)
 	}
-	if err := database.CreateChannel(waveChannel, ""); err != nil {
-		t.Fatalf("create wave channel: %v", err)
+	if err := database.CreateChannel(shipChannel, ""); err != nil {
+		t.Fatalf("create ship channel: %v", err)
 	}
 	ticket, _ := database.GetChannelByName(ticketChannel)
-	wave, _ := database.GetChannelByName(waveChannel)
+	ship, _ := database.GetChannelByName(shipChannel)
 	if _, err := database.CreatePost(ticket.ID, "agent-1", nil, fmt.Sprintf(`{"terarchitect_event":1,"type":"attempt_published","message":"Published %s","metadata":{"commit_hash":"%s"}}`, hashes.child, hashes.child)); err != nil {
 		t.Fatalf("create ticket post: %v", err)
 	}
-	if _, err := database.CreatePost(wave.ID, "agent-1", nil, "release_pr_opened: PR #12"); err != nil {
-		t.Fatalf("create wave post: %v", err)
+	if _, err := database.CreatePost(ship.ID, "agent-1", nil, "release_pr_opened: PR #12"); err != nil {
+		t.Fatalf("create ship post: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/events?channel_prefix=wave-&limit=10", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/events?channel_prefix=ship-&limit=10", nil)
 	req.Header.Set("Authorization", authHeader)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -141,7 +141,7 @@ func TestRecentEventsEndpointReturnsTypedEventsWithChannelFilter(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if events[0]["channel_name"] != waveChannel {
+	if events[0]["channel_name"] != shipChannel {
 		t.Fatalf("unexpected channel %#v", events[0]["channel_name"])
 	}
 	if events[0]["event_type"] != "release_pr_opened" {

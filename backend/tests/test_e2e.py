@@ -171,12 +171,9 @@ def test_e2e_ship_happy_path(client, project):
     assert attempt_a["accepted"] is False
 
     # Step 4+5: completion yields a validated candidate; no accepted attempts yet
-    wave_resp = client.get(f"/api/projects/{pid}/ship/waves")
-    assert wave_resp.status_code == 200
-    waves = wave_resp.get_json()
-    wave_0 = next((w for w in waves if w["wave_num"] == 0), None)
-    assert wave_0 is not None
-    assert wave_0["accepted_count"] == 0
+    attempts_resp = client.get(f"/api/projects/{pid}/attempts?status=accepted")
+    assert attempts_resp.status_code == 200
+    assert attempts_resp.get_json() == []
 
     # Step 6: choose and accept A before dependency-unblocking work can proceed
     chosen_a = _choose_winner(client, pid, t_a["id"], attempt_a["id"])
@@ -186,12 +183,9 @@ def test_e2e_ship_happy_path(client, project):
     assert accepted_a["status"] == "accepted"
     assert accepted_a["accepted_frontier_id"] == initial_frontier
 
-    wave_resp = client.get(f"/api/projects/{pid}/ship/waves")
-    assert wave_resp.status_code == 200
-    waves = wave_resp.get_json()
-    wave_0 = next((w for w in waves if w["wave_num"] == 0), None)
-    assert wave_0 is not None
-    assert wave_0["accepted_count"] == 1
+    accepted_resp = client.get(f"/api/projects/{pid}/attempts?status=accepted")
+    assert accepted_resp.status_code == 200
+    assert len(accepted_resp.get_json()) == 1
 
     # Step 6b: B is now unblocked after A is accepted
     from api.services.ticket_service import dispatch_unblocked_queued
@@ -219,8 +213,17 @@ def test_e2e_ship_happy_path(client, project):
     assert accepted_b["status"] == "accepted"
     assert accepted_b["accepted_frontier_id"] == initial_frontier
 
-    # Step 7: Compose the candidate for the accepted frontier-ready attempt set
-    compose_resp = client.post(f"/api/projects/{pid}/ship/waves/0/compose", json={})
+    # Step 7: Compose a candidate from A's accepted attempt only
+    candidate_resp = client.post(
+        f"/api/projects/{pid}/ship/candidates",
+        json={"selected_attempt_ids": [attempt_a["id"]]},
+    )
+    assert candidate_resp.status_code == 201
+    candidate = candidate_resp.get_json()
+    compose_resp = client.post(
+        f"/api/projects/{pid}/ship/candidates/{candidate['id']}/compose",
+        json={},
+    )
     assert compose_resp.status_code in (200, 201)
     compose_data = compose_resp.get_json()
     run_id = compose_data["id"]
@@ -255,7 +258,7 @@ def test_e2e_ship_happy_path(client, project):
     # Step 9+10: Ship via the no-main path — GitHub is optional.
     # No github_url on this project → ship advances frontier directly
     # from composed_commit_hash without any gh pr merge call.
-    ship_resp = client.post(f"/api/projects/{pid}/ship/waves/0/ship", json={})
+    ship_resp = client.post(f"/api/projects/{pid}/ship/candidates/{candidate['id']}/ship", json={})
 
     assert ship_resp.status_code == 200
     data = ship_resp.get_json()

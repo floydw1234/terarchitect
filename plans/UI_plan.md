@@ -40,7 +40,7 @@ Purpose:
 
 Purpose:
 
-- group work by wave
+- group work by promotion candidate
 - show accepted counts
 - show current/latest `ShipRun`
 - show compose failures and ready-to-ship state
@@ -71,7 +71,7 @@ Do not let these become required before shipping the MVP:
 After the MVP path is stable, the next sensible UI improvements are:
 
 - cleaner attempt selection and retry flows
-- clearer dependency/wave explanations
+- clearer dependency explanations
 - stronger shipping history and frontier visibility
 - better operator feedback for compose/ship failures
 

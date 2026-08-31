@@ -264,7 +264,7 @@ def test_ticket_context_includes_agent_channels_recent_events_and_recovery_hints
     assert data["candidate"]["id"] == candidate_id
     assert data["ship_run"]["id"] == ship_run_id
     assert data["channels"]["ticket"].startswith("ticket-")
-    assert data["channels"]["wave"].startswith("wave-")
+    assert data["channels"]["candidate"].startswith("cand-")
     assert data["channels"]["project"].startswith("project-")
     assert len(data["recent_events"]) == 2
     assert data["recent_events"][0]["event_type"] == "attempt_published"

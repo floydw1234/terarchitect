@@ -41,7 +41,7 @@ class FakeAPI:
                 "channels": {
                     "project": "project-proj",
                     "ticket": "ticket-ticket1",
-                    "wave": "wave-demo-0",
+                    "candidate": "cand-demo-1",
                 },
                 "recent_events": [
                     {"event_type": "attempt_published", "message": "Attempt published"},

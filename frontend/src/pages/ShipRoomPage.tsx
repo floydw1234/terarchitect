@@ -16,25 +16,19 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import {
   acceptAttempt,
   composeShipCandidate,
-  composeWave,
   getProject,
   getShipCandidateDetail,
   getShipCandidates,
-  getShipWaveDetail,
-  getShipWaves,
   getTicketAttempts,
   rejectAttempt,
   rerunTicketFromCurrentFrontier,
   sendCandidateFeedback,
   shipCandidate,
-  shipWave,
   type Project,
   type ProjectFrontier,
   type PromotionCandidateDetail,
   type ShipRun,
   type TicketAttempt,
-  type WaveDetail,
-  type WaveSummary,
 } from '../utils/api';
 import { LineageField, formatLineageId } from '../components/LineageField';
 
@@ -108,9 +102,6 @@ type CandidateViewModel = {
   canCompose: boolean;
   canShip: boolean;
   staleCount: number;
-  feedbackSupported: boolean;
-  legacyWaveNum: number | null;
-  source: 'candidate' | 'wave';
 };
 
 function formatShortHash(value: string | null | undefined, width = 12) {
@@ -127,10 +118,10 @@ function getAttemptReviewLockReason(attempt: TicketAttempt, shipRunStatus: strin
   return null;
 }
 
-function formatCandidateLabel(candidateId: string, legacyWaveNum: number | null) {
+function formatCandidateLabel(candidateId: string) {
   const readableId = candidateId.replace(/^candidate-/, '');
   const shortId = readableId.slice(0, 8) || candidateId.slice(0, 8);
-  return legacyWaveNum !== null ? `Candidate ${shortId}` : `Candidate ${shortId}`;
+  return `Candidate ${shortId}`;
 }
 
 function normalizeCandidateDetail(detail: PromotionCandidateDetail): CandidateViewModel {
@@ -141,11 +132,10 @@ function normalizeCandidateDetail(detail: PromotionCandidateDetail): CandidateVi
     title: ticket.title,
   }));
   const acceptedAttempts = detail.membership?.attempts ?? [];
-  const legacyWaveNum = detail.membership?.legacy_wave_num ?? null;
   return {
     id: detail.id,
     candidateId: detail.id,
-    label: formatCandidateLabel(detail.id, legacyWaveNum),
+    label: formatCandidateLabel(detail.id),
     status: detail.status,
     baseRootHash: detail.base_root_hash,
     tickets,
@@ -155,29 +145,6 @@ function normalizeCandidateDetail(detail: PromotionCandidateDetail): CandidateVi
     canCompose: validationErrors.length === 0 && (!shipRun || ['compose_failed', 'failed'].includes(shipRun.status)),
     canShip: shipRun?.status === 'ready_to_ship',
     staleCount: acceptedAttempts.filter(attempt => attempt.stale).length,
-    feedbackSupported: legacyWaveNum !== null,
-    legacyWaveNum,
-    source: 'candidate',
-  };
-}
-
-function normalizeLegacyWaveDetail(detail: WaveDetail): CandidateViewModel {
-  return {
-    id: `legacy-wave-${detail.wave_num}`,
-    candidateId: null,
-    label: `Candidate set ${detail.wave_num}`,
-    status: detail.ship_run?.status ?? (detail.can_compose ? 'draft' : detail.all_done ? 'blocked' : 'queued'),
-    baseRootHash: detail.shipped_frontier,
-    tickets: detail.tickets.map(ticket => ({ id: ticket.id, title: ticket.title })),
-    acceptedAttempts: detail.accepted_attempts,
-    shipRun: detail.ship_run,
-    validationErrors: detail.validation?.compose ?? [],
-    canCompose: detail.can_compose,
-    canShip: detail.can_ship ?? (detail.ship_run?.status === 'ready_to_ship'),
-    staleCount: detail.stale_count,
-    feedbackSupported: true,
-    legacyWaveNum: detail.wave_num,
-    source: 'wave',
   };
 }
 
@@ -501,11 +468,10 @@ function CandidateDetailPanel({
     setComposing(true);
     setError(null);
     try {
-      if (candidate.source === 'candidate' && candidate.candidateId) {
-        await composeShipCandidate(projectId, candidate.candidateId);
-      } else if (candidate.legacyWaveNum !== null) {
-        await composeWave(projectId, candidate.legacyWaveNum);
+      if (!candidate.candidateId) {
+        throw new Error('This candidate cannot be composed.');
       }
+      await composeShipCandidate(projectId, candidate.candidateId);
       await onRefresh();
     } catch (e: any) {
       setError(e.message);
@@ -518,11 +484,10 @@ function CandidateDetailPanel({
     setShipping(true);
     setError(null);
     try {
-      if (candidate.source === 'candidate' && candidate.candidateId) {
-        await shipCandidate(projectId, candidate.candidateId);
-      } else if (candidate.legacyWaveNum !== null) {
-        await shipWave(projectId, candidate.legacyWaveNum);
+      if (!candidate.candidateId) {
+        throw new Error('This candidate cannot be shipped.');
       }
+      await shipCandidate(projectId, candidate.candidateId);
       await onRefresh();
     } catch (e: any) {
       setError(e.message);
@@ -536,11 +501,10 @@ function CandidateDetailPanel({
     setFeedbackSending(true);
     setError(null);
     try {
-      if (candidate.source === 'candidate' && candidate.candidateId) {
-        await sendCandidateFeedback(projectId, candidate.candidateId, feedback.trim());
-      } else {
-        throw new Error('Feedback is not supported for this candidate on the current frontend path.');
+      if (!candidate.candidateId) {
+        throw new Error('Feedback requires a promotion candidate.');
       }
+      await sendCandidateFeedback(projectId, candidate.candidateId, feedback.trim());
       setFeedback('');
       setFeedbackSent(true);
       setTimeout(() => setFeedbackSent(false), 3000);
@@ -719,7 +683,7 @@ function CandidateDetailPanel({
         )}
       </Box>
 
-      {candidate.feedbackSupported ? (
+      {candidate.candidateId ? (
         <Box>
           <Typography variant="subtitle2" sx={{ mb: 1 }}>
             Send feedback
@@ -738,7 +702,7 @@ function CandidateDetailPanel({
               variant="outlined"
               size="small"
               onClick={handleFeedback}
-              disabled={feedbackSending || !feedback.trim() || candidate.source !== 'candidate'}
+              disabled={feedbackSending || !feedback.trim() || !candidate.candidateId}
               sx={{ minWidth: 96, alignSelf: 'stretch' }}
             >
               {feedbackSending ? <CircularProgress size={14} /> : feedbackSent ? 'Sent!' : 'Send'}
@@ -862,26 +826,11 @@ const ShipRoomPage: React.FC = () => {
         frontier_warning: projectData.frontier_warning ?? null,
       });
 
-      let normalizedCandidates: CandidateViewModel[] = [];
-      try {
-        const candidateList = await getShipCandidates(projectId);
-        if (candidateList.length > 0) {
-          const candidateDetails = await Promise.all(candidateList.map(candidate => getShipCandidateDetail(projectId, candidate.id)));
-          normalizedCandidates = candidateDetails.map(normalizeCandidateDetail);
-        }
-      } catch (candidateError: any) {
-        if (!String(candidateError?.message || '').includes('404')) {
-          throw candidateError;
-        }
-      }
-
-      if (normalizedCandidates.length === 0) {
-        const waveData = await getShipWaves(projectId);
-        const waveDetails = await Promise.all(
-          waveData.map(async (wave: WaveSummary) => getShipWaveDetail(projectId, wave.wave_num)),
-        );
-        normalizedCandidates = waveDetails.map(normalizeLegacyWaveDetail);
-      }
+      const candidateList = await getShipCandidates(projectId);
+      const candidateDetails = await Promise.all(
+        candidateList.map(candidate => getShipCandidateDetail(projectId, candidate.id)),
+      );
+      const normalizedCandidates = candidateDetails.map(normalizeCandidateDetail);
 
       setCandidates(normalizedCandidates);
       setSelectedCandidateId(current => (
@@ -945,7 +894,7 @@ const ShipRoomPage: React.FC = () => {
               </Typography>
             )}
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-              Review promotion candidates, accept or reject attempts, compose candidate-backed ship runs, inspect failures, ship the ready run, or send feedback when the backend supports it.
+              Review promotion candidates, accept or reject attempts, compose candidate-backed ship runs, inspect failures, ship the ready run, or send feedback.
             </Typography>
           </Box>
           <Button size="small" onClick={load} startIcon={<RefreshIcon fontSize="small" />} sx={{ alignSelf: 'flex-start' }}>
