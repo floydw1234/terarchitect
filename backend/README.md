@@ -23,7 +23,7 @@ docker compose up -d
 
 ## Environment Variables (.env in backend/)
 
-The backend uses **only** these env vars. Director/Worker/OpenCode URLs and keys are **not** read by the backend; they belong in the coordinator (and agent) env. See `example.env` for who needs what.
+The backend uses **only** these env vars. Director/Worker/OpenCode URLs and keys are **not** read by the backend; they belong in the coordinator (and agent) env.
 
 | Variable | Description |
 |----------|-------------|

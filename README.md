@@ -44,7 +44,7 @@ If you’ve ever wanted architecture-aware agent swarms with a clear human shipp
 - **Coordinator**: Python (host process) + `requests`
 - **Agent image**: Python runner + **OpenCode** (server mode) + **Claude Code** (headless CLI) + **Codex** (autonomous coding) + Node 20 (for `npm test` in target repos) + Docker daemon (full DinD — each container has its own isolated daemon)
 
-LLM endpoints are configured via env (Director via `DIRECTOR_LLM_URL`, Worker via `WORKER_LLM_URL`, etc., set in coordinator/agent env). See `example.env` and `docs/RUNBOOK.md`.
+LLM endpoints are configured via env (Director via `DIRECTOR_LLM_URL`, Worker via `WORKER_LLM_URL`, etc., set in coordinator/agent env). See `docs/RUNBOOK.md`.
 
 ---
 

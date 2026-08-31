@@ -92,8 +92,6 @@ services:
     container_name: terarchitect-backend
     ports:
       - "5010:5010"
-    env_file:
-      - ./example.env
     environment:
       # Bridge network: reach postgres by service name on its internal port
       DATABASE_URL: postgresql://terarchitect:terarchitect@postgres:5432/terarchitect

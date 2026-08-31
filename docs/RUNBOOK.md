@@ -67,7 +67,7 @@ DATABASE_URL=postgresql://terarchitect:***@localhost:5433/terarchitect backend/r
 - **App (frontend):** http://localhost:3000  
 - **API:** http://localhost:5010  
 
-Set `DATABASE_URL`, `TERARCHITECT_WORKER_API_KEY` (optional), and backend-owned env (GitHub token, embedding, memory LLM). See `backend/README.md` and `example.env`.
+Set `DATABASE_URL`, `TERARCHITECT_WORKER_API_KEY` (optional), and backend-owned env (GitHub token, embedding, memory LLM). See `backend/README.md`.
 
 ---
 
