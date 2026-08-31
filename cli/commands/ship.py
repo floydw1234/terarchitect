@@ -359,17 +359,13 @@ def _cmd_feedback(args, api: API) -> None:
         detail = _fetch_candidate_detail(api, args.project_id, args.candidate_id)
     except APIError as e:
         die(e, output=args.output)
-    membership = detail.get("membership") or {}
-    legacy_wave_num = membership.get("legacy_wave_num")
-    if legacy_wave_num is None:
-        die("Feedback is not supported for this candidate on the current backend.")
 
     body = {"message": args.message}
     if args.target_ticket_id:
         body["target_ticket_id"] = args.target_ticket_id
     try:
         result = api.post(
-            f"/api/projects/{args.project_id}/ship/waves/{legacy_wave_num}/feedback", body
+            f"/api/projects/{args.project_id}/ship/candidates/{args.candidate_id}/feedback", body
         )
     except APIError as e:
         die(str(e))

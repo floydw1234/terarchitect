@@ -1223,11 +1223,9 @@ def test_project_debug_reports_frontier_attempts_runs_and_jobs(client, project):
     assert data["stale_attempt_count"] == 1
     assert len(data["stale_attempts"]) == 1
     assert data["stale_attempts"][0]["agenthub_commit_hash"] == "a" * 40
-    assert data["accepted_attempts_by_wave"]["0"][0]["status"] == "accepted"
+    assert data["accepted_attempts"][0]["status"] == "accepted"
     assert data["pending_leaves"][0]["status"] == "accepted"
     assert {leaf["status"] for leaf in data["pending_leaves"]} == {"accepted", "proposed"}
-    assert data["wave_summary"][0]["accepted_count"] == 1
-    assert data["wave_summary"][0]["stale_count"] == 1
     assert data["open_ship_runs"][0]["status"] == "queued"
     assert data["active_jobs"][0]["status"] == "pending"
 

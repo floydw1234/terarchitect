@@ -32,7 +32,7 @@ For the MVP, the strategic idea collapses into a much smaller implementation spi
 - `TicketAttempt`
 - deterministic base selection from `shipped_frontier` or one accepted dependency
 - explicit accept/reject of attempts
-- wave-level `ShipRun`
+- candidate-backed `ShipRun`
 - minimal Ship Room
 - one release PR at the end
 

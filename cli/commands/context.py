@@ -38,7 +38,7 @@ def run(args, api: API) -> None:
     print("")
     print("Channels:")
     channels = payload.get("channels") or {}
-    for key in ("project", "ticket", "wave"):
+    for key in ("project", "ticket", "candidate"):
         if channels.get(key):
             print(f"  {key}: {channels[key]}")
     print("")

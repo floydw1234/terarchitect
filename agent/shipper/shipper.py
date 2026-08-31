@@ -9,7 +9,7 @@ Flow:
   1. Coordinator pre-claims a ShipRun and passes SHIP_RUN_ID.
   2. Shipper fetches the run data (candidate membership + leaf commit hashes).
   3. For each accepted attempt: downloads the AgentHub bundle, unbundles into local repo.
-  4. Creates release branch: terarchitect/release/wave-{n}-{short_id}
+  4. Creates release branch: terarchitect/release/ship-{short_id}
   5. Merges each accepted hash onto the release branch with git merge --no-ff.
   6. Runs MERGE_TEST_COMMAND if configured.
   7. Opens a release PR from the release branch to main.
@@ -96,9 +96,10 @@ def _slugify(text: str, max_len: int) -> str:
     return s[:max_len] or "x"
 
 
-def _wave_channel(project_name: str, wave_num: int) -> str:
-    slug = _slugify(project_name, 21)
-    return f"wave-{slug}-{wave_num}"
+def _ship_channel(project_name: str, run_id: str) -> str:
+    short = str(run_id).replace("-", "")[:8]
+    slug = _slugify(project_name, 17)
+    return f"ship-{slug}-{short}"
 
 
 def _post_to_channel(channel: str, content: str) -> None:
@@ -272,7 +273,6 @@ class TestFailureError(Exception):
 def _compose_release_branch(
     commit_hashes: list[str],
     project_path: str,
-    wave_num: int,
     run_short_id: str,
     tmp_dir: str,
 ) -> str:
@@ -281,7 +281,7 @@ def _compose_release_branch(
     Returns the release branch name.
     Raises ComposeError on merge conflict.
     """
-    branch = f"terarchitect/release/wave-{wave_num}-{run_short_id}"
+    branch = f"terarchitect/release/ship-{run_short_id}"
 
     # Ensure all commits are available locally
     for h in commit_hashes:
@@ -309,7 +309,7 @@ def _compose_release_branch(
     for h in commit_hashes:
         r = _git(
             ["merge", "--no-ff", "--allow-unrelated-histories", "-m",
-             f"wave-{wave_num}: merge {h[:12]}", h],
+             f"ship: merge {h[:12]}", h],
             cwd=project_path,
             check=False,
         )
@@ -357,14 +357,13 @@ def _open_release_pr(
     project_path: str,
     slug: str,
     branch: str,
-    wave_num: int,
     commit_hashes: list[str],
     changed_files: list[str],
     test_status: str,
     test_output: str,
 ) -> tuple[Optional[str], Optional[int]]:
     """Open or update a release PR. Returns (pr_url, pr_number)."""
-    title = f"Release wave {wave_num}: {len(commit_hashes)} ticket(s)"
+    title = f"Release: {len(commit_hashes)} ticket(s)"
     files_section = "\n".join(f"- `{f}`" for f in changed_files[:30]) or "_(no files changed)_"
     if len(changed_files) > 30:
         files_section += f"\n... and {len(changed_files) - 30} more"
@@ -372,7 +371,7 @@ def _open_release_pr(
     if test_output:
         test_section += f"\n```\n{test_output[-1500:]}\n```"
     body = (
-        f"## Wave {wave_num} — Release PR\n\n"
+        f"## Release PR\n\n"
         f"Composed from {len(commit_hashes)} accepted AgentHub attempt(s).\n\n"
         f"### Changed files\n{files_section}\n\n"
         f"### Test results\n{test_section}\n\n"
@@ -448,7 +447,6 @@ def run_once() -> bool:
 
     run = data["run"]
     run_id = run["id"]
-    wave_num = run["wave_num"]
     candidate = data.get("candidate") or {}
     candidate_id = candidate.get("id") or run.get("promotion_candidate_id")
     project = data["project"]
@@ -463,10 +461,10 @@ def run_once() -> bool:
         if len(parts) >= 2:
             slug = "/".join(parts[:2])
 
-    wave_ch = _wave_channel(project['name'], wave_num)
+    ship_ch = _ship_channel(project['name'], run_id)
     print(
         f"[shipper] Run {run_id} candidate={candidate_id or '-'} "
-        f"wave {wave_num} project {project['name']!r}"
+        f"project {project['name']!r}"
     )
     print(f"[shipper] Commit hashes: {commit_hashes}")
     if membership:
@@ -477,11 +475,11 @@ def run_once() -> bool:
 
     if not commit_hashes:
         _api_post(f"/api/worker/ship-run/{run_id}/fail", {
-            "error": "No accepted commit hashes found for wave tickets.",
+            "error": "No accepted commit hashes found for this candidate.",
             "compose_failed": True,
-            "fix_ticket_title": f"[wave-{wave_num}] No commits to compose — check agent output",
+            "fix_ticket_title": "[ship] No commits to compose — check agent output",
             "fix_ticket_description":
-                f"The shipper found no accepted AgentHub commits for wave {wave_num}. "
+                "The shipper found no accepted AgentHub commits for this ShipRun. "
                 "Ensure agents ran swarm_publish and their completions were recorded.",
         })
         return True
@@ -513,12 +511,11 @@ def run_once() -> bool:
 
         # --- Compose release branch ---
         _post_to_channel(
-            wave_ch,
+            ship_ch,
             _event_content(
                 "release_composition_started",
                 f"Release composition started for {len(commit_hashes)} attempt(s)",
                 {
-                    "wave_num": wave_num,
                     "ship_run_id": run_id,
                     "promotion_candidate_id": candidate_id,
                     "attempt_count": len(commit_hashes),
@@ -527,18 +524,17 @@ def run_once() -> bool:
         )
         try:
             branch, base_main_hash = _compose_release_branch(
-                commit_hashes, runtime_repo_path, wave_num, run_short_id, tmp_dir
+                commit_hashes, runtime_repo_path, run_short_id, tmp_dir
             )
         except ComposeError as e:
             print(f"[shipper] Compose conflict: {e}", file=sys.stderr)
             _post_to_channel(
-                wave_ch,
+                ship_ch,
                 _event_content(
                     "release_composition_failed",
                     str(e)[:300],
                     {
-                        "wave_num": wave_num,
-                        "ship_run_id": run_id,
+                            "ship_run_id": run_id,
                         "promotion_candidate_id": candidate_id,
                         "error": str(e)[:2000],
                     },
@@ -548,9 +544,9 @@ def run_once() -> bool:
                 "error": str(e),
                 "compose_failed": True,
                 "runtime": runtime_repo,
-                "fix_ticket_title": f"[wave-{wave_num}] Resolve merge conflicts in release composition",
+                "fix_ticket_title": "[ship] Resolve merge conflicts in release composition",
                 "fix_ticket_description":
-                    f"The shipper encountered conflicts composing wave {wave_num}.\n\nDetails:\n{str(e)[:2000]}",
+                    f"The shipper encountered conflicts composing this ShipRun.\n\nDetails:\n{str(e)[:2000]}",
             })
             return True
 
@@ -558,13 +554,12 @@ def run_once() -> bool:
         test_status, test_output = _run_tests(runtime_repo_path)
         if test_status == "failed":
             _post_to_channel(
-                wave_ch,
+                ship_ch,
                 _event_content(
                     "release_composition_failed",
                     f"Tests failed: {test_output[:300]}",
                     {
-                        "wave_num": wave_num,
-                        "ship_run_id": run_id,
+                            "ship_run_id": run_id,
                         "promotion_candidate_id": candidate_id,
                         "test_status": test_status,
                     },
@@ -574,9 +569,9 @@ def run_once() -> bool:
                 "error": f"Tests failed after composition:\n{test_output[:2000]}",
                 "compose_failed": True,
                 "runtime": runtime_repo,
-                "fix_ticket_title": f"[wave-{wave_num}] Fix test failures after release composition",
+                "fix_ticket_title": "[ship] Fix test failures after release composition",
                 "fix_ticket_description":
-                    f"Tests failed after composing wave {wave_num}.\n\nOutput:\n{test_output[:2000]}",
+                    f"Tests failed after composing this ShipRun.\n\nOutput:\n{test_output[:2000]}",
             })
             return True
 
@@ -607,18 +602,17 @@ def run_once() -> bool:
 
         # --- Open release PR ---
         pr_url, pr_number = _open_release_pr(
-            runtime_repo_path, slug, branch, wave_num,
+            runtime_repo_path, slug, branch,
             commit_hashes, changed_files, test_status, test_output,
         )
 
         # --- Report composed ---
         _post_to_channel(
-            wave_ch,
+            ship_ch,
             _event_content(
                 "release_pr_opened",
                 f"PR #{pr_number} opened for {branch}; tests={test_status}; files={len(changed_files)}",
                 {
-                    "wave_num": wave_num,
                     "ship_run_id": run_id,
                     "promotion_candidate_id": candidate_id,
                     "release_pr_number": pr_number,
@@ -645,7 +639,7 @@ def run_once() -> bool:
             },
         })
         print(
-            f"[shipper] Wave {wave_num} composed. branch={branch!r} "
+            f"[shipper] ShipRun composed. branch={branch!r} "
             f"pr={pr_number} tests={test_status} files={len(changed_files)}"
         )
         return True

@@ -20,7 +20,6 @@ class FakeAPI:
                 "ticket_id": "ticket-1",
                 "status": "proposed",
                 "short_commit_hash": "abc123def456",
-                "wave_num": 2,
                 "attempt_num": 3,
                 "summary": "Add CLI flow",
                 "changed_files": ["src/app.py", "tests/test_app.py"],
@@ -31,7 +30,6 @@ class FakeAPI:
                 "ticket_id": "ticket-1",
                 "status": "proposed",
                 "short_commit_hash": "abc123def456",
-                "wave_num": 2,
                 "changed_files": ["src/app.py"],
             }]
         if path.startswith("/api/projects/proj/tickets/ticket-1/attempts"):
@@ -39,7 +37,6 @@ class FakeAPI:
                 "id": "attempt-1",
                 "status": "proposed",
                 "short_commit_hash": "abc123def456",
-                "wave_num": 2,
                 "attempt_num": 3,
                 "test_status": "passed",
             }]
@@ -52,7 +49,6 @@ class FakeAPI:
             "ticket_id": "ticket-1",
             "status": "accepted" if path.endswith("/accept") else "rejected",
             "short_commit_hash": "abc123def456",
-            "wave_num": 2,
         }
 
     def get_text(self, path, accept="text/plain"):

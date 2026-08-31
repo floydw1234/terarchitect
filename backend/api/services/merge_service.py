@@ -1,4 +1,4 @@
-"""Ship run and wave-computation helpers (swarm mode)."""
+"""Ship run and promotion-candidate helpers (swarm mode)."""
 from collections import defaultdict
 
 from models.db import db, Project, PromotionCandidate, Ticket, ShipRun, TicketAttempt
@@ -27,155 +27,34 @@ def lock_project_for_update(project_id):
     """
     return Project.query.filter_by(id=project_id).with_for_update().first()
 
-def compute_waves(tickets: list) -> dict:
-    """BFS topological layering over depends_on_ticket_ids.
-    Returns {ticket_id_str: wave_num}.  Wave 0 = no dependencies.
-    Handles cycles and unknown dep refs gracefully (assigns wave 0).
+def topological_ticket_rank(tickets: list) -> dict:
+    """BFS topological rank over depends_on_ticket_ids.
+
+    Returns {ticket_id_str: rank}. Rank 0 means no in-set dependencies.
+    Cycles and unknown dependency refs get rank 0 so callers can still order
+    independent work without blocking the rest of the graph.
     """
     id_to_deps: dict = {
         str(t.id): set(str(d) for d in (t.depends_on_ticket_ids or []))
         for t in tickets
     }
     known_ids = set(id_to_deps.keys())
-    waves: dict = {}
+    ranks: dict = {}
     changed = True
     while changed:
         changed = False
         for tid, deps in id_to_deps.items():
-            if tid in waves:
+            if tid in ranks:
                 continue
             local_deps = deps & known_ids
-            if any(d not in waves for d in local_deps):
+            if any(d not in ranks for d in local_deps):
                 continue
-            w = (max(waves[d] for d in local_deps) + 1) if local_deps else 0
-            waves[tid] = w
+            rank = (max(ranks[d] for d in local_deps) + 1) if local_deps else 0
+            ranks[tid] = rank
             changed = True
     for tid in id_to_deps:
-        waves.setdefault(tid, 0)
-    return waves
-
-
-def analyze_wave_dependencies(tickets: list) -> dict:
-    """Return agent-friendly dependency analysis while preserving legacy wave math.
-
-    The returned structure keeps ``compute_waves`` semantics for compatibility, but
-    also surfaces unknown references and dependency cycles so callers can explain
-    why a ticket landed in a given wave or why it is unsafe to compose/ship.
-    """
-    id_to_ticket = {str(t.id): t for t in tickets}
-    id_to_deps = {
-        str(t.id): [str(dep_id) for dep_id in (t.depends_on_ticket_ids or [])]
-        for t in tickets
-    }
-    waves = compute_waves(tickets)
-    known_ids = set(id_to_ticket.keys())
-
-    unknown_refs_by_ticket: dict[str, list[str]] = {}
-    for tid, deps in id_to_deps.items():
-        unknown = sorted({dep_id for dep_id in deps if dep_id not in known_ids})
-        if unknown:
-            unknown_refs_by_ticket[tid] = unknown
-
-    cycles: list[list[str]] = []
-    cycle_keys: set[tuple[str, ...]] = set()
-    cycle_members_by_ticket: dict[str, list[list[str]]] = defaultdict(list)
-    state: dict[str, int] = {}
-    stack: list[str] = []
-    stack_index: dict[str, int] = {}
-
-    def _record_cycle(path: list[str]) -> None:
-        base_nodes = path[:-1] if len(path) > 1 and path[0] == path[-1] else path
-        if not base_nodes:
-            return
-        rotations = [tuple(base_nodes[i:] + base_nodes[:i]) for i in range(len(base_nodes))]
-        key = min(rotations)
-        if key in cycle_keys:
-            return
-        cycle_keys.add(key)
-        cycle_path = list(key) + [key[0]]
-        cycles.append(cycle_path)
-        for node in key:
-            cycle_members_by_ticket[node].append(cycle_path)
-
-    def _visit(node_id: str) -> None:
-        state[node_id] = 1
-        stack_index[node_id] = len(stack)
-        stack.append(node_id)
-        for dep_id in id_to_deps.get(node_id, []):
-            if dep_id not in known_ids:
-                continue
-            dep_state = state.get(dep_id, 0)
-            if dep_state == 0:
-                _visit(dep_id)
-            elif dep_state == 1:
-                start = stack_index.get(dep_id, 0)
-                _record_cycle(stack[start:] + [dep_id])
-        stack.pop()
-        stack_index.pop(node_id, None)
-        state[node_id] = 2
-
-    for ticket_id in id_to_ticket:
-        if state.get(ticket_id, 0) == 0:
-            _visit(ticket_id)
-
-    ticket_explanations: dict[str, dict] = {}
-    for ticket_id, ticket in id_to_ticket.items():
-        dep_ids = id_to_deps.get(ticket_id, [])
-        blockers: list[str] = []
-        cycle_paths = cycle_members_by_ticket.get(ticket_id, [])
-        unknown_refs = unknown_refs_by_ticket.get(ticket_id, [])
-
-        if unknown_refs:
-            blockers.append(
-                "Unknown dependency references: " + ", ".join(unknown_refs)
-            )
-        if cycle_paths:
-            blockers.extend(
-                f"Dependency cycle detected: {' -> '.join(path)}"
-                for path in cycle_paths
-            )
-
-        if not dep_ids:
-            dependency_reason = "No dependencies."
-        else:
-            known_dep_bits = []
-            for dep_id in dep_ids:
-                dep = id_to_ticket.get(dep_id)
-                if not dep:
-                    continue
-                known_dep_bits.append(f"{dep_id} (wave {waves.get(dep_id, 0)})")
-            reasons = []
-            if known_dep_bits:
-                reasons.append("Depends on " + ", ".join(known_dep_bits) + ".")
-            if unknown_refs:
-                reasons.append("Unknown refs: " + ", ".join(unknown_refs) + ".")
-            if cycle_paths:
-                reasons.append(
-                    "Cycle(s): " + "; ".join(" -> ".join(path) for path in cycle_paths) + "."
-                )
-            dependency_reason = " ".join(reasons) if reasons else "Dependencies recorded."
-
-        ticket_explanations[ticket_id] = {
-            "ticket_id": ticket_id,
-            "wave_num": waves.get(ticket_id, 0),
-            "depends_on_ticket_ids": dep_ids,
-            "unknown_dependency_ids": unknown_refs,
-            "dependency_cycles": cycle_paths,
-            "has_unknown_dependencies": bool(unknown_refs),
-            "in_dependency_cycle": bool(cycle_paths),
-            "dependency_reason": dependency_reason,
-            "blockers": blockers,
-        }
-
-    return {
-        "waves": waves,
-        "ticket_explanations": ticket_explanations,
-        "unknown_dependency_refs": [
-            {"ticket_id": tid, "unknown_dependency_ids": refs}
-            for tid, refs in sorted(unknown_refs_by_ticket.items())
-        ],
-        "dependency_cycles": cycles,
-    }
+        ranks.setdefault(tid, 0)
+    return ranks
 
 
 def analyze_promotion_candidate_graph(
@@ -492,13 +371,6 @@ def candidate_commit_hashes(candidate: PromotionCandidate) -> list[str]:
     ]
 
 
-def candidate_legacy_wave_num(candidate: PromotionCandidate) -> int:
-    attempts = candidate_attempts(candidate)
-    if not attempts:
-        return 0
-    return max(int(attempt.wave_num or 0) for attempt in attempts)
-
-
 def validate_promotion_candidate(candidate: PromotionCandidate, project: Project) -> list[str]:
     attempts = candidate_attempts(candidate)
     candidate_attempts_by_ticket_id = {
@@ -549,7 +421,6 @@ def ship_run_to_json(run: ShipRun) -> dict:
         "id": str(run.id),
         "project_id": str(run.project_id),
         "promotion_candidate_id": str(run.promotion_candidate_id) if run.promotion_candidate_id else None,
-        "wave_num": run.wave_num,
         "status": run.status,
         "error": run.error,
         "release_branch": run.release_branch,
