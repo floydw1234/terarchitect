@@ -1,4 +1,16 @@
-# DAG-Native Promotion Checklist
+# DAG-Native Promotion Checklist (Archived / Historical)
+
+## Status
+
+**This checklist is archived. Do not use it as a live implementation checklist.**
+
+The work described here (DAG-native promotion, ShipRun-based shipping, wave deprecation) is implemented. This file is kept only as historical context.
+
+If this file conflicts with `agenthub_mvp_plan.md` or `agenthub_mvp_execution_checklist.md`, those documents win.
+
+---
+
+# Original Content
 
 Objective: refactor Terarchitect from wave-first Ship Room semantics to AgentHub-DAG-native base selection and stable promotion candidates.
 
@@ -47,7 +59,7 @@ Tasks:
 - [ ] Decide whether promotion candidates live in a new table or as a tight extension of `ShipRun`; prefer a separate record if `ShipRun` should remain execution-only.
 - [ ] Document that numbered waves are no longer the operator concept in README/runbook/worker API docs.
 - [ ] Document that a ship run is created from a stable candidate set selected from accepted attempts whose dependency closure is valid.
-- [ ] Identify every route/CLI string that currently exposes “wave” as the primary operator abstraction and list them for replacement.
+- [ ] Identify every route/CLI string that currently exposes "wave" as the primary operator abstraction and list them for replacement.
 
 Phase 1 contract decisions:
 
@@ -179,15 +191,15 @@ Tasks:
   - ship `ShipRun`
   - send feedback on candidate or ship run
 - [ ] Make `/worker/ship-run/next` return candidate context instead of wave ticket lists as the primary composition unit.
-- [ ] Update ship-run validation to work from candidate membership and DAG ancestry rather than “earlier wave must already be shipped”.
+- [ ] Update ship-run validation to work from candidate membership and DAG ancestry rather than "earlier wave must already be shipped".
 - [ ] Ensure ship-run compose callbacks persist:
   - candidate id
   - base main/frontier hash
   - composed commit hash
   - changed files
   - test status/output
-- [ ] Ensure shipping advances `project.shipped_frontier` from the shipped run and marks only the candidate’s attempts as shipped.
-- [ ] Remove auto-queue logic that creates ship runs on “wave complete”; candidate creation/compose should be the trigger instead.
+- [ ] Ensure shipping advances `project.shipped_frontier` from the shipped run and marks only the candidate's attempts as shipped.
+- [ ] Remove auto-queue logic that creates ship runs on "wave complete"; candidate creation/compose should be the trigger instead.
 
 Verification:
 
@@ -213,7 +225,7 @@ Files:
 Tasks:
 
 - [ ] Replace `ta ship waves`, `show <wave_num>`, `compose <wave_num>`, `merge-pr <wave_num>` with candidate/ship-run oriented commands.
-- [ ] Remove CLI text that tells operators to reason in “wave complete”, “ship prerequisite waves”, or “compose wave N”.
+- [ ] Remove CLI text that tells operators to reason in "wave complete", "ship prerequisite waves", or "compose wave N".
 - [ ] Update ticket/attempt output to point operators at candidate review or ship-run review, not wave review.
 - [ ] Reframe Ship Room UI around:
   - current frontier

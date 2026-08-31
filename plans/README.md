@@ -42,6 +42,9 @@ If a reference document conflicts with either of the two files above, the MVP do
 - `agent_hub_conversion_plan.md`
   - Archived oversized migration roadmap.
   - Treat as historical/theoretical context only.
+- `archive/dag_native_promotion_checklist.md`
+  - DAG-native promotion / ShipRun shipping is implemented.
+  - Historical checklist only; do not use as a live implementation guide.
 - `no_main_idea.md`
   - Explicit future exploration for lab/no-main ideas.
   - Out of MVP scope.
