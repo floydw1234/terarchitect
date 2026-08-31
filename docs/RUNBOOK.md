@@ -276,6 +276,8 @@ General execution drift back to local-path workflow:
 
 ## Operator flow
 
+Terarchitect can be operated by humans or by agents. Humans drive the workflow through the UI or CLI; agents and coordinators drive it through the CLI or API.
+
 Keep operators on one path for swarm projects:
 
 1. agent completes work

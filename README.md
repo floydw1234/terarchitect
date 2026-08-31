@@ -2,6 +2,7 @@
 
 Terarchitect is an agent-first, CLI-first SDLC orchestrator: model your system as a graph, define intents, and let a **Director → Worker** agent pair publish implementation attempts to an AgentHub DAG.
 
+- **Dual-use: humans or agents.** Humans can operate the UI or CLI; agents and coordinators can drive the same loop via CLI or API.
 - **Primary users are agents and coordinators**: the system is built around automated execution and DAG-native promotion/shipping.
 - **UI and human actions stay at the review/ship boundary**: workers produce validated candidates, operators choose winners, and only accepted/integrated attempts become shippable through promotion-candidate review and `ShipRun` execution.
 - **Contract being frozen in Phase 1**: agent completes work, validation creates a candidate, a human may choose a winner, only explicit acceptance/integration advances the frontier, then operators review a stable promotion candidate, create a `ShipRun`, inspect it, and ship/merge at the final boundary.

@@ -56,6 +56,8 @@ Do not expand scope into Composite Workspace, no-main runtime, heavy verificatio
 
 ## Operator Path
 
+Terarchitect can be operated by humans or by agents. Humans drive the same workflow through the UI or CLI; agents and coordinators drive it through the CLI or API.
+
 Use one operator path for swarm projects:
 
 1. agent completes work and publishes a `TicketAttempt`
