@@ -65,7 +65,6 @@ def accepted_ticket_and_attempt(client, project):
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash="b" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="done",

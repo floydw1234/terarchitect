@@ -83,7 +83,6 @@ def test_ticket_complete_creates_attempt(client, project):
         assert len(attempts) == 1
         assert attempts[0].agenthub_commit_hash == "a" * 40
         assert attempts[0].base_hash == base_leaf_id
-        assert attempts[0].wave_num == 0
 
     attempts_resp = client.get(f"/api/projects/{project['id']}/tickets/{tid}/attempts")
     assert attempts_resp.status_code == 200
@@ -288,7 +287,6 @@ def test_ship_candidate_detail_explains_unknown_dependency_refs(client, project)
             ticket_id=ticket.id,
             agenthub_commit_hash="d" * 40,
             base_hash="f" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="done",
@@ -322,7 +320,6 @@ def test_ship_candidate_detail_explains_dependency_cycles(client, project):
             ticket_id=a.id,
             agenthub_commit_hash="a" * 40,
             base_hash="f" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="a",
@@ -332,7 +329,6 @@ def test_ship_candidate_detail_explains_dependency_cycles(client, project):
             ticket_id=b.id,
             agenthub_commit_hash="b" * 40,
             base_hash="f" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="b",
@@ -406,7 +402,6 @@ def test_compose_auto_includes_unshipped_dependency(client, project):
             ticket_id=parent.id,
             agenthub_commit_hash=parent_hash,
             base_hash="f" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="parent",
@@ -416,7 +411,6 @@ def test_compose_auto_includes_unshipped_dependency(client, project):
             ticket_id=child.id,
             agenthub_commit_hash=child_hash,
             base_hash=parent_hash,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="child",
@@ -450,7 +444,6 @@ def test_dry_compose_reports_blockers_and_commit_hashes(client, project):
             ticket_id=ticket.id,
             agenthub_commit_hash="e" * 40,
             base_hash="f" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="done",
@@ -506,7 +499,6 @@ def test_compose_returns_existing_active_run_instead_of_duplicating(client, proj
             ticket_id=ticket.id,
             agenthub_commit_hash="c" * 40,
             base_hash="f" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="done",
@@ -565,7 +557,6 @@ def test_worker_claim_moves_ship_run_to_composing(client, project):
             ticket_id=ticket.id,
             agenthub_commit_hash="c" * 40,
             base_hash="f" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="done",
@@ -620,7 +611,6 @@ def test_compose_allows_child_after_dependency_shipped(client, project):
             ticket_id=parent.id,
             agenthub_commit_hash=parent_hash,
             base_hash="f" * 40,
-            wave_num=0,
             attempt_num=1,
             status="shipped",
             summary="parent",
@@ -630,7 +620,6 @@ def test_compose_allows_child_after_dependency_shipped(client, project):
             ticket_id=child.id,
             agenthub_commit_hash=child_hash,
             base_hash=parent_hash,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="child",
@@ -650,7 +639,7 @@ def test_ship_rejects_when_run_not_ready_to_ship(client, project):
     from models.db import db, ShipRun
 
     with client.application.app_context():
-        run = ShipRun(project_id=pid, wave_num=0, status="queued")
+        run = ShipRun(project_id=pid, status="queued")
         db.session.add(run)
         db.session.commit()
         run_id = str(run.id)
@@ -684,14 +673,12 @@ def test_ship_rejects_stale_composition_validation(client, project):
             ticket_id=ticket.id,
             agenthub_commit_hash="c" * 40,
             base_hash="f" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="done",
         ))
         run = ShipRun(
             project_id=pid,
-            wave_num=0,
             status="ready_to_ship",
             composed_commit_hash="d" * 40,
             base_main_hash="f" * 40,
@@ -733,7 +720,6 @@ def test_candidate_compose_and_inspect_run(client, project):
             ticket_id=ticket.id,
             agenthub_commit_hash="h" * 40,
             base_hash="f" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="done",
@@ -776,7 +762,6 @@ def test_candidate_ship_only_transitions_candidate_membership(client, project):
             ticket_id=ticket_a.id,
             agenthub_commit_hash="a" * 40,
             base_hash="f" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="a",
@@ -786,7 +771,6 @@ def test_candidate_ship_only_transitions_candidate_membership(client, project):
             ticket_id=ticket_b.id,
             agenthub_commit_hash="b" * 40,
             base_hash="f" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="b",
@@ -832,7 +816,7 @@ def test_worker_fail_records_compose_failed(client, project):
     """Compatibility check for the older ship worker callback."""
     from models.db import db, ShipRun, Project
     with client.application.app_context():
-        run = ShipRun(project_id=project["id"], wave_num=0, status="running")
+        run = ShipRun(project_id=project["id"], status="running")
         db.session.add(run)
         db.session.commit()
         run_id = str(run.id)
@@ -863,7 +847,7 @@ def test_ship_no_github_advances_frontier_directly(client, project, accepted_tic
     from models.db import db, ShipRun, Project
     with client.application.app_context():
         run = ShipRun(
-            project_id=pid, wave_num=0, status="ready_to_ship",
+            project_id=pid, status="ready_to_ship",
             composed_commit_hash="z" * 40,
         )
         db.session.add(run)
@@ -896,7 +880,6 @@ def test_ship_updates_frontier_after_merge(client, project, accepted_ticket_and_
     with client.application.app_context():
         run = ShipRun(
             project_id=pid,
-            wave_num=0,
             status="ready_to_ship",
             release_pr_number=99,
             release_pr_url="https://github.com/owner/repo/pull/99",
@@ -1036,7 +1019,6 @@ def test_single_dependency_ticket_dispatches_from_parent_attempt_base(client, pr
             ticket_id=parent.id,
             agenthub_commit_hash=parent_hash,
             base_hash=frontier,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="parent",
@@ -1093,7 +1075,6 @@ def test_shipped_dependency_ticket_dispatches_from_current_frontier(client, proj
             ticket_id=parent.id,
             agenthub_commit_hash=shipped_hash,
             base_hash=frontier,
-            wave_num=0,
             attempt_num=1,
             status="shipped",
             summary="parent shipped",
@@ -1398,7 +1379,6 @@ def test_multi_dependency_ticket_stays_queued_in_mvp(client, project):
                 ticket_id=parent_a.id,
                 agenthub_commit_hash="a" * 40,
                 base_hash="f" * 40,
-                wave_num=0,
                 attempt_num=1,
                 status="accepted",
                 summary="parent a",
@@ -1408,7 +1388,6 @@ def test_multi_dependency_ticket_stays_queued_in_mvp(client, project):
                 ticket_id=parent_b.id,
                 agenthub_commit_hash="b" * 40,
                 base_hash="f" * 40,
-                wave_num=0,
                 attempt_num=1,
                 status="accepted",
                 summary="parent b",

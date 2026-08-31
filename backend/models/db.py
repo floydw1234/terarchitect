@@ -196,8 +196,6 @@ class TicketAttempt(db.Model):
     ticket_id = db.Column(UUID_TYPE, db.ForeignKey("tickets.id"), nullable=False)
     agenthub_commit_hash = db.Column(db.String(255))
     base_hash = db.Column(db.String(255))
-    # Unused leftover column from the retired wave-first ship model. Always 0.
-    wave_num = db.Column(db.Integer, default=0)
     attempt_num = db.Column(db.Integer, nullable=False, default=1)
     agent_id = db.Column(db.String(255))
     # Canonical lifecycle states: proposed | validating | validated | accepted
@@ -220,8 +218,7 @@ class TicketAttempt(db.Model):
 class ShipRun(db.Model):
     """Execution record for composing/validating/shipping a selected set of work.
 
-    Phase 4 contract: ShipRun is composed from one stable promotion candidate.
-    ``wave_num`` is an unused leftover column kept for existing databases."""
+    Phase 4 contract: ShipRun is composed from one stable promotion candidate."""
 
     __tablename__ = "ship_runs"
 
@@ -232,8 +229,6 @@ class ShipRun(db.Model):
         db.ForeignKey("promotion_candidates.id"),
         nullable=True,
     )
-    # Unused leftover column from the retired wave-first ship model. Always 0.
-    wave_num = db.Column(db.Integer, nullable=False)
     # MVP-facing states: queued | composing | failed | ready_to_ship | shipping | shipped
     # Legacy-compatible callbacks still emit running | compose_failed.
     status = db.Column(db.String(50), nullable=False, default="queued")
