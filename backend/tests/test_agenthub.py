@@ -132,7 +132,6 @@ def test_stale_attempt_detected(app):
         attempt.agenthub_commit_hash = "f" * 40
         attempt.short_commit_hash = "f" * 12
         attempt.base_hash = "old_base"
-        attempt.wave_num = 0
         attempt.attempt_num = 1
         attempt.agent_id = None
         attempt.status = "accepted"
@@ -156,7 +155,6 @@ def test_non_stale_attempt(app):
         attempt.ticket_id = "t6"
         attempt.agenthub_commit_hash = "g" * 40
         attempt.base_hash = "same_frontier"
-        attempt.wave_num = 0
         attempt.attempt_num = 1
         attempt.agent_id = None
         attempt.status = "accepted"
@@ -187,7 +185,6 @@ def test_compute_base_hash_uses_dep_hash_when_accepted(app):
         with patch("api.services.job_service.TicketAttempt") as MockTA:
             mock_attempt = MagicMock()
             mock_attempt.agenthub_commit_hash = dep_hash
-            mock_attempt.wave_num = 0
             mock_attempt.status = "accepted"
 
             # Mock the query chain
@@ -274,7 +271,6 @@ def test_mvp_base_selection_uses_accepted_dependency_hash(client, project):
             ticket_id=parent.id,
             agenthub_commit_hash=dep_hash,
             base_hash=frontier,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="parent done",
@@ -321,7 +317,6 @@ def test_mvp_base_selection_uses_frontier_when_dependencies_already_shipped(clie
             ticket_id=parent.id,
             agenthub_commit_hash=shipped_hash,
             base_hash=frontier,
-            wave_num=0,
             attempt_num=1,
             status="shipped",
             summary="parent shipped",
@@ -364,7 +359,6 @@ def test_mvp_base_selection_blocks_multiple_unshipped_dependencies(client, proje
                 ticket_id=parent_a.id,
                 agenthub_commit_hash="a" * 40,
                 base_hash=frontier,
-                wave_num=0,
                 attempt_num=1,
                 status="accepted",
                 summary="parent a",
@@ -374,7 +368,6 @@ def test_mvp_base_selection_blocks_multiple_unshipped_dependencies(client, proje
                 ticket_id=parent_b.id,
                 agenthub_commit_hash="b" * 40,
                 base_hash=frontier,
-                wave_num=0,
                 attempt_num=1,
                 status="accepted",
                 summary="parent b",
@@ -750,7 +743,6 @@ def test_ticket_attempts_list_returns_multiple_attempts_newest_first(client, pro
             ticket_id=ticket.id,
             agenthub_commit_hash="1" * 40,
             base_hash="0" * 40,
-            wave_num=0,
             attempt_num=1,
             status="proposed",
             summary="first try",
@@ -760,7 +752,6 @@ def test_ticket_attempts_list_returns_multiple_attempts_newest_first(client, pro
             ticket_id=ticket.id,
             agenthub_commit_hash="2" * 40,
             base_hash="0" * 40,
-            wave_num=0,
             attempt_num=2,
             status="proposed",
             summary="second try",
@@ -796,7 +787,6 @@ def test_choose_winner_only_marks_one_validated_attempt(client, project):
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash=initial_frontier,
-            wave_num=0,
             attempt_num=1,
             status="validated",
             summary="first try",
@@ -807,7 +797,6 @@ def test_choose_winner_only_marks_one_validated_attempt(client, project):
             ticket_id=ticket.id,
             agenthub_commit_hash="b" * 40,
             base_hash=initial_frontier,
-            wave_num=0,
             attempt_num=2,
             status="validated",
             summary="second try",
@@ -865,7 +854,6 @@ def test_accept_attempt_integrates_winner_without_advancing_project_accepted_fro
             ticket_id=ticket.id,
             agenthub_commit_hash="d" * 40,
             base_hash=initial_frontier,
-            wave_num=0,
             attempt_num=1,
             status="validated",
             summary="integrate winner without frontier advance",
@@ -919,7 +907,6 @@ def test_accept_attempt_fails_clearly_without_agenthub_commit_hash(client, proje
             ticket_id=ticket.id,
             agenthub_commit_hash=None,
             base_hash=original_frontier,
-            wave_num=0,
             attempt_num=1,
             status="validated",
             summary="missing commit hash",
@@ -963,7 +950,6 @@ def test_accept_attempt_does_not_fallback_to_local_git_head(client, project):
             ticket_id=ticket.id,
             agenthub_commit_hash="e" * 40,
             base_hash=project["accepted_frontier_id"],
-            wave_num=0,
             attempt_num=1,
             status="validated",
             summary="must use stored leaf only",
@@ -1008,7 +994,6 @@ def test_attempt_list_reports_stale_status_against_accepted_frontier(client, pro
             ticket_id=ticket.id,
             agenthub_commit_hash="7" * 40,
             base_hash="leaf_01HZX3STALEATTEMPTBASE01234567",
-            wave_num=0,
             attempt_num=1,
             status="proposed",
             summary="stale attempt listing",
@@ -1046,7 +1031,6 @@ def test_accept_attempt_rejects_stale_attempt_and_does_not_advance_frontier(clie
             ticket_id=ticket.id,
             agenthub_commit_hash="f" * 40,
             base_hash="leaf_01HZX3OLDATTEMPTBASE0123456789",
-            wave_num=0,
             attempt_num=1,
             status="validated",
             summary="stale attempt",
@@ -1095,7 +1079,6 @@ def test_accept_attempt_rejects_when_staleness_cannot_be_determined(client, proj
             ticket_id=ticket.id,
             agenthub_commit_hash="9" * 40,
             base_hash=None,
-            wave_num=0,
             attempt_num=1,
             status="validated",
             summary="unknown staleness",
@@ -1140,7 +1123,6 @@ def test_reject_attempt_returns_rejected_state(client, project):
             ticket_id=ticket.id,
             agenthub_commit_hash="c" * 40,
             base_hash="f" * 40,
-            wave_num=0,
             attempt_num=1,
             status="proposed",
             summary="needs work",
@@ -1193,7 +1175,6 @@ def test_project_debug_reports_frontier_attempts_runs_and_jobs(client, project):
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash="old" * 13 + "o",
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="done",
@@ -1203,12 +1184,11 @@ def test_project_debug_reports_frontier_attempts_runs_and_jobs(client, project):
             ticket_id=ticket.id,
             agenthub_commit_hash="b" * 40,
             base_hash=frontier,
-            wave_num=0,
             attempt_num=2,
             status="proposed",
             summary="new try",
         )
-        run = ShipRun(project_id=pid, wave_num=0, status="queued")
+        run = ShipRun(project_id=pid, status="queued")
         job = AgentJob(project_id=pid, ticket_id=ticket.id, kind="ticket", status="pending")
         db.session.add_all([accepted, proposed, run, job])
         db.session.commit()
@@ -1223,11 +1203,9 @@ def test_project_debug_reports_frontier_attempts_runs_and_jobs(client, project):
     assert data["stale_attempt_count"] == 1
     assert len(data["stale_attempts"]) == 1
     assert data["stale_attempts"][0]["agenthub_commit_hash"] == "a" * 40
-    assert data["accepted_attempts_by_wave"]["0"][0]["status"] == "accepted"
+    assert data["accepted_attempts"][0]["status"] == "accepted"
     assert data["pending_leaves"][0]["status"] == "accepted"
     assert {leaf["status"] for leaf in data["pending_leaves"]} == {"accepted", "proposed"}
-    assert data["wave_summary"][0]["accepted_count"] == 1
-    assert data["wave_summary"][0]["stale_count"] == 1
     assert data["open_ship_runs"][0]["status"] == "queued"
     assert data["active_jobs"][0]["status"] == "pending"
 
@@ -1265,7 +1243,6 @@ def test_create_promotion_candidate_resolves_dependency_closure(client, project)
             ticket_id=parent.id,
             agenthub_commit_hash="p" * 40,
             base_hash=frontier,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="parent accepted",
@@ -1275,7 +1252,6 @@ def test_create_promotion_candidate_resolves_dependency_closure(client, project)
             ticket_id=child.id,
             agenthub_commit_hash="c" * 40,
             base_hash="p" * 40,
-            wave_num=1,
             attempt_num=1,
             status="accepted",
             summary="child accepted",
@@ -1327,7 +1303,6 @@ def test_create_promotion_candidate_blocks_missing_dependency_attempt(client, pr
             ticket_id=child.id,
             agenthub_commit_hash="c" * 40,
             base_hash=frontier,
-            wave_num=1,
             attempt_num=1,
             status="accepted",
             summary="child accepted",

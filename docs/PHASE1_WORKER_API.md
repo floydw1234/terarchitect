@@ -60,7 +60,6 @@ Phase 1 vocabulary freeze:
 - accepted/integrated `TicketAttempt`: the winner that actually advanced the accepted frontier
 - promotion candidate: the future stable selection of accepted/integrated attempts whose dependency closure is valid against `shipped_frontier`
 - `ShipRun`: an execution record created from a promotion candidate
-- `wave_num`: legacy-only compatibility metadata in the current codebase, not the target contract
 
 ---
 
@@ -125,7 +124,7 @@ The five default operator-visible strategies/personas are:
 
 Sibling backend lanes may still be wiring the strategy fields, but worker implementations should treat the names above as the stable intended contract.
 
-Workspace in container: `/workspace` (clone and run happen there). Exit 0 = success; non-zero = failure (coordinator uses this to call jobs/complete or jobs/fail). PR-review jobs have been removed; human feedback now flows through AgentHub channels and Ship Room/Workspace actions. The operator contract is candidate review followed by `ShipRun` execution; any remaining wave-keyed ship routes are backend compatibility shims.
+Workspace in container: `/workspace` (clone and run happen there). Exit 0 = success; non-zero = failure (coordinator uses this to call jobs/complete or jobs/fail). PR-review jobs have been removed; human feedback now flows through AgentHub channels and Ship Room/Workspace actions. The operator contract is candidate review followed by `ShipRun` execution.
 
 ---
 
@@ -158,7 +157,7 @@ python -m coordinator
 
 **Container reachability:** The coordinator passes its env (including `TERARCHITECT_API_URL`) to each container. Compose coordinator should also pass `DOCKER_NETWORK=terarchitect_default` so workers can reach `backend` and `agenthub` by service name. If the app is on the host and the coordinator runs on the same host, set `TERARCHITECT_API_URL=http://host.docker.internal:5010` (or the host’s IP) so the container can reach the app. On Linux without Docker Desktop the coordinator adds `--add-host=host.docker.internal:host-gateway` automatically when needed.
 
-Operator note: this worker API doc freezes the DAG-native nouns only. It does not require every legacy backend route to be removed immediately; some wave-keyed ship endpoints may still exist as compatibility shims behind the candidate-first UI and CLI.
+Operator note: this worker API doc freezes the DAG-native nouns only. Shipping is promotion-candidate review plus `ShipRun` execution.
 
 ---
 

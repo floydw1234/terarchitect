@@ -145,7 +145,7 @@ python3 -m py_compile coordinator/coordinator.py backend/api/routes.py
 
 **Why**
 
-This is the actual product change: stop shipping ticket-by-ticket and ship one composed wave.
+This is the actual product change: stop shipping ticket-by-ticket and ship one composed promotion candidate.
 
 **Files to touch**
 
@@ -159,15 +159,15 @@ This is the actual product change: stop shipping ticket-by-ticket and ship one c
 **Concrete changes**
 
 - Keep these endpoints as the only MVP shipping API surface:
-  - `GET /api/projects/:project_id/ship/waves`
-  - `GET /api/projects/:project_id/ship/waves/:wave_num`
-  - `POST /api/projects/:project_id/ship/waves/:wave_num/compose`
-  - `POST /api/projects/:project_id/ship/waves/:wave_num/ship`
-  - `POST /api/projects/:project_id/ship/waves/:wave_num/feedback`
-- In `ship_wave_compose`, require:
-  - all tickets in the wave have accepted attempts
+  - `GET /api/projects/:project_id/ship/candidates`
+  - `GET /api/projects/:project_id/ship/candidates/:candidate_id`
+  - `POST /api/projects/:project_id/ship/candidates/:candidate_id/compose`
+  - `POST /api/projects/:project_id/ship/candidates/:candidate_id/ship`
+  - `POST /api/projects/:project_id/ship/candidates/:candidate_id/feedback`
+- In candidate compose, require:
+  - selected attempts are accepted
   - dependency validation passes before queueing
-  - one active ship run per wave
+  - one active ship run per candidate
 - In `coordinator/coordinator.py`, keep `/api/worker/ship-run/next` as the coordinator claim path.
 - Ensure the worker-composed callback transitions a ship run to `ready_to_ship` with:
   - `composed_commit_hash`
@@ -175,7 +175,7 @@ This is the actual product change: stop shipping ticket-by-ticket and ship one c
   - `changed_files`
   - `test_status`
   - `test_output`
-- In `ship_wave_ship`, enforce:
+- In candidate ship, enforce:
   - ship only from `ready_to_ship`
   - update `shipped_commit_hash`
   - advance `project.shipped_frontier`
@@ -186,9 +186,9 @@ This is the actual product change: stop shipping ticket-by-ticket and ship one c
 
 Use `backend/tests/test_e2e.py` as the anchor for the happy path already present:
 
-- compose wave
+- compose candidate
 - report composed via worker callback
-- ship wave
+- ship candidate
 - frontier advances
 - attempts get correct final states
 
@@ -229,7 +229,7 @@ The UI already has extra surfaces. MVP Ship Room should show the release boundar
 
 - In `ShipRoomPage.tsx`, make the critical UI states obvious:
   - current frontier
-  - waves
+  - candidates
   - accepted counts
   - active/latest `ShipRun`
   - release PR link
@@ -237,9 +237,9 @@ The UI already has extra surfaces. MVP Ship Room should show the release boundar
 - Keep only these user actions in the MVP narrative:
   - review attempts
   - accept/reject attempt
-  - compose wave
+  - compose candidate
   - retry compose
-  - ship wave
+  - ship candidate
   - send feedback
 - `AttemptDetailPage.tsx` should remain a lightweight attempt inspector for:
   - attempt number
@@ -248,11 +248,11 @@ The UI already has extra surfaces. MVP Ship Room should show the release boundar
   - summary
   - test status/output
 - In `frontend/src/utils/api.ts`, keep the Ship Room calls aligned to the existing backend endpoints:
-  - `getShipWaves`
-  - `getShipWaveDetail`
-  - `composeWave`
-  - `shipWave`
-  - `sendWaveFeedback`
+  - `getShipCandidates`
+  - `getShipCandidateDetail`
+  - `composeShipCandidate`
+  - `shipCandidate`
+  - `sendCandidateFeedback`
   - `getTicketAttempts`
 - Do not make EvidencePanel, timelines, graph views, or workspace surfaces required for the happy path. If they stay mounted, the page must still be understandable without them.
 
@@ -387,7 +387,7 @@ Final manual rule:
 - start from a swarm project
 - complete one ticket into a `TicketAttempt`
 - accept it
-- compose its wave
+- compose its promotion candidate
 - observe `ready_to_ship`
 - ship it
 - confirm new `shipped_frontier`

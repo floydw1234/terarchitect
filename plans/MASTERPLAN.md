@@ -25,7 +25,7 @@ A user should be able to:
 2. dispatch agent work
 3. inspect one or more `TicketAttempt`s
 4. accept the best attempt
-5. compose a dependency-safe wave
+5. compose a promotion candidate into a `ShipRun`
 6. inspect the resulting `ShipRun`
 7. ship once at the release boundary
 
@@ -35,7 +35,7 @@ That is enough for a real MVP.
 
 - Tickets still work as planning objects.
 - AgentHub is the right execution ledger.
-- Dependency waves are a good way to manage safe parallel work.
+- Ticket dependencies remain a good way to manage safe parallel work.
 - `TicketAttempt` is the right unit of agent output.
 - `ShipRun` is the right unit of release composition.
 - Ship Room is the right human decision surface.

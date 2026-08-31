@@ -81,7 +81,6 @@ export interface LatestAttempt {
   id: string;
   short_commit_hash: string | null;
   status: string;
-  wave_num: number;
   attempt_num: number;
   summary: string | null;
   test_status: string | null;
@@ -144,7 +143,6 @@ export interface TicketAttempt {
   base_hash: string | null;
   base_leaf_id?: string | null;
   parent_leaf_id?: string | null;
-  wave_num: number;
   attempt_num: number;
   agent_id: string | null;
   status: string;
@@ -163,7 +161,6 @@ export interface ShipRun {
   id: string;
   project_id: string;
   promotion_candidate_id: string | null;
-  wave_num: number;
   status: string;
   error: string | null;
   release_branch: string | null;
@@ -192,7 +189,6 @@ export interface CandidateMembership {
   attempts: TicketAttempt[];
   tickets: CandidateMembershipTicket[];
   commit_hashes: string[];
-  legacy_wave_num: number | null;
 }
 
 export interface PromotionCandidate {
@@ -221,7 +217,7 @@ export interface ShipRunDetail extends ShipRun {
   candidate: PromotionCandidate | null;
   membership: CandidateMembership | null;
   validation_errors: string[];
-  wave_tickets: CandidateMembershipTicket[];
+  tickets: CandidateMembershipTicket[];
   commit_hashes: string[];
 }
 
@@ -229,29 +225,6 @@ export interface PromotionCandidateDetail extends PromotionCandidate {
   latest_ship_run: ShipRunDetail | null;
   membership: CandidateMembership;
   validation_errors: string[];
-}
-
-export interface WaveSummary {
-  wave_num: number;
-  ticket_count: number;
-  accepted_count: number;
-  all_done: boolean;
-  ship_run: ShipRun | null;
-}
-
-export interface WaveDetail {
-  wave_num: number;
-  tickets: Ticket[];
-  accepted_attempts: TicketAttempt[];
-  ship_run: ShipRun | null;
-  can_compose: boolean;
-  can_ship?: boolean;
-  all_done: boolean;
-  shipped_frontier: string | null;
-  stale_count: number;
-  validation?: {
-    compose?: string[];
-  };
 }
 
 export interface AgentHubGraphCommit {
@@ -803,46 +776,38 @@ export async function shipCandidate(projectId: string, candidateId: string): Pro
   return checkResponse<ShipRunDetail>(response);
 }
 
-export async function getShipWaves(projectId: string): Promise<WaveSummary[]> {
-  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/waves`);
-  return checkResponse<WaveSummary[]>(response);
+export interface CandidateDryCompose {
+  candidate_id: string;
+  safe_to_compose: boolean;
+  blockers: string[];
+  next_actions: string[];
+  shipped_frontier: string | null;
+  commit_hashes: string[];
+  changed_files: string[];
+  existing_ship_run: ShipRun | null;
+  tickets: CandidateMembershipTicket[];
 }
 
-export async function getShipWaveDetail(projectId: string, waveNum: number): Promise<WaveDetail> {
-  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/waves/${waveNum}`);
-  return checkResponse<WaveDetail>(response);
+export interface CandidateDiff {
+  candidate_id: string;
+  base_hash: string | null;
+  composed_commit_hash: string | null;
+  changed_files: string[];
+  diff: string | null;
+  truncated: boolean;
+  note: string | null;
+  next_actions: string[];
+  blockers: string[];
 }
 
-export async function composeWave(projectId: string, waveNum: number): Promise<ShipRun> {
-  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/waves/${waveNum}/compose`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({}),
-  });
-  return checkResponse<ShipRun>(response);
+export async function dryComposeShipCandidate(projectId: string, candidateId: string): Promise<CandidateDryCompose> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/candidates/${candidateId}/dry-compose`);
+  return checkResponse<CandidateDryCompose>(response);
 }
 
-export async function shipWave(projectId: string, waveNum: number): Promise<ShipRun> {
-  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/waves/${waveNum}/ship`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({}),
-  });
-  return checkResponse<ShipRun>(response);
-}
-
-async function sendWaveFeedback(
-  projectId: string,
-  waveNum: number,
-  message: string,
-  targetTicketId?: string,
-): Promise<void> {
-  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/waves/${waveNum}/feedback`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, target_ticket_id: targetTicketId }),
-  });
-  await checkResponse(response);
+export async function getCandidateDiff(projectId: string, candidateId: string): Promise<CandidateDiff> {
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/candidates/${candidateId}/diff`);
+  return checkResponse<CandidateDiff>(response);
 }
 
 export async function sendCandidateFeedback(
@@ -851,12 +816,12 @@ export async function sendCandidateFeedback(
   message: string,
   targetTicketId?: string,
 ): Promise<void> {
-  const detail = await getShipCandidateDetail(projectId, candidateId);
-  const legacyWaveNum = detail.membership?.legacy_wave_num;
-  if (legacyWaveNum === null || legacyWaveNum === undefined) {
-    throw new Error('Candidate feedback is not supported by this backend yet.');
-  }
-  await sendWaveFeedback(projectId, legacyWaveNum, message, targetTicketId);
+  const response = await fetch(`${API_URL}/api/projects/${projectId}/ship/candidates/${candidateId}/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, target_ticket_id: targetTicketId }),
+  });
+  await checkResponse(response);
 }
 
 export async function getTicketAttempts(
@@ -1386,8 +1351,8 @@ export interface AgentHubEvent {
   created_at: string;
   /** Channel the event was posted to */
   _channel: string;
-  /** 'wave' = wave-level event, 'ticket' = per-ticket event */
-  _channel_type: 'wave' | 'ticket';
+  /** 'candidate' / 'ship_run' / 'ticket' AgentHub channel */
+  _channel_type: 'candidate' | 'ship_run' | 'ticket';
   /** Title of the ticket this event belongs to (ticket events only) */
   _ticket_title?: string;
   _ticket_id?: string;
@@ -1400,9 +1365,9 @@ export interface ProjectFrontier {
   frontier_warning?: string | null;
 }
 
-export async function getWaveTimeline(projectId: string, waveNum: number): Promise<AgentHubEvent[]> {
+export async function getCandidateTimeline(projectId: string, candidateId: string): Promise<AgentHubEvent[]> {
   const response = await fetch(
-    `${API_URL}/api/projects/${projectId}/ship/waves/${waveNum}/timeline`,
+    `${API_URL}/api/projects/${projectId}/ship/candidates/${candidateId}/timeline`,
   );
   return checkResponse<AgentHubEvent[]>(response);
 }
@@ -1452,7 +1417,6 @@ export interface CompatibilityReport {
     ticket_id: string;
     commit_hash: string | null;
     base_hash: string | null;
-    wave_num: number;
     status: string;
     summary: string | null;
     stale: boolean | null;

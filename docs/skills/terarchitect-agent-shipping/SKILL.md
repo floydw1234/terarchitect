@@ -1,6 +1,6 @@
 ---
 name: terarchitect-agent-shipping
-description: "Operate Terarchitect end-to-end: create projects/tickets, run local agents, inspect attempts, accept/reject work, and ship waves through Ship Room with real verification."
+description: "Operate Terarchitect end-to-end: create projects/tickets, run local agents, inspect attempts, accept/reject work, and ship promotion candidates through Ship Room with real verification."
 version: 1.0.0
 author: Hermes Agent
 license: MIT
@@ -120,7 +120,7 @@ Terarchitect should not silently promote code across trust boundaries.
 2. **Use the actual target repo path and remote.** For local execution projects, set `--project-path` to the real checkout and record its current `git rev-parse HEAD` as the project frontier.
 3. **Create low-risk, testable tickets.** Pick tasks with clear acceptance criteria and narrow file ownership so the Ship Room can compose them safely.
 4. **Do not trust process completion alone.** Inspect ticket logs, attempts, attempt diffs/files, and test outputs before accepting anything.
-5. **Ship only after composition and final repo verification.** Review wave, dry-compose/diff, compose, then run the target repo’s real tests and inspect git state before push.
+5. **Ship only after composition and final repo verification.** Review the promotion candidate, dry-compose/diff, compose the `ShipRun`, then run the target repo’s real tests and inspect git state before push.
 
 ## Standard end-to-end flow
 
@@ -160,7 +160,7 @@ Each ticket should include:
 - constraints/non-goals
 - dependencies if any
 
-Keep tasks independent for wave 0 unless the user explicitly wants dependency ordering.
+Keep tasks independent unless the user explicitly wants dependency ordering.
 
 ### 5. Run and monitor tickets
 
@@ -205,10 +205,10 @@ Accept only attempts with a clean, understood diff and credible test evidence. R
 
 Use the Ship Room surfaces in order:
 
-1. `waves --explain`
-2. wave `show`/`review`
+1. `ta ship candidates`
+2. candidate `show`/`review`
 3. `dry-compose`
-4. wave `diff`
+4. candidate `diff`
 5. compose/ship
 6. final target repo test suite
 7. push the stable branch only after verification
@@ -310,7 +310,7 @@ When William asks how Terarchitect agents coordinate, explain and verify the liv
 - AgentHub's messageboard is currently used as a lightweight structured event/context bus, not a rich chat UI. Ticket channels are deterministic: `ticket-<first 24 UUID hex chars>` from `agent/middle_agent/git_backend.py::_ticket_channel`.
 - Before work starts, `get_peer_context(ticket_id)` pulls `/api/git/leaves` and recent posts from `/api/channels/{ticket-channel}/posts?limit=10`; that context is prepended to the worker context.
 - On attempt publish, `swarm_publish()` posts a JSON `terarchitect_event` of type `attempt_published` to the ticket channel after `ah push`.
-- The shipper posts composition events to AgentHub channels too (currently wave-named compatibility channels such as `wave-<project-slug>-<num>`), including `release_composition_started`, `release_composition_failed`, and `release_pr_opened`.
+- The shipper posts composition events to AgentHub channels too (`ship-<project-slug>-<id8>` and `cand-<project-slug>-<id8>`), including `release_composition_started`, `release_composition_failed`, and `release_pr_opened`.
 - To verify live board usage, inspect the AgentHub SQLite DB mounted from the running container (usually `data/agenthub/agenthub.db`) or call the AgentHub API. Count `channels`, `posts`, `commits`, and recent joined `posts` + `channels` before claiming what is active.
 
 See `references/agenthub-messageboard.md` for concrete endpoints, event shapes, and the live-inspection query pattern.
@@ -396,6 +396,6 @@ When reporting back, include:
 - ticket IDs and titles
 - run status for each ticket
 - attempt hashes and acceptance decisions
-- Ship Room wave/composition result
+- Ship Room candidate/`ShipRun` composition result
 - final tests run and exact pass/fail result
 - pushed branch/remote verification or the blocker preventing push

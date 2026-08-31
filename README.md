@@ -122,7 +122,7 @@ Full reference: [`docs/workflow-definition.md`](docs/workflow-definition.md)
 
 High-level flow: **GitHub URL/ref import → AgentHub DAG project → accepted frontier selects `base_leaf_id` → UI enqueue → coordinator claims → agent container materializes the base leaf → AgentHub attempt created → validated candidate → operator-chosen winner → accepted/integrated `TicketAttempt` → promotion candidate review → `ShipRun` compose/ship → shipped frontier advance**.
 
-The UI is an operator surface, not the primary execution surface. Agents and coordinators do the work; humans review validated candidates, choose winners, integrate accepted work, and ship at the promotion boundary. The primary operator workflow is promotion-candidate review followed by `ShipRun` compose/ship. Legacy wave-keyed HTTP routes remain backend compatibility surfaces only.
+The UI is an operator surface, not the primary execution surface. Agents and coordinators do the work; humans review validated candidates, choose winners, integrate accepted work, and ship at the promotion boundary. The operator workflow is promotion-candidate review followed by `ShipRun` compose/ship.
 
 Attempt inspection is already first-class: normal worker completions create `TicketAttempt` rows that can be listed, inspected, diffed, accepted, or rejected. Explicit competing attempts are a narrower opt-in rerun flow for one ticket from the same current frontier; they still materialize as ordinary `TicketAttempt`s rather than a separate review object. The real lifecycle is candidate validation -> winner choice -> accepted/integrated frontier advance -> promotion candidate -> `ShipRun`. See `docs/COMPETING_ATTEMPTS.md`.
 
@@ -233,7 +233,7 @@ Local project paths still exist only as a **legacy import/debug path**:
 
 For normal Docker/GitHub-first runs, the worker runtime source of truth is the **AgentHub DAG**, not a persistent local branch checkout.
 
-Ticket-level PR review is not part of the swarm-mode MVP path. The human review point is attempt acceptance, and the shipping object is a candidate-backed `ShipRun`. Legacy wave-numbered endpoints may still exist for backend compatibility, but they are not the operator workflow.
+Ticket-level PR review is not part of the swarm-mode MVP path. The human review point is attempt acceptance, and the shipping object is a candidate-backed `ShipRun`.
 
 No mixing with your project’s Dockerfile. The agent image is built once and reused.
 

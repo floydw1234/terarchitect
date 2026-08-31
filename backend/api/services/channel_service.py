@@ -1,8 +1,9 @@
 """AgentHub channel naming and event posting utilities.
 
-Channel naming spec (from AGENTHUB-CONVERSION.md):
+Channel naming spec:
   ticket-{short_ticket_id}    — per-ticket execution ledger
-  wave-{project_slug}-{n}     — per-wave release channel
+  ship-{project_slug}-{id8}  — per-ShipRun composition channel
+  cand-{project_slug}-{id8}  — per-promotion-candidate review channel
   project-{short_project_id}  — project-level events
 
 AgentHub enforces: ^[a-z0-9][a-z0-9_-]{0,30}$ (max 31 chars).
@@ -37,14 +38,18 @@ def ticket_channel(ticket_id: str) -> str:
     return f"ticket-{short}"
 
 
-def wave_channel(project_name: str, wave_num: int) -> str:
-    """wave-{slug}-{wave_num}  — max 31 chars.
+def ship_run_channel(project_name: str, run_id: str) -> str:
+    """ship-{slug}-{id8} — max 31 chars."""
+    short = str(run_id).replace("-", "")[:8]
+    slug = _slugify(project_name, 17)
+    return f"ship-{slug}-{short}"
 
-    Budget: 'wave-' (5) + '-' (1) + wave_num digits (≤4) = 10 fixed.
-    Slug gets up to 21 chars → total ≤ 31.
-    """
-    slug = _slugify(project_name, 21)
-    return f"wave-{slug}-{wave_num}"
+
+def candidate_channel(project_name: str, candidate_id: str) -> str:
+    """cand-{slug}-{id8} — max 31 chars."""
+    short = str(candidate_id).replace("-", "")[:8]
+    slug = _slugify(project_name, 17)
+    return f"cand-{slug}-{short}"
 
 
 def project_channel(project_id: str) -> str:

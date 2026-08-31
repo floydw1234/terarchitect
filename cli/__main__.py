@@ -17,7 +17,8 @@ Commands:
     status     <project-id> --ticket <ticket-id>
     context    <project-id> --ticket <ticket-id> [--agent]
     chain      alias for status
-    ship       candidates | candidate | compose-candidate | run | ship-run | ship-candidate | feedback
+    ship       candidates | candidate | compose-candidate | dry-compose | diff | timeline
+               | run | ship-run | ship-candidate | feedback
     workspace  leaves | list | create | show | compose | analyze | bless | promote | discard
     graph      get | set
     plan       <project-id>  — generate tickets from graph + notes via LLM

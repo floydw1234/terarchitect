@@ -10,7 +10,7 @@ Flow:
   2. Composer fetches workspace data (selected leaf hashes, project path).
   3. Creates a temporary git worktree from the project's shipped_frontier.
   4. Fetches each selected leaf bundle from AgentHub.
-  5. Merges leaves in dependency order (wave_num, then attempt_num).
+  5. Merges leaves in dependency order.
   6. Runs WORKSPACE_TEST_COMMAND if configured.
   7. Reports composed (preview_ready) or failed (conflicted / test_failed).
 

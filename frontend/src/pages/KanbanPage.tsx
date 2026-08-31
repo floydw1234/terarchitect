@@ -780,7 +780,7 @@ const KanbanPage: React.FC = () => {
           )}
         </Box>
         <Box sx={{ display: 'flex', gap: 1 }}>
-          <Tooltip title={tickets.filter((t) => t.column_id === 'backlog').length === 0 ? 'No backlog tickets to start' : 'Move all backlog tickets to queued and dispatch wave-0'}>
+          <Tooltip title={tickets.filter((t) => t.column_id === 'backlog').length === 0 ? 'No backlog tickets to start' : 'Move all backlog tickets to queued and dispatch unblocked tickets'}>
             <span>
               <Button
                 variant="contained"
@@ -1637,11 +1637,6 @@ const TicketCard: React.FC<TicketCardProps> = ({
           )}
           {ticket.latest_attempt?.stale && (
             <Chip label="stale" size="small" color="warning" variant="outlined" sx={{ height: 16, fontSize: '0.6rem' }} />
-          )}
-          {ticket.latest_attempt?.wave_num !== undefined && (
-            <Typography variant="caption" color="text.secondary">
-              wave {ticket.latest_attempt.wave_num}
-            </Typography>
           )}
           {AGENTHUB_URL && ticketChannel && (
             <Tooltip title={`AgentHub channel: ${ticketChannel}`}>

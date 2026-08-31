@@ -24,7 +24,6 @@ def test_create_evidence_bundle_and_add_check(client, project):
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash="b" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="done",
@@ -79,7 +78,7 @@ def test_evidence_list_filters_by_target_and_check_type(client, project):
 
     from models.db import db, ShipRun
     with client.application.app_context():
-        run = ShipRun(project_id=pid, wave_num=0, status="ready_to_ship")
+        run = ShipRun(project_id=pid, status="ready_to_ship")
         db.session.add(run)
         db.session.commit()
         run_id = str(run.id)
@@ -415,7 +414,6 @@ def test_evidence_repair_creates_ticket_and_posts_event(client, project):
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash="b" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
         )
@@ -728,7 +726,6 @@ def test_ship_requires_policy_evidence_when_configured(client, project, accepted
     with client.application.app_context():
         run = ShipRun(
             project_id=pid,
-            wave_num=0,
             status="ready_to_ship",
             composed_commit_hash="c" * 40,
         )
@@ -736,7 +733,7 @@ def test_ship_requires_policy_evidence_when_configured(client, project, accepted
         db.session.commit()
         run_id = str(run.id)
 
-    blocked = client.post(f"/api/projects/{pid}/ship/waves/0/ship", json={})
+    blocked = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
 
     assert blocked.status_code == 409
     body = blocked.get_json()
@@ -754,7 +751,7 @@ def test_ship_requires_policy_evidence_when_configured(client, project, accepted
         "status": "passed",
     }).status_code == 201
 
-    allowed = client.post(f"/api/projects/{pid}/ship/waves/0/ship", json={})
+    allowed = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
 
     assert allowed.status_code == 200
     assert allowed.get_json()["status"] == "shipped"
@@ -809,7 +806,6 @@ def test_collect_ship_run_evidence_allows_policy_gated_ship(client, project, acc
     with client.application.app_context():
         run = ShipRun(
             project_id=pid,
-            wave_num=0,
             status="ready_to_ship",
             base_main_hash="b" * 40,
             composed_commit_hash="c" * 40,
@@ -826,7 +822,7 @@ def test_collect_ship_run_evidence_allows_policy_gated_ship(client, project, acc
         "target_id": run_id,
         "check_type": "unit",
     })
-    ship_resp = client.post(f"/api/projects/{pid}/ship/waves/0/ship", json={})
+    ship_resp = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
 
     assert collect_resp.status_code == 201
     bundle = collect_resp.get_json()
@@ -849,7 +845,6 @@ def test_collect_failed_attempt_validation_evidence(client, project):
             ticket_id=ticket.id,
             agenthub_commit_hash=None,
             base_hash="b" * 40,
-            wave_num=0,
             attempt_num=1,
             status="failed",
             validation_error="No commit hash",
@@ -893,7 +888,6 @@ def test_run_command_evidence_records_passed_check(client, tmp_path):
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash="b" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
         )
@@ -943,7 +937,6 @@ def test_run_command_evidence_sandbox_hides_inherited_env(client, tmp_path, monk
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash="b" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
         )
@@ -1534,7 +1527,6 @@ def test_run_replay_evidence_records_diff_artifacts(client, tmp_path):
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash="b" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
         )
@@ -2498,7 +2490,6 @@ def test_run_command_evidence_records_project_artifacts(client, tmp_path):
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash="b" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
         )
@@ -2588,7 +2579,6 @@ def test_async_evidence_run_claim_and_execute_command(client, tmp_path):
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash="b" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
         )
@@ -2849,7 +2839,7 @@ def test_run_command_evidence_records_failed_check(client, tmp_path):
 
     from models.db import db, ShipRun
     with client.application.app_context():
-        run = ShipRun(project_id=pid, wave_num=0, status="ready_to_ship", composed_commit_hash="c" * 40)
+        run = ShipRun(project_id=pid, status="ready_to_ship", composed_commit_hash="c" * 40)
         db.session.add(run)
         db.session.commit()
         run_id = str(run.id)
@@ -2891,7 +2881,6 @@ def test_rerun_failed_evidence_checks_records_new_bundle(client, tmp_path):
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash="b" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
         )
@@ -2979,7 +2968,6 @@ def test_run_configured_check_suite_records_multiple_checks(client, tmp_path):
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash="b" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
         )
@@ -3035,7 +3023,7 @@ def test_run_check_suite_rejects_missing_configuration(client, tmp_path):
 
     from models.db import db, ShipRun
     with client.application.app_context():
-        run = ShipRun(project_id=pid, wave_num=0, status="ready_to_ship", composed_commit_hash="c" * 40)
+        run = ShipRun(project_id=pid, status="ready_to_ship", composed_commit_hash="c" * 40)
         db.session.add(run)
         db.session.commit()
         run_id = str(run.id)
@@ -3096,7 +3084,6 @@ def test_compare_candidate_evidence_records_changed_files(client, tmp_path):
             ticket_id=ticket.id,
             agenthub_commit_hash=candidate_hash,
             base_hash=base_hash,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
         )
@@ -3137,7 +3124,7 @@ def test_compare_candidate_evidence_rejects_missing_hashes(client, tmp_path):
 
     from models.db import db, ShipRun
     with client.application.app_context():
-        run = ShipRun(project_id=pid, wave_num=0, status="ready_to_ship")
+        run = ShipRun(project_id=pid, status="ready_to_ship")
         db.session.add(run)
         db.session.commit()
         run_id = str(run.id)

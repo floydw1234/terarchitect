@@ -7,10 +7,9 @@ from typing import Any
 
 import requests
 
-from models.db import Project, Ticket, TicketAttempt
+from models.db import Project, PromotionCandidate, Ticket, TicketAttempt, ShipRun
 
-from .channel_service import parse_event_post, project_channel, ticket_channel, wave_channel
-from .merge_service import compute_waves
+from .channel_service import parse_event_post, project_channel, ticket_channel, candidate_channel, ship_run_channel
 from .project_service import project_to_json
 
 DEFAULT_COMMIT_PAGE_SIZE = 200
@@ -94,18 +93,14 @@ def _project_related_channels(project: Project) -> list[str]:
     tickets = Ticket.query.filter_by(project_id=project.id).all()
     channel_names = {project_channel(str(project.id))}
 
-    if tickets:
-        waves = compute_waves(tickets)
-        wave_nums = sorted({waves.get(str(ticket.id), 0) for ticket in tickets})
-        for ticket in tickets:
-            channel_names.add(ticket_channel(str(ticket.id)))
-        for wave_num in wave_nums:
-            channel_names.add(wave_channel(project.name, wave_num))
+    for ticket in tickets:
+        channel_names.add(ticket_channel(str(ticket.id)))
 
-    attempts = TicketAttempt.query.filter_by(project_id=project.id).all()
-    for attempt in attempts:
-        if attempt.wave_num is not None:
-            channel_names.add(wave_channel(project.name, attempt.wave_num))
+    for candidate in PromotionCandidate.query.filter_by(project_id=project.id).all():
+        channel_names.add(candidate_channel(project.name, str(candidate.id)))
+
+    for run in ShipRun.query.filter_by(project_id=project.id).all():
+        channel_names.add(ship_run_channel(project.name, str(run.id)))
 
     return sorted(channel_names)
 

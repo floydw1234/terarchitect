@@ -286,4 +286,4 @@ Keep operators on one path for swarm projects:
 
 Agents and coordinators are the primary users of the system. The UI remains a review/ship boundary for humans, and the long-term CLI/API contract is candidate review plus `ShipRun` execution.
 
-Current live code still keeps some legacy wave-keyed backend routes for compatibility and test coverage. Treat them as implementation details, not operator commands; the operator path is `ta ship candidates`, `ta ship candidate`, `ta ship compose-candidate`, `ta ship run`, `ta ship ship-run`, and `ta ship ship-candidate`.
+The operator path is `ta ship candidates`, `ta ship candidate`, `ta ship compose-candidate`, `ta ship run`, `ta ship ship-run`, and `ta ship ship-candidate`.

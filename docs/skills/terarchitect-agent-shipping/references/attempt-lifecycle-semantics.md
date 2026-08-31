@@ -9,7 +9,7 @@ Keep these nouns separate in implementation, docs, and reports:
 1. **Validated candidate** — an agent completed work and Terarchitect/AgentHub accepted the artifact as inspectable. This is not a winner and does not advance any frontier.
 2. **Chosen winner** — the operator selected one attempt as the preferred solution for the ticket. A winner can remain unintegrated indefinitely.
 3. **Accepted / blessed winner** — the chosen winner was explicitly approved for integration readiness. This is still distinct from frontier composition.
-4. **Pushed to frontier / composed frontier** — one or more blessed sibling winners were composed together into a new frontier commit. A single ticket should only become the frontier directly when it has no siblings in that composition wave.
+4. **Pushed to frontier / composed frontier** — one or more blessed sibling winners were composed together into a new frontier commit. A single ticket should only become the frontier directly when it has no siblings in that composition set.
 5. **Shipped** — the composed frontier was exported/composed/pushed through Ship Room or the explicit publish path and verified downstream.
 
 Do not use `accepted` as a synonym for validated. Do not collapse `winner`, `accepted/blessed`, and `frontier composition` into one step. If legacy code still has `accepted` statuses, inspect the current model/API before assuming what it means.

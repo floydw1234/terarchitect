@@ -26,7 +26,6 @@ def test_worker_ship_run_composed_echoes_runtime_metadata(client):
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash="b" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="done",
@@ -47,7 +46,6 @@ def test_worker_ship_run_composed_echoes_runtime_metadata(client):
         run = ShipRun(
             project_id=project.id,
             promotion_candidate_id=candidate.id,
-            wave_num=0,
             status="composing",
         )
         db.session.add(run)

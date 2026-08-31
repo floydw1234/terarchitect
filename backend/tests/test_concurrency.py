@@ -5,7 +5,7 @@ Tests run against a minimal in-memory SQLite app (no Docker, no AgentHub).
 
 Scenarios covered:
   1. Two simultaneous compose requests → one run created, not two
-  2. Compose fires before wave is fully accepted → rejected 409
+  2. Compose fires before a candidate has accepted attempts → rejected 409
   3. Pre-ship: PR already merged externally → reconcile as shipped
   4. Accept attempt while compose running → compose not affected
   5. Reject attempt after it is composed/release_pr_open → 409 (terminal state)
@@ -64,8 +64,8 @@ def project(client, app):
 
 
 @pytest.fixture
-def wave_with_accepted_attempt(client, project):
-    """Create a ticket, simulate an accepted attempt, return (ticket, attempt)."""
+def accepted_attempt_pair(client, project):
+    """Create a ticket with an accepted attempt, return (ticket_id, attempt_id)."""
     from models.db import db, Ticket, TicketAttempt
     with client.application.app_context():
         ticket = Ticket(
@@ -81,7 +81,6 @@ def wave_with_accepted_attempt(client, project):
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash=project["accepted_frontier_id"],
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="done",
@@ -91,16 +90,30 @@ def wave_with_accepted_attempt(client, project):
         return str(ticket.id), str(attempt.id)
 
 
+def _compose_attempt(client, pid, attempt_id):
+    resp = client.post(
+        f"/api/projects/{pid}/ship/candidates",
+        json={"selected_attempt_ids": [attempt_id]},
+    )
+    assert resp.status_code == 201, resp.get_json()
+    candidate_id = resp.get_json()["id"]
+    return client.post(
+        f"/api/projects/{pid}/ship/candidates/{candidate_id}/compose",
+        json={},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Scenario 1: Double compose → idempotent (one ship run)
 # ---------------------------------------------------------------------------
 
-def test_double_compose_idempotent(client, project, wave_with_accepted_attempt):
+def test_double_compose_idempotent(client, project, accepted_attempt_pair):
     """Two simultaneous compose requests should produce exactly one ShipRun."""
     pid = project["id"]
+    _ticket_id, attempt_id = accepted_attempt_pair
 
-    r1 = client.post(f"/api/projects/{pid}/ship/waves/0/compose", json={})
-    r2 = client.post(f"/api/projects/{pid}/ship/waves/0/compose", json={})
+    r1 = _compose_attempt(client, pid, attempt_id)
+    r2 = _compose_attempt(client, pid, attempt_id)
 
     # Both should succeed (200 or 201)
     assert r1.status_code in (200, 201)
@@ -111,69 +124,70 @@ def test_double_compose_idempotent(client, project, wave_with_accepted_attempt):
 
     from models.db import ShipRun
     with client.application.app_context():
-        runs = ShipRun.query.filter_by(
-            project_id=pid, wave_num=0
-        ).filter(ShipRun.status.in_(["queued", "running"])).all()
+        runs = ShipRun.query.filter_by(project_id=pid).filter(
+            ShipRun.status.in_(["queued", "running", "composing"])
+        ).all()
         assert len(runs) == 1, f"Expected 1 active run, got {len(runs)}"
 
 
-def test_compose_returns_existing_ready_to_ship_run(client, project, wave_with_accepted_attempt):
+def test_compose_returns_existing_ready_to_ship_run(client, project, accepted_attempt_pair):
     """Repeated compose after shipper reports ready should not create a second ShipRun."""
     pid = project["id"]
+    _ticket_id, attempt_id = accepted_attempt_pair
 
-    from models.db import db, ShipRun
-    with client.application.app_context():
-        run = ShipRun(
-            project_id=pid,
-            wave_num=0,
-            status="ready_to_ship",
-            composed_commit_hash="c" * 40,
-        )
-        db.session.add(run)
-        db.session.commit()
-        run_id = str(run.id)
+    first = _compose_attempt(client, pid, attempt_id)
+    assert first.status_code == 201
+    run_id = first.get_json()["id"]
 
-    r = client.post(f"/api/projects/{pid}/ship/waves/0/compose", json={})
+    composed = client.post(f"/api/worker/ship-run/{run_id}/composed", json={
+        "composed_commit_hash": "c" * 40,
+        "base_main_hash": "f" * 40,
+        "test_status": "passed",
+        "test_output": "ok",
+        "changed_files": ["src/app.py"],
+    })
+    assert composed.status_code == 200
+
+    r = _compose_attempt(client, pid, attempt_id)
 
     assert r.status_code == 200
     assert r.get_json()["id"] == run_id
 
+    from models.db import ShipRun
     with client.application.app_context():
-        runs = ShipRun.query.filter_by(project_id=pid, wave_num=0).all()
+        runs = ShipRun.query.filter_by(project_id=pid).all()
         assert len(runs) == 1
 
 
 # ---------------------------------------------------------------------------
-# Scenario 2: Compose before wave is fully accepted → 409
+# Scenario 2: Compose before an accepted attempt exists → 409
 # ---------------------------------------------------------------------------
 
-def test_compose_incomplete_wave_rejected(client, project):
+def test_compose_without_accepted_attempts_rejected(client, project):
     """Compose should fail when no tickets have accepted attempts."""
     pid = project["id"]
 
-    # Create a ticket with no accepted attempt
-    from models.db import db, Ticket
-    with client.application.app_context():
-        ticket = Ticket(
-            project_id=project["id"],
-            column_id="in_progress",
-            title="Incomplete",
-            intent_status="active",
-        )
-        db.session.add(ticket)
-        db.session.commit()
-
-    r = client.post(f"/api/projects/{pid}/ship/waves/0/compose", json={})
-    assert r.status_code == 409
-    assert "No integrated winner attempts" in r.get_json().get("error", "")
+    r = client.post(
+        f"/api/projects/{pid}/ship/candidates",
+        json={"selected_attempt_ids": []},
+    )
+    assert r.status_code == 201
+    candidate = r.get_json()
+    assert candidate["status"] == "blocked"
+    compose = client.post(
+        f"/api/projects/{pid}/ship/candidates/{candidate['id']}/compose",
+        json={},
+    )
+    assert compose.status_code == 409
+    assert "Candidate composition validation failed" in compose.get_json().get("error", "")
 
 
 # ---------------------------------------------------------------------------
 # Scenario 3: Pre-ship check: PR already merged → reconcile as shipped
 # ---------------------------------------------------------------------------
 
-def test_ship_pr_already_merged(client, project, wave_with_accepted_attempt):
-    """ship_wave_ship should reconcile state if the release PR was already merged."""
+def test_ship_pr_already_merged(client, project, accepted_attempt_pair):
+    """Ship should reconcile state if the release PR was already merged."""
     pid = project["id"]
 
     # Create a ready_to_ship run with a PR number
@@ -181,7 +195,6 @@ def test_ship_pr_already_merged(client, project, wave_with_accepted_attempt):
     with client.application.app_context():
         run = ShipRun(
             project_id=pid,
-            wave_num=0,
             status="ready_to_ship",
             composed_commit_hash="c" * 40,
             release_pr_number=42,
@@ -189,6 +202,7 @@ def test_ship_pr_already_merged(client, project, wave_with_accepted_attempt):
         )
         db.session.add(run)
         db.session.commit()
+        run_id = str(run.id)
 
     # Patch project github_url and gh pr view to return MERGED
     update_resp = client.put(
@@ -202,14 +216,14 @@ def test_ship_pr_already_merged(client, project, wave_with_accepted_attempt):
     merged_response.stdout = '{"state":"MERGED","mergedAt":"2026-05-22T00:00:00Z","headRefOid":"' + ("c" * 40) + '"}'
 
     with patch("subprocess.run", return_value=merged_response):
-        r = client.post(f"/api/projects/{pid}/ship/waves/0/ship", json={})
+        r = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
 
     assert r.status_code == 200
     assert r.get_json()["status"] == "shipped"
     assert r.get_json()["shipped_commit_hash"] == "c" * 40
 
 
-def test_ship_rejects_release_pr_branch_mismatch(client, project, wave_with_accepted_attempt):
+def test_ship_rejects_release_pr_branch_mismatch(client, project, accepted_attempt_pair):
     """Ship should block when the GitHub PR branch is not the run's release branch."""
     pid = project["id"]
 
@@ -217,14 +231,14 @@ def test_ship_rejects_release_pr_branch_mismatch(client, project, wave_with_acce
     with client.application.app_context():
         run = ShipRun(
             project_id=pid,
-            wave_num=0,
             status="ready_to_ship",
-            release_branch="terarchitect/release/wave-0-abc12345",
+            release_branch="terarchitect/release/ship-abc12345",
             release_pr_number=42,
             release_pr_url="https://github.com/o/r/pull/42",
         )
         db.session.add(run)
         db.session.commit()
+        run_id = str(run.id)
 
     update_resp = client.put(
         f"/api/projects/{pid}",
@@ -240,15 +254,15 @@ def test_ship_rejects_release_pr_branch_mismatch(client, project, wave_with_acce
     )
 
     with patch("subprocess.run", return_value=view_response):
-        r = client.post(f"/api/projects/{pid}/ship/waves/0/ship", json={})
+        r = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
 
     assert r.status_code == 409
     body = r.get_json()
     assert "branch does not match" in body.get("error", "")
-    assert body["expected_branch"] == "terarchitect/release/wave-0-abc12345"
+    assert body["expected_branch"] == "terarchitect/release/ship-abc12345"
 
 
-def test_ship_rejects_release_pr_head_mismatch(client, project, wave_with_accepted_attempt):
+def test_ship_rejects_release_pr_head_mismatch(client, project, accepted_attempt_pair):
     """Ship should block when the GitHub PR head is not the composed commit."""
     pid = project["id"]
 
@@ -257,15 +271,15 @@ def test_ship_rejects_release_pr_head_mismatch(client, project, wave_with_accept
     with client.application.app_context():
         run = ShipRun(
             project_id=pid,
-            wave_num=0,
             status="ready_to_ship",
-            release_branch="terarchitect/release/wave-0-abc12345",
+            release_branch="terarchitect/release/ship-abc12345",
             composed_commit_hash=expected_head,
             release_pr_number=42,
             release_pr_url="https://github.com/o/r/pull/42",
         )
         db.session.add(run)
         db.session.commit()
+        run_id = str(run.id)
 
     update_resp = client.put(
         f"/api/projects/{pid}",
@@ -277,12 +291,12 @@ def test_ship_rejects_release_pr_head_mismatch(client, project, wave_with_accept
     view_response.returncode = 0
     view_response.stdout = (
         '{"state":"OPEN","mergedAt":null,'
-        '"headRefName":"terarchitect/release/wave-0-abc12345",'
+        '"headRefName":"terarchitect/release/ship-abc12345",'
         f'"headRefOid":"{"b" * 40}"}}'
     )
 
     with patch("subprocess.run", return_value=view_response):
-        r = client.post(f"/api/projects/{pid}/ship/waves/0/ship", json={})
+        r = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
 
     assert r.status_code == 409
     body = r.get_json()
@@ -290,7 +304,7 @@ def test_ship_rejects_release_pr_head_mismatch(client, project, wave_with_accept
     assert body["expected_head"] == expected_head
 
 
-def test_ship_direct_requires_composed_commit(client, project, wave_with_accepted_attempt):
+def test_ship_direct_requires_composed_commit(client, project, accepted_attempt_pair):
     """Direct no-GitHub shipping must have an explicit composed commit."""
     pid = project["id"]
 
@@ -298,13 +312,13 @@ def test_ship_direct_requires_composed_commit(client, project, wave_with_accepte
     with client.application.app_context():
         run = ShipRun(
             project_id=pid,
-            wave_num=0,
             status="ready_to_ship",
         )
         db.session.add(run)
         db.session.commit()
+        run_id = str(run.id)
 
-    r = client.post(f"/api/projects/{pid}/ship/waves/0/ship", json={})
+    r = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
 
     assert r.status_code == 409
     assert "no composed commit hash" in r.get_json().get("error", "").lower()
@@ -314,14 +328,14 @@ def test_ship_direct_requires_composed_commit(client, project, wave_with_accepte
 # Scenario 4: Accept attempt while compose is running → compose unaffected
 # ---------------------------------------------------------------------------
 
-def test_accept_attempt_while_compose_running(client, project, wave_with_accepted_attempt):
+def test_accept_attempt_while_compose_running(client, project, accepted_attempt_pair):
     """Accepting a winner on another ticket after compose started does not change the running compose."""
     pid = project["id"]
 
     # Put a run in "running" state (simulate shipper mid-run)
     from models.db import db, ShipRun
     with client.application.app_context():
-        run = ShipRun(project_id=pid, wave_num=0, status="running")
+        run = ShipRun(project_id=pid, status="running")
         db.session.add(run)
         db.session.commit()
         run_id = str(run.id)
@@ -346,7 +360,6 @@ def test_accept_attempt_while_compose_running(client, project, wave_with_accepte
             ticket_id=other.id,
             agenthub_commit_hash="c" * 40,
             base_hash=project["accepted_frontier_id"],
-            wave_num=0,
             attempt_num=1,
             status="validated",
             validated_at=now,
@@ -374,10 +387,10 @@ def test_accept_attempt_while_compose_running(client, project, wave_with_accepte
 # Scenario 5: Reject attempt after it is composed → 409
 # ---------------------------------------------------------------------------
 
-def test_reject_composed_attempt_fails(client, project, wave_with_accepted_attempt):
+def test_reject_composed_attempt_fails(client, project, accepted_attempt_pair):
     """Rejecting an attempt that is already 'composed' or 'release_pr_open' is not allowed."""
     pid = project["id"]
-    ticket_id, attempt_id = wave_with_accepted_attempt
+    ticket_id, attempt_id = accepted_attempt_pair
 
     # Advance attempt to composed
     from models.db import db, TicketAttempt
@@ -408,7 +421,6 @@ def test_stale_ship_run_reset(client, project):
     with client.application.app_context():
         stale_run = ShipRun(
             project_id=pid,
-            wave_num=0,
             status="running",
         )
         db.session.add(stale_run)

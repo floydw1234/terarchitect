@@ -46,7 +46,7 @@ The MVP is not a redesign of every Terarchitect workflow. It does not require:
 - Complete AgentHub event sourcing.
 - Rich attempt comparison or automated attempt ranking.
 - Automatic repair-ticket generation.
-- Arbitrary partial-wave optimization.
+- Arbitrary partial-set optimization.
 - Extensive observability infrastructure.
 - Full structured-mode migration support.
 - Broad UI redesign outside Ship Room and essential ticket state.
@@ -63,7 +63,7 @@ The goal is one coherent path that works end to end, not a platform that anticip
 - `TicketAttempt` is stored in Terarchitect even when related metadata also exists in AgentHub.
 - Each project has one target repository and one target branch, normally `main`.
 - `Project.shipped_frontier` is the canonical base for new independent work and represents the last successfully shipped commit.
-- Dependency waves continue to be computed from existing ticket dependencies.
+- Ticket dependencies continue to be computed from existing ticket dependency IDs.
 - A ticket may have multiple attempts, but at most one accepted attempt is selected for a given ship operation.
 - In-flight attempts are not rebased or rewritten when the frontier advances.
 - GitHub is required only for the final release PR boundary. Agent work does not create GitHub PRs.
@@ -76,10 +76,10 @@ Make the minimum data model explicit and remove PR-shaped assumptions from the a
 
 Required state:
 
-- `TicketAttempt` records the ticket, AgentHub commit hash, selected base hash, wave, attempt number, summary, validation result, and status.
+- `TicketAttempt` records the ticket, AgentHub commit hash, selected base hash, attempt number, summary, validation result, and status.
 - MVP-facing attempt states are `proposed`, `accepted`, `rejected`, `superseded`, `failed`, and `shipped`. The live codebase still accepts legacy-compatible `validating`, `composed`, and `release_pr_open` states, but the MVP path must not require them.
 - `Project.shipped_frontier` records the last shipped commit.
-- `ShipRun` records the project, wave, selected attempt IDs, release branch, composed commit, test result, release PR information, failure details, and shipped commit.
+- `ShipRun` records the project, promotion candidate, selected attempt IDs, release branch, composed commit, test result, release PR information, failure details, and shipped commit.
 - Ship-run statuses on the MVP path are `queued`, `composing`, `failed`, `ready_to_ship`, `shipping`, and `shipped`. The current code still tolerates `running` and `compose_failed` for compatibility with older callbacks.
 
 Worker completion in AgentHub mode must create a `TicketAttempt`. It must not store an AgentHub hash in a PR record or imply that the ticket has shipped.
@@ -126,7 +126,7 @@ Implement one release-composition path from accepted attempts to a reviewable re
 
 A compose request must:
 
-1. Select accepted attempts for one wave.
+1. Select accepted attempts for one promotion candidate.
 2. Confirm each selected commit exists and descends from an allowed base.
 3. Check that required ticket dependencies are included or already shipped.
 4. Create or reset the `ShipRun` release branch from the current target branch.
@@ -140,14 +140,14 @@ Repeated compose requests for an active successful run must be idempotent. They 
 
 ### Acceptance Criteria
 
-- A wave with accepted attempts can produce a composed release branch.
+- A promotion candidate with accepted attempts can produce a composed release branch.
 - Dependency violations are rejected before composition.
 - Conflicts and test failures mark the `ShipRun` failed and preserve diagnostics.
 - A successful composition records its exact commit hash.
 - At most one active release PR exists for a `ShipRun`.
 - No selected ticket receives an individual PR.
 - Retrying a failed run is explicit and does not corrupt the prior failure record.
-- Concurrent compose requests cannot create competing active runs for the same wave.
+- Concurrent compose requests cannot create competing active runs for the same candidate.
 
 ## Phase 4: Deliver the Minimal Ship Room
 
@@ -156,13 +156,13 @@ Make Ship Room the primary human surface for the MVP workflow.
 The top-level view must show:
 
 - Current shipped frontier.
-- Waves with accepted, pending, failed, ready-to-ship, and shipped state.
+- Promotion candidates with accepted, pending, failed, ready-to-ship, and shipped state.
 - Active or latest `ShipRun`.
 - Release PR link and status when one exists.
 
-Wave detail must show:
+Candidate detail must show:
 
-- Tickets in the wave.
+- Tickets in the candidate.
 - Proposed and accepted attempts.
 - Attempt commit, base, summary, status, and minimal validation result.
 - Selected attempts for the active `ShipRun`.
@@ -236,7 +236,7 @@ Required backend tests:
 
 Required frontend tests:
 
-- Ship Room renders waves and attempts.
+- Ship Room renders promotion candidates and attempts.
 - Accepted attempts can be composed.
 - Failure details and release PR status render correctly.
 - Shipped state is distinct from accepted state.
@@ -266,7 +266,7 @@ Required documentation:
 6. Stop creating per-ticket PRs in AgentHub mode.
 7. Keep existing structured projects unchanged until they are explicitly migrated or retired.
 
-Cutover is complete when a new project can ship a wave through Ship Room, no ticket-level PR is created, and the merged release commit becomes the base for subsequent work.
+Cutover is complete when a new project can ship a promotion candidate through Ship Room, no ticket-level PR is created, and the merged release commit becomes the base for subsequent work.
 
 ## Not In MVP
 

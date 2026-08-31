@@ -338,7 +338,7 @@ class TestSwarmMode:
 class TestShipRunApi:
 
     def test_ship_run_fetch_endpoint(self, api: API, tmp_path: Path):
-        """Compose a wave, then verify worker ship-run fetch matches the claim payload."""
+        """Compose a promotion candidate, then verify worker ship-run fetch matches the claim payload."""
         work_dir, _ = make_local_git_repo(tmp_path)
         p = api.post("/api/projects", {
             "name": "ship-run-fetch-test",
@@ -354,9 +354,8 @@ class TestShipRunApi:
             )
             api.put(f"/api/projects/{pid}/graph", graph)
 
-            # Create a wave-0 ticket and publish one accepted attempt so compose is valid.
             ticket = api.post(f"/api/projects/{pid}/tickets", {
-                "title": "Wave 0 ticket", "column_id": "done",
+                "title": "Ship candidate ticket", "column_id": "done",
                 "priority": "low", "status": "todo",
             })
             ticket_id = ticket["id"]
@@ -369,38 +368,47 @@ class TestShipRunApi:
                 "summary": "Accepted attempt for ship-run fetch test",
                 "agent_id": "test-agent",
             })
+            attempts = api.get(f"/api/projects/{pid}/tickets/{ticket_id}/attempts")
+            attempt_id = attempts[0]["id"]
+            api.post(
+                f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{attempt_id}/choose-winner",
+                {},
+            )
+            api.post(
+                f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{attempt_id}/accept",
+                {},
+            )
 
-            detail_before = api.get(f"/api/projects/{pid}/ship/waves/0")
-            assert detail_before["wave_num"] == 0
-            assert detail_before["all_done"] is True
-            assert detail_before["accepted_attempts"][0]["status"] == "accepted"
-            assert detail_before["accepted_attempts"][0]["agenthub_commit_hash"] == commit_hash
+            candidate = api.post(f"/api/projects/{pid}/ship/candidates", {
+                "selected_attempt_ids": [attempt_id],
+            })
+            candidate_id = candidate["id"]
+            detail_before = api.get(f"/api/projects/{pid}/ship/candidates/{candidate_id}")
+            assert detail_before["membership"]["attempts"][0]["status"] == "accepted"
+            assert detail_before["membership"]["attempts"][0]["agenthub_commit_hash"] == commit_hash
 
-            # Queue a ship run for wave 0 through the canonical ship API.
-            run = api.post(f"/api/projects/{pid}/ship/waves/0/compose", {})
+            run = api.post(f"/api/projects/{pid}/ship/candidates/{candidate_id}/compose", {})
             run_id = run["id"]
             assert run["status"] == "queued"
 
-            detail = api.get(f"/api/projects/{pid}/ship/waves/0")
-            assert detail["ship_run"]["id"] == run_id
-            assert detail["accepted_attempts"] == detail_before["accepted_attempts"]
+            detail = api.get(f"/api/projects/{pid}/ship/candidates/{candidate_id}")
+            assert detail["latest_ship_run"]["id"] == run_id
+            assert detail["membership"]["attempts"] == detail_before["membership"]["attempts"]
 
-            # Claim it via the coordinator endpoint.
             claimed = api.post("/api/worker/ship-run/next", {})
             assert claimed["run"]["id"] == run_id
             assert claimed["run"]["status"] == "composing"
             assert claimed["commit_hashes"] == [commit_hash]
 
-            # Fetch the already-claimed run — should return the same shape.
             fetched = api.get(f"/api/worker/ship-run/{run_id}")
             assert fetched["run"]["id"] == run_id
             assert fetched["run"]["status"] == "composing"
             assert "project" in fetched
             assert "commit_hashes" in fetched
-            assert "wave_tickets" in fetched
+            assert "tickets" in fetched
             assert fetched["project"] == claimed["project"]
             assert fetched["commit_hashes"] == claimed["commit_hashes"]
-            assert fetched["wave_tickets"] == claimed["wave_tickets"]
+            assert fetched["tickets"] == claimed["tickets"]
 
             # Clean up: mark the run failed so it doesn't block future tests.
             api.post(f"/api/worker/ship-run/{run_id}/fail", {"error": "test cleanup"})

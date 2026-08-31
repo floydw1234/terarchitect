@@ -5,7 +5,7 @@ Revises: 002
 Create Date: 2026-05-22
 
 Replaces prs.commit_hash as the store for AgentHub swarm-mode output.
-Each ticket can have multiple attempts; one is accepted per wave into a release.
+Each ticket can have multiple attempts; one accepted attempt is selected into a promotion candidate.
 """
 from typing import Sequence, Union
 
@@ -25,7 +25,6 @@ def upgrade() -> None:
             ticket_id             UUID NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
             agenthub_commit_hash  VARCHAR(255),
             base_hash             VARCHAR(255),
-            wave_num              INTEGER DEFAULT 0,
             attempt_num           INTEGER NOT NULL DEFAULT 1,
             agent_id              VARCHAR(255),
             status                VARCHAR(50) NOT NULL DEFAULT 'proposed',
@@ -40,7 +39,6 @@ def upgrade() -> None:
     op.execute("CREATE INDEX IF NOT EXISTS idx_ticket_attempts_project ON ticket_attempts(project_id)")
     op.execute("CREATE INDEX IF NOT EXISTS idx_ticket_attempts_ticket ON ticket_attempts(ticket_id)")
     op.execute("CREATE INDEX IF NOT EXISTS idx_ticket_attempts_commit ON ticket_attempts(agenthub_commit_hash)")
-    op.execute("CREATE INDEX IF NOT EXISTS idx_ticket_attempts_wave ON ticket_attempts(project_id, wave_num)")
     op.execute("CREATE INDEX IF NOT EXISTS idx_ticket_attempts_status ON ticket_attempts(status)")
 
 
