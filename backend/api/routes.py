@@ -3205,6 +3205,8 @@ def _workspace_runtime_payload(data: dict) -> dict | None:
 def _candidate_next_actions(*, blockers: list[str], ship_run, can_compose: bool, can_ship: bool) -> list[str]:
     actions: list[str] = []
     if blockers:
+        if any("no selected attempts" in b.lower() or "missing attempts" in b.lower() for b in blockers):
+            actions.append("Select accepted attempts for this promotion candidate before composing.")
         if any("unknown ticket" in b.lower() or "unknown dependency" in b.lower() for b in blockers):
             actions.append("Fix or remove dependency references that point to missing tickets.")
         if any("cycle" in b.lower() for b in blockers):
@@ -3217,6 +3219,8 @@ def _candidate_next_actions(*, blockers: list[str], ship_run, can_compose: bool,
             actions.append("Include prerequisite accepted attempts in this candidate, or ship them first.")
         if any("not the current frontier" in b.lower() or "base " in b.lower() for b in blockers):
             actions.append("Refresh stale tickets from the current frontier before composing or shipping.")
+        if not actions:
+            actions.append("Resolve candidate blockers before composing.")
     if can_compose:
         actions.append("Compose this promotion candidate when you want a release-branch preview.")
     elif ship_run and ship_run.status in ("queued", "composing", "running"):
