@@ -515,7 +515,7 @@ def test_compose_returns_existing_active_run_instead_of_duplicating(client, proj
         db.session.commit()
         attempt_id = str(attempt.id)
 
-    first = _compose_ids(client, pid, [attempt_id])[1]
+    candidate, first = _compose_ids(client, pid, [attempt_id])
     assert first.status_code == 201
     run_id = first.get_json()["id"]
 
@@ -534,7 +534,10 @@ def test_compose_returns_existing_active_run_instead_of_duplicating(client, proj
         proj.shipped_frontier = "g" * 40
         db.session.commit()
 
-    second = _compose_ids(client, pid, [attempt_id])[1]
+    second = client.post(
+        f"/api/projects/{pid}/ship/candidates/{candidate['id']}/compose",
+        json={},
+    )
     assert second.status_code == 200
     assert second.get_json()["id"] == run_id
 
