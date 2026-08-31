@@ -1152,7 +1152,6 @@ def workspace_promote(project_id, workspace_id):
     run = ShipRun(
         project_id=str(project_id),
         promotion_candidate_id=str(candidate.id),
-        wave_num=0,
         status="queued",
         summary=f"Promoted from Composite Workspace {str(workspace_id)[:8]}",
     )
@@ -3298,7 +3297,6 @@ def ship_happy_path(project_id):
         run = ShipRun(
             project_id=str(project_id),
             promotion_candidate_id=str(candidate.id),
-            wave_num=0,
             status="queued",
         )
         db.session.add(run)
@@ -3432,7 +3430,6 @@ def ship_candidate_compose(project_id, candidate_id):
     run = ShipRun(
         project_id=str(project_id),
         promotion_candidate_id=str(candidate.id),
-        wave_num=0,
         status="queued",
     )
     db.session.add(run)

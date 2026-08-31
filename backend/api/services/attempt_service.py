@@ -337,7 +337,6 @@ def create_attempt(
         ticket_id=ticket_id,
         agenthub_commit_hash=commit_hash,
         base_hash=base_hash,
-        wave_num=0,
         attempt_num=attempt_num,
         agent_id=agent_id,
         status=initial_status,

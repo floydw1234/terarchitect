@@ -81,7 +81,6 @@ def accepted_attempt_pair(client, project):
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash=project["accepted_frontier_id"],
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="done",
@@ -196,7 +195,6 @@ def test_ship_pr_already_merged(client, project, accepted_attempt_pair):
     with client.application.app_context():
         run = ShipRun(
             project_id=pid,
-            wave_num=0,
             status="ready_to_ship",
             composed_commit_hash="c" * 40,
             release_pr_number=42,
@@ -233,7 +231,6 @@ def test_ship_rejects_release_pr_branch_mismatch(client, project, accepted_attem
     with client.application.app_context():
         run = ShipRun(
             project_id=pid,
-            wave_num=0,
             status="ready_to_ship",
             release_branch="terarchitect/release/ship-abc12345",
             release_pr_number=42,
@@ -274,7 +271,6 @@ def test_ship_rejects_release_pr_head_mismatch(client, project, accepted_attempt
     with client.application.app_context():
         run = ShipRun(
             project_id=pid,
-            wave_num=0,
             status="ready_to_ship",
             release_branch="terarchitect/release/ship-abc12345",
             composed_commit_hash=expected_head,
@@ -316,7 +312,6 @@ def test_ship_direct_requires_composed_commit(client, project, accepted_attempt_
     with client.application.app_context():
         run = ShipRun(
             project_id=pid,
-            wave_num=0,
             status="ready_to_ship",
         )
         db.session.add(run)
@@ -340,7 +335,7 @@ def test_accept_attempt_while_compose_running(client, project, accepted_attempt_
     # Put a run in "running" state (simulate shipper mid-run)
     from models.db import db, ShipRun
     with client.application.app_context():
-        run = ShipRun(project_id=pid, wave_num=0, status="running")
+        run = ShipRun(project_id=pid, status="running")
         db.session.add(run)
         db.session.commit()
         run_id = str(run.id)
@@ -365,7 +360,6 @@ def test_accept_attempt_while_compose_running(client, project, accepted_attempt_
             ticket_id=other.id,
             agenthub_commit_hash="c" * 40,
             base_hash=project["accepted_frontier_id"],
-            wave_num=0,
             attempt_num=1,
             status="validated",
             validated_at=now,
@@ -427,7 +421,6 @@ def test_stale_ship_run_reset(client, project):
     with client.application.app_context():
         stale_run = ShipRun(
             project_id=pid,
-            wave_num=0,
             status="running",
         )
         db.session.add(stale_run)
