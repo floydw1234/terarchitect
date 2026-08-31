@@ -72,3 +72,8 @@ Ticket-level PR review is not part of swarm mode. The review and ship boundary l
 
 - `../docs/PHASE1_WORKER_API.md` — worker/coordinator contract
 - `../docs/RUNBOOK.md` — operational runbook
+
+## Operator Files
+
+- `week-board.md` — weekday cloud-agent slot board
+- `outreach.md` — design-partner outreach log
