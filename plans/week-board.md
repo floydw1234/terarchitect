@@ -5,7 +5,7 @@ Each point fits one weekday PR: test, bugfix, docs, or screenshot.
 
 ---
 
-1. **Mon 2026-08-31 — leftover.** Bugfix: `/api/ready` / `check_execution_readiness` currently requires a GitHub token (`backend/tests/test_memory_backend.py` asserts failure without one). Local AgentHub / worktree mode should be ready without GitHub. Keep GitHub required only for GitHub-backed import/export. Update the existing readiness tests in the same PR. Status: `leftover` — weekday slot fired before this board existed; next slot takes this point.
+1. **Mon 2026-08-31 — leftover.** Bugfix: `/api/ready` / `check_execution_readiness` currently requires a GitHub token (`backend/tests/test_memory_backend.py` asserts failure without one). Local AgentHub / worktree mode should be ready without GitHub. Keep GitHub required only for GitHub-backed import/export. Update the existing readiness tests in the same PR. Status: `done`.
 
 2. **Tue 2026-09-01 — docs slice.** Add a short operator note to `docs/RUNBOOK.md` for local-worktree + AgentHub at 127.0.0.1:8088, OpenRouter free/cheap models, Codex off. No secrets. Status: `todo`.
 

@@ -19,34 +19,38 @@ if _BASE_DIR not in sys.path:
 
 
 class TestExecutionReadinessWithoutEmbeddings(unittest.TestCase):
-    """Test that execution readiness no longer requires embedding config."""
+    """Test that execution readiness does not require embedding config or GitHub token.
+    
+    Local/AgentHub/worktree modes should be ready without GitHub auth.
+    GitHub is only required for GitHub-backed import/export paths.
+    """
+
+    def test_readiness_without_any_config(self):
+        """check_execution_readiness should pass with no env vars set (local mode)."""
+        with mock.patch.dict(os.environ, {}, clear=True):
+            from utils.app_settings import check_execution_readiness
+            ready, missing = check_execution_readiness()
+            self.assertTrue(ready, f"Should be ready without GitHub token for local mode. Missing: {missing}")
+            self.assertEqual(len(missing), 0)
 
     def test_readiness_without_embedding_config(self):
-        """check_execution_readiness should pass with only GitHub token set."""
+        """check_execution_readiness should pass without embedding config."""
         with mock.patch.dict(os.environ, {
             "GITHUB_TOKEN": "ghp_testtoken",
         }, clear=True):
             from utils.app_settings import check_execution_readiness
             ready, missing = check_execution_readiness()
-            self.assertTrue(ready, f"Should be ready with GitHub token. Missing: {missing}")
+            self.assertTrue(ready, f"Should be ready. Missing: {missing}")
             self.assertEqual(len(missing), 0)
 
-    def test_readiness_fails_without_github_token(self):
-        """check_execution_readiness should fail without GitHub token."""
-        with mock.patch.dict(os.environ, {}, clear=True):
+    def test_readiness_local_mode_no_github(self):
+        """check_execution_readiness should pass for local/AgentHub mode without GitHub token."""
+        with mock.patch.dict(os.environ, {
+            "AGENTHUB_URL": "http://127.0.0.1:8088",
+        }, clear=True):
             from utils.app_settings import check_execution_readiness
             ready, missing = check_execution_readiness()
-            self.assertFalse(ready)
-            self.assertEqual(len(missing), 1)
-            self.assertEqual(missing[0][0], "github_agent_token")
-
-    def test_readiness_with_alternative_github_token_env(self):
-        """check_execution_readiness should pass with any of the GitHub token env vars."""
-        for env_var in ["github_agent_token", "GITHUB_TOKEN", "GH_TOKEN", "GITHUB_AGENT_TOKEN"]:
-            with mock.patch.dict(os.environ, {env_var: "test_token"}, clear=True):
-                from utils.app_settings import check_execution_readiness
-                ready, missing = check_execution_readiness()
-                self.assertTrue(ready, f"Should be ready with {env_var} set")
+            self.assertTrue(ready, "Local/AgentHub mode should be ready without GitHub token")
 
 
 class TestNoOpMemoryBackend(unittest.TestCase):

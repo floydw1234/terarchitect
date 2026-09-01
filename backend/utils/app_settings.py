@@ -88,10 +88,10 @@ def check_execution_readiness() -> Tuple[bool, List[MissingRequired]]:
     uses a no-op memory backend that returns empty results. Embedding keys are not
     required for local/AgentHub execution; they are only needed for HippoRAG memory
     and ticket/graph search features.
+
+    GitHub token is NOT required for basic readiness. Local/AgentHub/worktree modes
+    can execute without GitHub auth. GitHub is only required for GitHub-backed
+    import/export paths (enforced at those operation boundaries, not here).
     """
     missing: List[MissingRequired] = []
-
-    if not _env("github_agent_token") and not _env("GITHUB_TOKEN") and not _env("GH_TOKEN") and not _env("GITHUB_AGENT_TOKEN"):
-        missing.append(("github_agent_token", "GitHub token"))
-
     return (len(missing) == 0, missing)
