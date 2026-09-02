@@ -187,8 +187,9 @@ const ProjectsPage: React.FC = () => {
           sx={{
             p: 4,
             textAlign: 'center',
-            border: '1px solid #D4D4D4',
+            border: '1px dashed #45C3F8',
             boxShadow: 'none',
+            bgcolor: '#ECF4FF',
           }}
         >
           <Typography color="text.secondary">
@@ -207,6 +208,12 @@ const ProjectsPage: React.FC = () => {
                   boxShadow: 'none',
                   display: 'flex',
                   flexDirection: 'column',
+                  bgcolor: '#FFFFFF',
+                  transition: 'all 0.15s ease',
+                  '&:hover': {
+                    borderColor: '#0085FA',
+                    transform: 'translateY(-2px)',
+                  },
                 }}
               >
                 <Typography

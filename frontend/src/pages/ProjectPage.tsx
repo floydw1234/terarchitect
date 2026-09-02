@@ -158,10 +158,12 @@ const ProjectPage: React.FC = () => {
     p: 3,
     borderRadius: 1.5,
     border: '1px solid #D4D4D4',
-    backgroundColor: '#FFFFFF',
-    transition: 'border-color 0.2s ease',
+    backgroundColor: '#ECF4FF',
+    transition: 'all 0.2s ease',
     '&:hover': {
       borderColor: '#0085FA',
+      backgroundColor: '#E9F7FF',
+      transform: 'translateY(-2px)',
     },
   } as const;
 
@@ -336,7 +338,7 @@ const ProjectPage: React.FC = () => {
         <Grid item xs={12} sm={6}>
           <Paper component={Link} to={`/projects/${projectId}/graph`} sx={toolCardSx}>
             <Box>
-              <Typography variant="h6" sx={{ mb: 1 }}>
+              <Typography variant="h6" sx={{ mb: 1, color: 'primary.main' }}>
                 Graph Editor
               </Typography>
               <Typography variant="body2" color="text.secondary">
@@ -344,7 +346,7 @@ const ProjectPage: React.FC = () => {
               </Typography>
             </Box>
             <Box sx={{ mt: 3 }}>
-              <Button size="small" variant="text">Open</Button>
+              <Button size="small" variant="contained" color="primary">Open</Button>
             </Box>
           </Paper>
         </Grid>
@@ -352,7 +354,7 @@ const ProjectPage: React.FC = () => {
         <Grid item xs={12} sm={6}>
           <Paper component={Link} to={`/projects/${projectId}/kanban`} sx={toolCardSx}>
             <Box>
-              <Typography variant="h6" sx={{ mb: 1 }}>
+              <Typography variant="h6" sx={{ mb: 1, color: 'primary.main' }}>
                 Kanban Board
               </Typography>
               <Typography variant="body2" color="text.secondary">
@@ -360,7 +362,7 @@ const ProjectPage: React.FC = () => {
               </Typography>
             </Box>
             <Box sx={{ mt: 3 }}>
-              <Button size="small" variant="text">Open</Button>
+              <Button size="small" variant="contained" color="primary">Open</Button>
             </Box>
           </Paper>
         </Grid>
@@ -368,7 +370,7 @@ const ProjectPage: React.FC = () => {
         <Grid item xs={12} sm={6}>
           <Paper component={Link} to={`/projects/${projectId}/ship`} sx={toolCardSx}>
             <Box>
-              <Typography variant="h6" sx={{ mb: 1 }}>
+              <Typography variant="h6" sx={{ mb: 1, color: 'primary.main' }}>
                 Ship Room
               </Typography>
               <Typography variant="body2" color="text.secondary">
@@ -376,7 +378,7 @@ const ProjectPage: React.FC = () => {
               </Typography>
             </Box>
             <Box sx={{ mt: 3 }}>
-              <Button size="small" variant="text">Open</Button>
+              <Button size="small" variant="contained" color="primary">Open</Button>
             </Box>
           </Paper>
         </Grid>

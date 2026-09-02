@@ -13,7 +13,14 @@ const Navbar: React.FC<NavbarProps> = () => {
   ];
 
   return (
-    <AppBar position="sticky" elevation={0}>
+    <AppBar
+      position="sticky"
+      elevation={0}
+      sx={{
+        backgroundColor: '#FFFFFF',
+        borderBottom: '2px solid #0085FA',
+      }}
+    >
       <Toolbar
         sx={{
           minHeight: 74,
@@ -35,10 +42,10 @@ const Navbar: React.FC<NavbarProps> = () => {
             textDecoration: 'none',
           }}
         >
-          <Typography variant="overline" color="text.secondary">
+          <Typography variant="overline" color="secondary.main">
             Operational Architecture
           </Typography>
-          <Typography variant="h6">
+          <Typography variant="h6" sx={{ color: 'primary.main' }}>
             Terarchitect
           </Typography>
         </Box>
@@ -47,8 +54,8 @@ const Navbar: React.FC<NavbarProps> = () => {
           sx={{
             p: 0.5,
             borderRadius: 1,
-            border: '1px solid #D4D4D4',
-            bgcolor: '#E9F7FF',
+            border: '1px solid #45C3F8',
+            bgcolor: '#ECF4FF',
           }}
         >
           <Stack direction="row" spacing={0.5}>
@@ -62,9 +69,10 @@ const Navbar: React.FC<NavbarProps> = () => {
                 sx={{
                   color: item.active ? 'common.white' : 'text.primary',
                   px: 2,
-                  fontWeight: 500,
+                  fontWeight: 600,
+                  bgcolor: item.active ? '#0085FA' : 'transparent',
                   '&:hover': {
-                    bgcolor: item.active ? undefined : 'rgba(0, 133, 250, 0.08)',
+                    bgcolor: item.active ? '#0066cc' : 'rgba(0, 133, 250, 0.12)',
                   },
                 }}
               >
