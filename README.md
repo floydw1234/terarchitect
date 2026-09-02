@@ -5,7 +5,7 @@ Terarchitect is an agent-first, CLI-first SDLC orchestrator: model your system a
 - **Dual-use: humans or agents.** Humans can operate the UI or CLI; agents and coordinators can drive the same loop via CLI or API.
 - **Primary users are agents and coordinators**: the system is built around automated execution and DAG-native promotion/shipping.
 - **UI and human actions stay at the review/ship boundary**: workers produce validated candidates, operators choose winners, and only accepted/integrated attempts become shippable through promotion-candidate review and `ShipRun` execution.
-- **Contract being frozen in Phase 1**: agent completes work, validation creates a candidate, a human may choose a winner, only explicit acceptance/integration advances the frontier, then operators review a stable promotion candidate, create a `ShipRun`, inspect it, and ship/merge at the final boundary.
+- **Operator contract**: agent completes work, validation creates a candidate, a human may choose a winner, only explicit acceptance/integration advances the frontier, then operators review a stable promotion candidate, create a `ShipRun`, inspect it, and ship/merge at the final boundary.
 - **One container per job**: reproducible, isolated runs.
 - **Coordinator-friendly**: run the coordinator on the same machine as the app, or on a completely separate machine.
 
@@ -18,6 +18,8 @@ If you’ve ever wanted architecture-aware agent swarms with a clear human shipp
 </p>
 
 ## Screenshots
+
+Current operator surfaces: **Projects**, **Graph**, **Kanban**, **Ship Room**, optional **Workspace**, and **AgentHub**. The images below show the dark-theme UI; nav and project tools have grown since they were captured (Ship Room and AgentHub are first-class now).
 
 | Architecture graph | Kanban execution |
 |---|---|
@@ -32,19 +34,22 @@ If you’ve ever wanted architecture-aware agent swarms with a clear human shipp
 - **Intent-driven execution**: moving an intent/ticket to *In Progress* enqueues an agent job
 - **Director/Worker separation**: strategy (Director) vs code-writing execution (Worker, with Codex preferred for implementation-heavy work)
 - **AgentHub-native workflow**: agents publish attempts/leaves; validated candidates are reviewed, accepted/integrated `TicketAttempt`s become promotion candidates, and `ShipRun`s compose/release them
+- **CLI (`ta`)**: humans or agents can drive projects, tickets, attempts, and Ship Room without the UI (`python -m cli`)
 - **Runs anywhere Docker runs**: single-box dev or two-box production
 
 ---
 
 ## Technology (what’s under the hood)
 
-- **Backend API**: Python 3.11 + Flask + SQLAlchemy
+- **Backend API**: Python 3.11 + Flask + SQLAlchemy (CI also runs on 3.12)
 - **Database**: Postgres (with `pgvector/pgvector` image for vector search support)
-- **Frontend**: Node 20 + React (served from Docker Compose)
-- **Coordinator**: Python (host process) + `requests`
+- **Frontend**: Node 20 + React (Create React App, served from Docker Compose)
+- **AgentHub**: Go service (DAG of attempts + message board; Compose maps host `8088` → container `8080`)
+- **CLI**: Python package at `cli/` (`python -m cli`, shown as `ta` in help)
+- **Coordinator**: Python (Compose service or host process) + `requests`
 - **Agent image**: Python runner + **OpenCode** (server mode) + **Claude Code** (headless CLI) + **Codex** (autonomous coding) + Node 20 (for `npm test` in target repos) + Docker daemon (full DinD — each container has its own isolated daemon)
 
-LLM endpoints are configured via env (Director via `DIRECTOR_LLM_URL`, Worker via `WORKER_LLM_URL`, etc., set in coordinator/agent env). See `docs/RUNBOOK.md`.
+LLM endpoints are configured via env (Director via `DIRECTOR_LLM_URL`, Worker via `WORKER_LLM_URL`, etc., set in coordinator/agent env). See `docs/RUNBOOK.md` for the per-service variable lists. Compose interpolates an optional repo-root `.env`; there is no committed example file.
 
 ---
 
@@ -93,9 +98,30 @@ At the app boundary, the coordinator/agent use a small “worker API” surface 
 
 Details: `docs/PHASE1_WORKER_API.md`.
 
-For explicit competing attempts, operators should see five pre-selected strategies: `minimal-patch`, `root-cause-debugger`, `test-first`, `refactor-forward`, and `systems-explorer`. Workers should receive attempt metadata such as `ATTEMPT_SLOT`, `ATTEMPT_INDEX`, `ATTEMPT_COUNT`, plus strategy metadata once sibling lanes finish wiring it end-to-end.
+For explicit competing attempts, operators see five coding strategies assigned round-robin across the fan-out:
+
+1. `conservative-minimalist`
+2. `test-first-verifier`
+3. `architecture-cleanup`
+4. `performance-simplicity`
+5. `product-polish`
+
+Workers already receive attempt metadata (`ATTEMPT_INDEX`, `ATTEMPT_COUNT`, `ATTEMPT_STRATEGY`, `ATTEMPT_STRATEGY_DESCRIPTION`, plus `ATTEMPT_SLOT` as a compatibility alias). Product default is **3** attempts per ticket (`1..5` allowed). Rerun with `.venv/bin/python -m cli ticket rerun-current-frontier <project_id> <ticket_id>`. See `docs/COMPETING_ATTEMPTS.md`.
 
 ---
+
+## CLI
+
+From the repo root, after `make setup-venv`:
+
+```bash
+.venv/bin/python -m cli --help
+# or: make python ARGS='-m cli --help'
+```
+
+Help uses the program name `ta`. Point it at the API with `--api-url` or `TERARCHITECT_API_URL` (default `http://localhost:5010`). Global `--output human|json` (and `--json`) apply to every command.
+
+Common groups: `project`, `ticket`, `attempt`, `ship`, `workspace`, `graph`, `plan`. Shared output/error conventions: [`CLI_GUIDE.md`](CLI_GUIDE.md).
 
 ## Configurable workflows
 
@@ -103,10 +129,10 @@ Terarchitect supports per-project custom workflow definitions. A workflow file (
 
 ```bash
 # Create a project with a custom workflow
-ta project create my-project --workflow-file .terarchitect/workflow.yaml
+.venv/bin/python -m cli project create --name my-project --workflow-file .terarchitect/workflow.yaml
 
 # Update an existing project
-ta project update my-project --workflow-file .terarchitect/custom.yaml
+.venv/bin/python -m cli project update <project-id> --workflow-file .terarchitect/custom.yaml
 ```
 
 If no `--workflow-file` is set, Terarchitect checks for `.terarchitect/workflow.yaml` or `.terarchitect/workflow.json` in the project root automatically. If neither is found, the built-in default 6-stage workflow is used.
@@ -118,7 +144,8 @@ Full reference: [`docs/workflow-definition.md`](docs/workflow-definition.md)
 | Component | What it does | Where it runs |
 |-----------|--------------|---------------|
 | **App** | Flask API + Postgres + React frontend. Stores projects/graph/tickets/logs and enqueues jobs. Does **not** execute the agent. | **Docker Compose** (`postgres`, `backend`, `frontend`) |
-| **Coordinator** | Claims jobs from the API and starts one agent container per job. | **Docker Compose** or **host process** |
+| **AgentHub** | Git DAG + message board. Runtime source of truth for attempts/leaves and frontiers. | **Docker Compose** (`agenthub`, host port `8088`) |
+| **Coordinator** | Claims jobs from the API and starts one agent container per job. | **Docker Compose** (`coordinator`) or **host process** |
 | **Agent image** | Director + Worker (OpenCode, Claude Code, or Codex). Materializes the selected AgentHub base leaf, implements the ticket, publishes an AgentHub attempt, exits. | **Docker container** started by the coordinator |
 
 High-level flow: **GitHub URL/ref import → AgentHub DAG project → accepted frontier selects `base_leaf_id` → UI enqueue → coordinator claims → agent container materializes the base leaf → AgentHub attempt created → validated candidate → operator-chosen winner → accepted/integrated `TicketAttempt` → promotion candidate review → `ShipRun` compose/ship → shipped frontier advance**.
@@ -131,42 +158,43 @@ Attempt inspection is already first-class: normal worker completions create `Tic
 
 ## Quick start (local dev)
 
-### 1) Start the app (API + DB + UI)
+### 1) Build the agent image (once)
+
+The coordinator is a default Compose service, but worker containers need the agent image:
+
+```bash
+docker compose build agent
+```
+
+### 2) Start the stack
 
 ```bash
 docker compose up -d
 ```
 
+This starts **postgres**, **backend**, **frontend**, **agenthub**, and **coordinator**. The `agent` service is build-only (`profiles: [build-agent]`) and is not started as a long-running container.
+
 - **UI**: `http://localhost:3000`
 - **API**: `http://localhost:5010`
-- **Postgres**: host port `5433` 
+- **AgentHub**: `http://localhost:8088` (container listens on `8080`)
+- **Postgres**: host port `5433`
 
-### 2) Build the agent and coordinator images (once)
+Set Director/Worker (and optional GitHub/AgentHub) keys in the shell or a repo-root `.env` before `docker compose up`. Compose interpolates those variables into the coordinator/backend/agenthub services. Variable lists: `docs/RUNBOOK.md`, `backend/README.md`, and `docker-compose.yml`.
 
-```bash
-docker compose build agent coordinator
-```
+The compose coordinator launches sibling worker containers onto `terarchitect_default` and forwards `TERARCHITECT_API_URL=http://backend:5010`, `AGENTHUB_URL=http://agenthub:8080`, `AGENT_IMAGE=terarchitect-agent`, and the Director/Worker env you provide. Worker containers materialize AgentHub workspaces per job; they do not bind-mount your host repo.
 
-### 3) Run the coordinator (so tickets actually execute)
+### 3) Optional: run the coordinator on the host
 
-Docker-first path:
-
-```bash
-docker compose up -d coordinator
-```
-
-The compose coordinator launches sibling worker containers onto `terarchitect_default` and forwards `TERARCHITECT_API_URL=http://backend:5010`, `AGENTHUB_URL=http://agenthub:8080`, `AGENT_IMAGE=terarchitect-agent`, and the Director/Worker env you provide via shell or repo `.env`. Worker containers materialize AgentHub workspaces per job; they do not bind-mount your host repo.
-
-Host-run path remains available for local-mode projects or for deployments that keep the coordinator outside Compose:
+Use this for `execution_mode=local` projects or deployments that keep the coordinator outside Compose:
 
 ```bash
 make setup-venv
 TERARCHITECT_API_URL=http://localhost:5010 \
 PROJECT_ID=<your-project-uuid> \
-GITHUB_TOKEN=<token> \
-TERARCHITECT_WORKER_API_KEY=<optional-worker-api-key> \
 make python ARGS='-m coordinator'
 ```
+
+GitHub token (`GITHUB_TOKEN` / `GH_TOKEN` / `github_agent_token`) is **not** required for local/AgentHub execution. Set one only for GitHub-backed import/clone and Ship Room export PRs. Optional `TERARCHITECT_WORKER_API_KEY` protects worker API endpoints when the backend has the same key set.
 
 Always use the repo-local `.venv` (`make python`, `make pip`, `make pytest`, or `.venv/bin/python`) for host-run Python. Do not install Terarchitect requirements into a shared/Hermes virtualenv.
 
@@ -178,15 +206,15 @@ Always use the repo-local `.venv` (`make python`, `make pip`, `make pytest`, or 
 
 ### Single-box (dev / small deploy)
 
-- Run the app: `docker compose up -d`
-- Run the coordinator in compose (`docker compose up -d coordinator`) or on the same host
-- Compose coordinator default: `TERARCHITECT_API_URL=http://backend:5010`, `AGENTHUB_URL=http://agenthub:8080`, `DOCKER_NETWORK=terarchitect_default`
+- Run the app: `docker compose up -d` (postgres, backend, frontend, agenthub, coordinator)
+- Build the agent image first: `docker compose build agent`
+- Compose defaults: `TERARCHITECT_API_URL=http://backend:5010`, `AGENTHUB_URL=http://agenthub:8080`, `DOCKER_NETWORK=terarchitect_default`
 - Host coordinator: set `TERARCHITECT_API_URL=http://host.docker.internal:5010` so agent containers can reach the app
   - On Linux, the coordinator automatically adds `--add-host=host.docker.internal:host-gateway`
 
 ### Two-box (production)
 
-- **Machine A**: app only (docker compose). No coordinator required here.
+- **Machine A**: app only (`docker compose up -d postgres backend frontend agenthub`). No coordinator required here.
 - **Machine B**: coordinator + Docker. Build the agent image here. Run the coordinator here (host process or coordinator container).
 - Set `TERARCHITECT_API_URL=https://machine-a.example.com` (or the public URL of Machine A)
 
@@ -246,8 +274,13 @@ No mixing with your project’s Dockerfile. The agent image is built once and re
 |------|------|
 | `backend/` | Flask API (served by docker compose). Stores graph/tickets/logs; enqueues jobs only. |
 | `frontend/` | React UI (served by docker compose). |
+| `agenthub/` | Go AgentHub server (DAG + message board). |
+| `cli/` | Operator CLI (`python -m cli`). |
 | `coordinator/` | Docker/host coordinator. Claims jobs and starts agent containers. |
 | `agent/` | Director + runner + worker wiring (Codex, OpenCode, and Claude Code). Packaged into the agent image. |
+| `docs/` | Runbook, worker API, workflow definition, competing attempts. |
+| `migrations/` | Postgres init SQL mounted into the compose Postgres container. |
+| `tests/` | CLI and integration tests. |
 
 ---
 
@@ -256,6 +289,8 @@ No mixing with your project’s Dockerfile. The agent image is built once and re
 - `CLI_GUIDE.md`: shared CLI conventions for output, errors, receipts, and adding commands
 - `docs/RUNBOOK.md`: deployments, coordinator env, systemd, verification
 - `docs/PHASE1_WORKER_API.md`: worker API contract and behavior
+- `docs/workflow-definition.md`: per-project custom worker workflows
+- `docs/COMPETING_ATTEMPTS.md`: inspectable attempts vs explicit competing reruns
 - `plans/`: product and architecture planning notes
 
 ---
@@ -266,7 +301,7 @@ No mixing with your project’s Dockerfile. The agent image is built once and re
 - **Promotion-boundary review**: validate candidates first, choose a winner, integrate it when ready, then inspect one `ShipRun` created from a stable candidate set before the final ship/merge step.
 - **Cancelable runs**: worker-facing cancel flag + polling endpoint so you can stop a run cleanly.
 - **Per-project execution mode**: run jobs in Docker (clone in container) or Local (run at a configured host path).
-- **Env-only config**: each service (backend, coordinator) uses a simple `.env` that fits its needs; no shared settings store. See `.env.example`.
+- **Env-only config**: each service (backend, coordinator) reads process environment or Compose interpolation; no shared settings store. See `docs/RUNBOOK.md` and `backend/README.md`.
 - **Vector search + safety**: pgvector-backed embeddings with an ORM-safe approach (avoids accidentally selecting vector columns).
 - **Operator-friendly debugging**: scripts for requeueing tickets, dumping logs/memory, and smoke-testing OpenCode server/CLI.
 
@@ -309,4 +344,4 @@ This keeps source code, AgentHub DAG state, logs, and credentials isolated while
 
 ## Contributing
 
-PRs welcome. Keep changes focused and verifiable (tests where possible). If you’re shipping a behavior change, include a short “why” in the PR description.
+PRs welcome. Keep changes focused and verifiable (tests where possible). If you’re shipping a behavior change, include a short “why” in the PR description. Setup and PR expectations: [`CONTRIBUTING.md`](CONTRIBUTING.md).

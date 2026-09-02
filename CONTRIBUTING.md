@@ -19,8 +19,9 @@ Please keep changes focused. Terarchitect is an orchestration system; broad refa
 ```bash
 git clone https://github.com/floydw1234/terarchitect.git
 cd terarchitect
-cp .env.example .env
-# Fill in only the keys needed for the workflow you are testing.
+# Optional: put Director/Worker/GitHub keys in the shell or a repo-root .env
+# for Compose interpolation. Variable lists: docs/RUNBOOK.md and backend/README.md.
+docker compose build agent
 docker compose up -d
 ```
 
