@@ -39,14 +39,14 @@ import { getProject, getTickets, type Project, type Ticket, type DisplayState } 
 // ---------------------------------------------------------------------------
 
 const SECTIONS: { state: DisplayState; label: string; color: string; description: string }[] = [
-  { state: 'running',       label: 'Running',        color: '#0085fa', description: 'Agent executing now' },
+  { state: 'running',       label: 'Running',        color: '#0085FA', description: 'Agent executing now' },
   { state: 'blocked',       label: 'Blocked',        color: '#ef4444', description: 'Waiting on dep or external blocker' },
   { state: 'failed',        label: 'Failed',         color: '#ef4444', description: 'Last attempt failed validation or agent crashed' },
-  { state: 'attempt_ready', label: 'Attempt Ready',  color: '#4169e1', description: 'Agent done — attempt awaiting review' },
+  { state: 'attempt_ready', label: 'Attempt Ready',  color: '#45C3F8', description: 'Agent done — attempt awaiting review' },
   { state: 'stale',         label: 'Stale',          color: '#f59e0b', description: 'Accepted but built before frontier advanced' },
   { state: 'accepted',      label: 'Accepted',       color: '#10b981', description: 'Ready for composition into a release' },
-  { state: 'composed',      label: 'Composed',       color: '#6366f1', description: 'In a release branch' },
-  { state: 'release_pr_open', label: 'PR Open',      color: '#6366f1', description: 'Release PR open on GitHub' },
+  { state: 'composed',      label: 'Composed',       color: '#0085FA', description: 'In a release branch' },
+  { state: 'release_pr_open', label: 'PR Open',      color: '#0085FA', description: 'Release PR open on GitHub' },
   { state: 'shipped',       label: 'Shipped',        color: '#10b981', description: 'Reached main / shipped frontier' },
   { state: 'queued',        label: 'Queued',         color: '#6b7280', description: 'Ready to dispatch' },
 ];
@@ -65,7 +65,7 @@ function IntentCard({ ticket, projectId }: { ticket: Ticket; projectId: string }
         p: 1.5,
         borderRadius: 1,
         bgcolor: 'background.default',
-        border: '1px solid #e0e0e0',
+        border: '1px solid #D4D4D4',
       }}
     >
       <Stack direction="row" spacing={1} alignItems="flex-start" justifyContent="space-between">
@@ -189,7 +189,7 @@ const IntentInboxPage: React.FC = () => {
   return (
     <Box sx={{ maxWidth: 900, mx: 'auto', width: '100%' }}>
       {/* Header */}
-      <Paper sx={{ p: { xs: 2, md: 3 }, mb: 3, border: '1px solid #e0e0e0', boxShadow: 'none' }}>
+      <Paper sx={{ p: { xs: 2, md: 3 }, mb: 3, border: '1px solid #D4D4D4', boxShadow: 'none' }}>
         <Stack direction="row" alignItems="center" justifyContent="space-between">
           <Box>
             <Typography variant="h4">Intent Inbox</Typography>
@@ -212,7 +212,7 @@ const IntentInboxPage: React.FC = () => {
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
       {tickets.length === 0 && (
-        <Paper sx={{ p: 4, textAlign: 'center', border: '1px solid #e0e0e0', boxShadow: 'none' }}>
+        <Paper sx={{ p: 4, textAlign: 'center', border: '1px solid #D4D4D4', boxShadow: 'none' }}>
           <Typography color="text.secondary">No active intents.</Typography>
         </Paper>
       )}

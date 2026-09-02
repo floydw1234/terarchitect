@@ -17,17 +17,17 @@ const theme = createTheme({
   palette: {
     mode: 'light',
     primary: {
-      main: '#0085fa',
-      light: '#4da6ff',
+      main: '#0085FA',
+      light: '#45C3F8',
       dark: '#0066cc',
     },
     secondary: {
-      main: '#4169e1',
-      light: '#6b8de8',
-      dark: '#2d4db3',
+      main: '#45C3F8',
+      light: '#7dd4fa',
+      dark: '#0085FA',
     },
     info: {
-      main: '#0085fa',
+      main: '#0085FA',
     },
     success: {
       main: '#10b981',
@@ -39,14 +39,14 @@ const theme = createTheme({
       main: '#ef4444',
     },
     background: {
-      default: '#f5f9ff',
-      paper: '#ffffff',
+      default: '#FFFFFF',
+      paper: '#FFFFFF',
     },
     text: {
-      primary: '#1a1a1a',
-      secondary: '#6b7280',
+      primary: 'rgba(0, 0, 0, 0.87)',
+      secondary: 'rgba(0, 0, 0, 0.6)',
     },
-    divider: '#e0e0e0',
+    divider: '#D4D4D4',
   },
   typography: {
     fontFamily: '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
@@ -82,34 +82,34 @@ const theme = createTheme({
     },
   },
   shape: {
-    borderRadius: 8,
+    borderRadius: 4,
   },
   components: {
     MuiCssBaseline: {
       styleOverrides: {
         body: {
-          backgroundColor: '#f5f9ff',
-          color: '#1a1a1a',
+          backgroundColor: '#FFFFFF',
+          color: 'rgba(0, 0, 0, 0.87)',
         },
       },
     },
     MuiCard: {
       styleOverrides: {
         root: {
-          background: '#ffffff',
-          borderRadius: 12,
-          border: '1px solid #e0e0e0',
-          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)',
+          background: '#FFFFFF',
+          borderRadius: 6,
+          border: '1px solid #D4D4D4',
+          boxShadow: 'none',
         },
       },
     },
     MuiPaper: {
       styleOverrides: {
         root: {
-          background: '#ffffff',
-          borderRadius: 12,
-          border: '1px solid #e0e0e0',
-          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)',
+          background: '#FFFFFF',
+          borderRadius: 6,
+          border: '1px solid #D4D4D4',
+          boxShadow: 'none',
         },
       },
     },
@@ -117,43 +117,44 @@ const theme = createTheme({
       styleOverrides: {
         root: {
           textTransform: 'none',
-          borderRadius: 8,
-          paddingInline: 16,
+          borderRadius: 4,
+          paddingInline: 20,
           minHeight: 40,
+          fontWeight: 600,
         },
         contained: {
-          boxShadow: '0 2px 4px rgba(0, 133, 250, 0.16)',
+          boxShadow: 'none',
           '&:hover': {
-            boxShadow: '0 4px 8px rgba(0, 133, 250, 0.24)',
+            boxShadow: 'none',
           },
         },
         outlined: {
-          borderColor: '#d4d4d4',
+          borderColor: '#D4D4D4',
         },
       },
     },
     MuiAppBar: {
       styleOverrides: {
         root: {
-          backgroundColor: '#ffffff',
-          borderBottom: '1px solid #e0e0e0',
-          boxShadow: '0 1px 3px rgba(0, 0, 0, 0.08)',
+          backgroundColor: '#FFFFFF',
+          borderBottom: '1px solid #D4D4D4',
+          boxShadow: 'none',
         },
       },
     },
     MuiChip: {
       styleOverrides: {
         root: {
-          borderRadius: 6,
+          borderRadius: 4,
         },
       },
     },
     MuiDialog: {
       styleOverrides: {
         paper: {
-          background: '#ffffff',
-          border: '1px solid #e0e0e0',
-          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.16)',
+          background: '#FFFFFF',
+          border: '1px solid #D4D4D4',
+          boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)',
         },
       },
     },
@@ -161,10 +162,10 @@ const theme = createTheme({
       styleOverrides: {
         root: {
           '& .MuiOutlinedInput-root': {
-            backgroundColor: '#ffffff',
-            '& fieldset': { borderColor: '#d4d4d4' },
-            '&:hover fieldset': { borderColor: '#0085fa' },
-            '&.Mui-focused fieldset': { borderColor: '#0085fa' },
+            backgroundColor: '#FFFFFF',
+            '& fieldset': { borderColor: '#D4D4D4' },
+            '&:hover fieldset': { borderColor: '#0085FA' },
+            '&.Mui-focused fieldset': { borderColor: '#0085FA' },
           },
         },
       },
@@ -172,7 +173,7 @@ const theme = createTheme({
     MuiOutlinedInput: {
       styleOverrides: {
         root: {
-          borderRadius: 8,
+          borderRadius: 4,
         },
       },
     },
@@ -189,7 +190,7 @@ function App() {
             position: 'relative',
             minHeight: '100vh',
             overflow: 'hidden',
-            backgroundColor: '#f5f9ff',
+            backgroundColor: '#FFFFFF',
           }}
         >
           <Box sx={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>

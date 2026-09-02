@@ -586,7 +586,7 @@ const GraphEditorPage: React.FC = () => {
                     />
                     <path
                       d={buildCurvedPath(startX, startY, endX, endY)}
-                      stroke="#0085fa"
+                      stroke="#0085FA"
                       strokeWidth={1.1}
                       fill="none"
                       strokeDasharray="10 12"
@@ -634,7 +634,7 @@ const GraphEditorPage: React.FC = () => {
                     px: 1.25,
                     py: 0.75,
                     minWidth: 176,
-                    borderColor: '#e0e0e0',
+                    borderColor: '#D4D4D4',
                     cursor: 'pointer',
                   }}
                 >
@@ -645,10 +645,10 @@ const GraphEditorPage: React.FC = () => {
                         label={edge.data.protocol}
                         sx={{
                           height: 22,
-                          bgcolor: alpha('#0085fa', 0.1),
-                          color: '#0085fa',
+                          bgcolor: '#E9F7FF',
+                          color: '#0085FA',
                           fontFamily: '"JetBrains Mono", monospace',
-                          border: '1px solid rgba(0, 133, 250, 0.24)',
+                          border: '1px solid #D4D4D4',
                         }}
                       />
                     )}
@@ -682,9 +682,7 @@ const GraphEditorPage: React.FC = () => {
                     overflow: 'hidden',
                     cursor: dragging ? 'grabbing' : 'grab',
                     borderColor: selected ? alpha(appearance.accent, 0.68) : alpha(appearance.accent, 0.22),
-                    boxShadow: selected
-                      ? `0 4px 16px ${alpha(appearance.accent, 0.2)}`
-                      : `0 2px 8px rgba(0, 0, 0, 0.08)`,
+                    boxShadow: 'none',
                     transform: dragging ? 'scale(1.02)' : selected ? 'translateY(-2px)' : 'none',
                     transition: 'transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease',
                   }}

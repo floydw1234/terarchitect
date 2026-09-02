@@ -216,7 +216,7 @@ const CommitDagGraph: React.FC<CommitDagGraphProps> = ({
                     markerEnd={`url(#${ids.arrow})`}
                     opacity={0.92}
                   />
-                  <circle cx={labelPos.x} cy={labelPos.y} r={4.5} fill="#0085fa" opacity={0.8} />
+                  <circle cx={labelPos.x} cy={labelPos.y} r={4.5} fill="#0085FA" />
                 </g>
               );
             })}
@@ -238,10 +238,8 @@ const CommitDagGraph: React.FC<CommitDagGraphProps> = ({
                   width: GRAPH_COMMIT_WIDTH,
                   minHeight: GRAPH_COMMIT_HEIGHT,
                   p: 1.5,
-                  borderColor: isLeaf ? alpha('#0085fa', 0.48) : alpha(accent, 0.28),
-                  boxShadow: isLeaf
-                    ? `0 4px 12px ${alpha('#0085fa', 0.12)}`
-                    : `0 2px 8px ${alpha(accent, 0.08)}`,
+                  borderColor: isLeaf ? '#0085FA' : '#D4D4D4',
+                  boxShadow: 'none',
                   overflow: 'hidden',
                 }}
               >
@@ -268,9 +266,9 @@ const CommitDagGraph: React.FC<CommitDagGraphProps> = ({
                           label="Frontier"
                           sx={{
                             height: 20,
-                            bgcolor: alpha('#0085fa', 0.1),
-                            color: '#0085fa',
-                            border: '1px solid rgba(0, 133, 250, 0.28)',
+                            bgcolor: '#E9F7FF',
+                            color: '#0085FA',
+                            border: '1px solid #D4D4D4',
                           }}
                         />
                       )}
@@ -280,7 +278,7 @@ const CommitDagGraph: React.FC<CommitDagGraphProps> = ({
                           label="Root"
                           sx={{
                             height: 20,
-                            bgcolor: '#f0f0f0',
+                            bgcolor: '#E9F7FF',
                             color: 'text.secondary',
                           }}
                         />

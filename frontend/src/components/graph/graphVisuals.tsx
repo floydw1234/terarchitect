@@ -31,22 +31,22 @@ export function accentFromString(value?: string) {
 export function getArchitectureNodeAppearance(type: string) {
   switch (type) {
     case 'database':
-      return { label: 'Database', accent: '#0085fa', surface: '#e9f7ff', icon: 'DB' };
+      return { label: 'Database', accent: '#0085FA', surface: '#FFFFFF', icon: 'DB' };
     case 'cache':
-      return { label: 'Cache', accent: '#10b981', surface: '#ecfdf5', icon: 'CA' };
+      return { label: 'Cache', accent: '#10b981', surface: '#FFFFFF', icon: 'CA' };
     case 'queue':
-      return { label: 'Queue', accent: '#f59e0b', surface: '#fffbeb', icon: 'QU' };
+      return { label: 'Queue', accent: '#f59e0b', surface: '#FFFFFF', icon: 'QU' };
     case 'api':
-      return { label: 'API', accent: '#4169e1', surface: '#eef2ff', icon: 'AP' };
+      return { label: 'API', accent: '#0085FA', surface: '#FFFFFF', icon: 'AP' };
     case 'worker':
-      return { label: 'Worker', accent: '#ec4899', surface: '#fdf2f8', icon: 'WK' };
+      return { label: 'Worker', accent: '#ec4899', surface: '#FFFFFF', icon: 'WK' };
     case 'view':
-      return { label: 'View', accent: '#0ea5e9', surface: '#f0f9ff', icon: 'VW' };
+      return { label: 'View', accent: '#45C3F8', surface: '#FFFFFF', icon: 'VW' };
     case 'frontend':
-      return { label: 'Frontend', accent: '#6366f1', surface: '#eef2ff', icon: 'FE' };
+      return { label: 'Frontend', accent: '#6366f1', surface: '#FFFFFF', icon: 'FE' };
     case 'service':
     default:
-      return { label: 'Service', accent: '#0085fa', surface: '#e9f7ff', icon: 'SV' };
+      return { label: 'Service', accent: '#0085FA', surface: '#FFFFFF', icon: 'SV' };
   }
 }
 
@@ -107,21 +107,21 @@ export function graphSvgIds(scope: string) {
 
 export const graphGlassPanelSx = {
   position: 'relative',
-  border: '1px solid #e0e0e0',
-  background: '#ffffff',
-  borderRadius: 2,
-  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)',
+  border: '1px solid #D4D4D4',
+  background: '#FFFFFF',
+  borderRadius: 1.5,
+  boxShadow: 'none',
 } as const;
 
 export const graphCanvasSx = {
   position: 'relative',
   overflow: 'auto',
-  borderRadius: 2,
-  border: '1px solid #e0e0e0',
-  backgroundColor: '#f5f9ff',
+  borderRadius: 1.5,
+  border: '1px solid #D4D4D4',
+  backgroundColor: '#E9F7FF',
   backgroundImage: `
-    linear-gradient(rgba(0, 133, 250, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 133, 250, 0.05) 1px, transparent 1px)
+    linear-gradient(rgba(0, 133, 250, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 133, 250, 0.06) 1px, transparent 1px)
   `,
   backgroundSize: '40px 40px, 40px 40px',
   backgroundPosition: '-1px -1px, -1px -1px',
@@ -133,12 +133,12 @@ export const GraphSvgDefs: React.FC<{ scope: string }> = ({ scope }) => {
   return (
     <defs>
       <linearGradient id={ids.edgeGradient} x1="0%" x2="100%" y1="0%" y2="0%">
-        <stop offset="0%" stopColor="#0085fa" />
-        <stop offset="50%" stopColor="#4169e1" />
-        <stop offset="100%" stopColor="#0085fa" />
+        <stop offset="0%" stopColor="#0085FA" />
+        <stop offset="50%" stopColor="#45C3F8" />
+        <stop offset="100%" stopColor="#0085FA" />
       </linearGradient>
       <filter id={ids.edgeGlow} x="-30%" y="-30%" width="160%" height="160%">
-        <feGaussianBlur stdDeviation="1" result="blur" />
+        <feGaussianBlur stdDeviation="0" result="blur" />
         <feMerge>
           <feMergeNode in="blur" />
           <feMergeNode in="SourceGraphic" />
@@ -153,7 +153,7 @@ export const GraphSvgDefs: React.FC<{ scope: string }> = ({ scope }) => {
         orient="auto"
         markerUnits="strokeWidth"
       >
-        <path d="M 0 0 L 12 6 L 0 12 z" fill="#0085fa" opacity="0.95" />
+        <path d="M 0 0 L 12 6 L 0 12 z" fill="#0085FA" opacity="0.95" />
       </marker>
     </defs>
   );
@@ -196,9 +196,9 @@ export const GraphEmptyState: React.FC<GraphEmptyStateProps> = ({
           size="small"
           label="Graph Surface"
           sx={{
-            bgcolor: alpha('#0085fa', 0.1),
-            color: '#0085fa',
-            border: '1px solid rgba(0, 133, 250, 0.3)',
+            bgcolor: '#E9F7FF',
+            color: '#0085FA',
+            border: '1px solid #D4D4D4',
           }}
         />
         <Typography variant="h6" fontWeight={700}>

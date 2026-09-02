@@ -156,14 +156,12 @@ const ProjectPage: React.FC = () => {
     color: 'text.primary',
     minHeight: 170,
     p: 3,
-    borderRadius: 2,
-    border: '1px solid #e0e0e0',
-    backgroundColor: '#ffffff',
-    transition: 'border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease',
+    borderRadius: 1.5,
+    border: '1px solid #D4D4D4',
+    backgroundColor: '#FFFFFF',
+    transition: 'border-color 0.2s ease',
     '&:hover': {
-      borderColor: '#0085fa',
-      boxShadow: '0 4px 12px rgba(0, 133, 250, 0.12)',
-      transform: 'translateY(-1px)',
+      borderColor: '#0085FA',
     },
   } as const;
 
@@ -172,7 +170,7 @@ const ProjectPage: React.FC = () => {
       <Paper
         sx={{
           p: { xs: 2, md: 3 },
-          border: '1px solid #e0e0e0',
+          border: '1px solid #D4D4D4',
           boxShadow: 'none',
           mb: 3,
         }}
@@ -212,7 +210,7 @@ const ProjectPage: React.FC = () => {
           </Typography>
           <Typography sx={infoTextSx}>
             Git mode:{' '}
-            <span style={{ color: project.git_mode === 'swarm' ? '#0085fa' : '#4169e1' }}>
+            <span style={{ color: '#0085FA' }}>
               {project.git_mode === 'swarm' ? 'Swarm (AgentHub)' : 'Legacy structured'}
             </span>
           </Typography>
@@ -272,7 +270,7 @@ const ProjectPage: React.FC = () => {
         <Paper
           sx={{
             p: { xs: 2, md: 3 },
-            border: '1px solid #e0e0e0',
+            border: '1px solid #D4D4D4',
             boxShadow: 'none',
             mb: 3,
           }}
@@ -289,7 +287,7 @@ const ProjectPage: React.FC = () => {
                 key={ticket.id}
                 sx={{
                   p: 1.5,
-                  border: '1px solid #e0e0e0',
+                  border: '1px solid #D4D4D4',
                   borderRadius: 1.5,
                 }}
               >

@@ -153,7 +153,7 @@ const ProjectsPage: React.FC = () => {
         sx={{
           p: { xs: 2, md: 3 },
           mb: 3,
-          border: '1px solid #e0e0e0',
+          border: '1px solid #D4D4D4',
           boxShadow: 'none',
         }}
       >
@@ -187,7 +187,7 @@ const ProjectsPage: React.FC = () => {
           sx={{
             p: 4,
             textAlign: 'center',
-            border: '1px solid #e0e0e0',
+            border: '1px solid #D4D4D4',
             boxShadow: 'none',
           }}
         >
@@ -203,7 +203,7 @@ const ProjectsPage: React.FC = () => {
                 sx={{
                   height: '100%',
                   p: 3,
-                  border: '1px solid #e0e0e0',
+                  border: '1px solid #D4D4D4',
                   boxShadow: 'none',
                   display: 'flex',
                   flexDirection: 'column',

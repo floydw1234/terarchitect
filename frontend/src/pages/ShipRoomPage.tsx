@@ -185,7 +185,7 @@ function ShipRunPanel({ run, title }: { run: ShipRun; title: string }) {
   const showDiagnostics = !!(run.error || run.test_output || run.test_status);
 
   return (
-    <Paper sx={{ p: 2, border: '1px solid #e0e0e0', boxShadow: 'none' }}>
+    <Paper sx={{ p: 2, border: '1px solid #D4D4D4', boxShadow: 'none' }}>
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between">
         <Box>
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
@@ -260,7 +260,7 @@ function ShipRunPanel({ run, title }: { run: ShipRun; title: string }) {
               p: 1.5,
               borderRadius: 1,
               bgcolor: 'background.default',
-              border: '1px solid #e0e0e0',
+              border: '1px solid #D4D4D4',
               fontSize: '0.75rem',
               whiteSpace: 'pre-wrap',
               wordBreak: 'break-word',
@@ -760,7 +760,7 @@ function SummaryCard({
   detail?: string;
 }) {
   return (
-    <Paper sx={{ p: 2, minWidth: 0, border: '1px solid #e0e0e0', boxShadow: 'none' }}>
+    <Paper sx={{ p: 2, minWidth: 0, border: '1px solid #D4D4D4', boxShadow: 'none' }}>
       <Typography variant="caption" color="text.secondary">
         {label}
       </Typography>
@@ -793,7 +793,7 @@ function CandidateCard({
       sx={{
         p: 2,
         cursor: 'pointer',
-        border: selected ? '2px solid' : '1px solid #e0e0e0',
+        border: selected ? '2px solid' : '1px solid #D4D4D4',
         borderColor: selected ? 'primary.main' : undefined,
         boxShadow: 'none',
       }}
@@ -935,7 +935,7 @@ const ShipRoomPage: React.FC = () => {
 
   return (
     <Box sx={{ maxWidth: 1200, mx: 'auto', width: '100%' }}>
-      <Paper sx={{ p: { xs: 2, md: 3 }, mb: 3, border: '1px solid #e0e0e0', boxShadow: 'none' }}>
+      <Paper sx={{ p: { xs: 2, md: 3 }, mb: 3, border: '1px solid #D4D4D4', boxShadow: 'none' }}>
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} justifyContent="space-between">
           <Box>
             <Typography variant="h4">Ship Room</Typography>
@@ -994,7 +994,7 @@ const ShipRoomPage: React.FC = () => {
       )}
 
       {candidates.length === 0 && !error ? (
-        <Paper sx={{ p: 4, textAlign: 'center', border: '1px solid #e0e0e0', boxShadow: 'none' }}>
+        <Paper sx={{ p: 4, textAlign: 'center', border: '1px solid #D4D4D4', boxShadow: 'none' }}>
           <Typography color="text.secondary">
             No promotion candidates yet. Accept some ticket attempts to build a candidate set.
           </Typography>
@@ -1018,7 +1018,7 @@ const ShipRoomPage: React.FC = () => {
           </Box>
 
           {selectedCandidate && projectId && (
-            <Paper sx={{ p: 3, border: '1px solid #e0e0e0', boxShadow: 'none' }}>
+            <Paper sx={{ p: 3, border: '1px solid #D4D4D4', boxShadow: 'none' }}>
               <CandidateDetailPanel
                 projectId={projectId}
                 candidate={selectedCandidate}

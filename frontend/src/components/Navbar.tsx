@@ -46,9 +46,9 @@ const Navbar: React.FC<NavbarProps> = () => {
         <Box
           sx={{
             p: 0.5,
-            borderRadius: 8,
-            border: '1px solid #e0e0e0',
-            bgcolor: '#ecf4ff',
+            borderRadius: 1,
+            border: '1px solid #D4D4D4',
+            bgcolor: '#E9F7FF',
           }}
         >
           <Stack direction="row" spacing={0.5}>
@@ -60,8 +60,9 @@ const Navbar: React.FC<NavbarProps> = () => {
                 variant={item.active ? 'contained' : 'text'}
                 color={item.active ? 'primary' : 'inherit'}
                 sx={{
-                  color: item.active ? 'common.white' : 'text.secondary',
+                  color: item.active ? 'common.white' : 'text.primary',
                   px: 2,
+                  fontWeight: 500,
                   '&:hover': {
                     bgcolor: item.active ? undefined : 'rgba(0, 133, 250, 0.08)',
                   },
