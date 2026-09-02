@@ -760,11 +760,11 @@ function SummaryCard({
   detail?: string;
 }) {
   return (
-    <Paper sx={{ p: 2, minWidth: 0, border: '1px solid #D4D4D4', boxShadow: 'none' }}>
+    <Paper sx={{ p: 2, minWidth: 0, border: '1px solid #D4D4D4', boxShadow: 'none', bgcolor: '#ECF4FF' }}>
       <Typography variant="caption" color="text.secondary">
         {label}
       </Typography>
-      <Typography variant="subtitle1" fontWeight={600} sx={{ mt: 0.5 }}>
+      <Typography variant="subtitle1" fontWeight={600} sx={{ mt: 0.5, color: 'primary.main' }}>
         {value}
       </Typography>
       {detail && (

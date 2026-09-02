@@ -64,8 +64,13 @@ function IntentCard({ ticket, projectId }: { ticket: Ticket; projectId: string }
       sx={{
         p: 1.5,
         borderRadius: 1,
-        bgcolor: 'background.default',
+        bgcolor: '#ECF4FF',
         border: '1px solid #D4D4D4',
+        transition: 'all 0.15s ease',
+        '&:hover': {
+          borderColor: '#45C3F8',
+          bgcolor: '#E9F7FF',
+        },
       }}
     >
       <Stack direction="row" spacing={1} alignItems="flex-start" justifyContent="space-between">

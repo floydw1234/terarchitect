@@ -28,18 +28,22 @@ const theme = createTheme({
     },
     info: {
       main: '#0085FA',
+      light: '#E9F7FF',
     },
     success: {
-      main: '#10b981',
+      main: '#059669',
+      light: '#d1fae5',
     },
     warning: {
-      main: '#f59e0b',
+      main: '#d97706',
+      light: '#fef3c7',
     },
     error: {
-      main: '#ef4444',
+      main: '#dc2626',
+      light: '#fee2e2',
     },
     background: {
-      default: '#FFFFFF',
+      default: '#E9F7FF',
       paper: '#FFFFFF',
     },
     text: {
@@ -88,7 +92,7 @@ const theme = createTheme({
     MuiCssBaseline: {
       styleOverrides: {
         body: {
-          backgroundColor: '#FFFFFF',
+          backgroundColor: '#E9F7FF',
           color: 'rgba(0, 0, 0, 0.87)',
         },
       },
@@ -121,6 +125,10 @@ const theme = createTheme({
           paddingInline: 20,
           minHeight: 40,
           fontWeight: 600,
+          '&:focus-visible': {
+            outline: '2px solid #0085FA',
+            outlineOffset: 2,
+          },
         },
         contained: {
           boxShadow: 'none',
@@ -128,8 +136,23 @@ const theme = createTheme({
             boxShadow: 'none',
           },
         },
+        containedPrimary: {
+          backgroundColor: '#0085FA',
+          '&:hover': {
+            backgroundColor: '#0066cc',
+          },
+        },
         outlined: {
           borderColor: '#D4D4D4',
+          '&:hover': {
+            borderColor: '#0085FA',
+            backgroundColor: 'rgba(0, 133, 250, 0.04)',
+          },
+        },
+        text: {
+          '&:hover': {
+            backgroundColor: 'rgba(0, 133, 250, 0.08)',
+          },
         },
       },
     },
@@ -137,7 +160,7 @@ const theme = createTheme({
       styleOverrides: {
         root: {
           backgroundColor: '#FFFFFF',
-          borderBottom: '1px solid #D4D4D4',
+          borderBottom: '2px solid #E9F7FF',
           boxShadow: 'none',
         },
       },
@@ -146,6 +169,31 @@ const theme = createTheme({
       styleOverrides: {
         root: {
           borderRadius: 4,
+        },
+        colorPrimary: {
+          backgroundColor: '#0085FA',
+          color: '#FFFFFF',
+        },
+        colorSecondary: {
+          backgroundColor: '#45C3F8',
+          color: '#FFFFFF',
+        },
+        colorInfo: {
+          backgroundColor: '#E9F7FF',
+          color: '#0085FA',
+          border: '1px solid #45C3F8',
+        },
+        colorSuccess: {
+          backgroundColor: '#d1fae5',
+          color: '#059669',
+        },
+        colorWarning: {
+          backgroundColor: '#fef3c7',
+          color: '#d97706',
+        },
+        colorError: {
+          backgroundColor: '#fee2e2',
+          color: '#dc2626',
         },
       },
     },
@@ -165,7 +213,7 @@ const theme = createTheme({
             backgroundColor: '#FFFFFF',
             '& fieldset': { borderColor: '#D4D4D4' },
             '&:hover fieldset': { borderColor: '#0085FA' },
-            '&.Mui-focused fieldset': { borderColor: '#0085FA' },
+            '&.Mui-focused fieldset': { borderColor: '#0085FA', borderWidth: 2 },
           },
         },
       },
@@ -174,6 +222,50 @@ const theme = createTheme({
       styleOverrides: {
         root: {
           borderRadius: 4,
+          '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+            borderColor: '#0085FA',
+            borderWidth: 2,
+          },
+        },
+      },
+    },
+    MuiCheckbox: {
+      styleOverrides: {
+        root: {
+          color: '#D4D4D4',
+          '&.Mui-checked': {
+            color: '#0085FA',
+          },
+        },
+      },
+    },
+    MuiSelect: {
+      styleOverrides: {
+        root: {
+          '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+            borderColor: '#0085FA',
+            borderWidth: 2,
+          },
+        },
+      },
+    },
+    MuiAlert: {
+      styleOverrides: {
+        standardSuccess: {
+          backgroundColor: '#d1fae5',
+          color: '#065f46',
+        },
+        standardWarning: {
+          backgroundColor: '#fef3c7',
+          color: '#92400e',
+        },
+        standardError: {
+          backgroundColor: '#fee2e2',
+          color: '#991b1b',
+        },
+        standardInfo: {
+          backgroundColor: '#E9F7FF',
+          color: '#0066cc',
         },
       },
     },
@@ -190,7 +282,7 @@ function App() {
             position: 'relative',
             minHeight: '100vh',
             overflow: 'hidden',
-            backgroundColor: '#FFFFFF',
+            backgroundColor: '#E9F7FF',
           }}
         >
           <Box sx={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>

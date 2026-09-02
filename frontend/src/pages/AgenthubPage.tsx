@@ -41,12 +41,12 @@ function timeAgo(iso: string) {
 }
 
 const StatCard: React.FC<{ label: string; value: number; accent: string }> = ({ label, value, accent }) => (
-  <Card sx={{ minHeight: 132 }}>
+  <Card sx={{ minHeight: 132, backgroundColor: '#ECF4FF', borderLeft: `4px solid ${accent}` }}>
     <CardContent>
       <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: '0.14em' }}>
         {label}
       </Typography>
-      <Typography variant="h4" sx={{ mt: 1, color: accent }}>
+      <Typography variant="h4" sx={{ mt: 1, color: accent, fontWeight: 700 }}>
         {value}
       </Typography>
     </CardContent>

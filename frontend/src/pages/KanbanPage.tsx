@@ -169,7 +169,7 @@ const RunningStrip: React.FC<RunningStripProps> = ({ tickets, projectId, onStop,
           mb: 3,
           borderLeft: 4,
           borderLeftColor: 'primary.main',
-          bgcolor: 'background.paper',
+          bgcolor: '#E9F7FF',
         }}
       >
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
@@ -837,10 +837,11 @@ const KanbanPage: React.FC = () => {
       )}
 
       {/* Board — Backlog / Queued / Done columns */}
-      <Paper sx={{ p: 2, mb: 3 }}>
+      <Paper sx={{ p: 2, mb: 3, bgcolor: '#FFFFFF' }}>
         <Box sx={{ display: 'flex', gap: 3, alignItems: 'stretch' }}>
           {boardColumns.map((column) => {
             const colTickets = tickets.filter((t) => t.column_id === column.id);
+            const columnBgColor = column.id === 'done' ? '#d1fae5' : column.id === 'queued' ? '#E9F7FF' : '#ECF4FF';
             return (
               <Box key={column.id} sx={{ flex: 1, minWidth: 220, display: 'flex', flexDirection: 'column' }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
@@ -848,7 +849,7 @@ const KanbanPage: React.FC = () => {
                     {column.title}
                   </Typography>
                   {colTickets.length > 0 && (
-                    <Chip label={colTickets.length} size="small" sx={{ height: 18, fontSize: '0.65rem' }} />
+                    <Chip label={colTickets.length} size="small" color={column.id === 'done' ? 'success' : 'primary'} sx={{ height: 18, fontSize: '0.65rem' }} />
                   )}
                 </Box>
                 <Paper
@@ -858,7 +859,8 @@ const KanbanPage: React.FC = () => {
                     maxHeight: '70vh',
                     overflowY: 'auto',
                     p: 1.5,
-                    backgroundColor: 'background.default',
+                    backgroundColor: columnBgColor,
+                    border: '1px solid #D4D4D4',
                   }}
                 >
                   {colTickets.map((ticket) => (
@@ -878,9 +880,11 @@ const KanbanPage: React.FC = () => {
                     />
                   ))}
                   {colTickets.length === 0 && (
-                    <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
-                      No tickets
-                    </Typography>
+                    <Box sx={{ p: 2, textAlign: 'center', bgcolor: 'rgba(255, 255, 255, 0.6)', borderRadius: 1, border: '1px dashed #D4D4D4' }}>
+                      <Typography variant="body2" color="text.secondary">
+                        No tickets
+                      </Typography>
+                    </Box>
                   )}
                 </Paper>
               </Box>
@@ -1225,21 +1229,23 @@ const KanbanPage: React.FC = () => {
       </Dialog>
 
       {/* Notes section */}
-      <Paper sx={{ p: 2 }}>
+      <Paper sx={{ p: 2, bgcolor: '#FFFFFF' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2, gap: 2, flexWrap: 'wrap' }}>
           <Typography variant="h6">Notes</Typography>
-          <Button variant="outlined" size="small" onClick={openCreateNote}>
+          <Button variant="contained" size="small" onClick={openCreateNote}>
             Create note
           </Button>
         </Box>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
           {notes.length === 0 ? (
-            <Typography variant="body2" color="text.secondary">
-              No notes yet.
-            </Typography>
+            <Box sx={{ p: 3, textAlign: 'center', bgcolor: '#E9F7FF', borderRadius: 1, border: '1px dashed #45C3F8' }}>
+              <Typography variant="body2" color="text.secondary">
+                No notes yet.
+              </Typography>
+            </Box>
           ) : (
             notes.map((note) => (
-              <Paper key={note.id} sx={{ p: 2, backgroundColor: 'background.default' }}>
+              <Paper key={note.id} sx={{ p: 2, backgroundColor: '#ECF4FF', border: '1px solid #D4D4D4' }}>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                   <Box sx={{ flex: 1 }} onClick={() => openEditNote(note)} style={{ cursor: 'pointer' }}>
                     <Typography variant="subtitle2" fontWeight="bold">
