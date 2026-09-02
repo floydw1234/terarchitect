@@ -11,8 +11,8 @@ body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #08090a;
-  color: #f4f7fb;
+  background-color: #f5f9ff;
+  color: #1a1a1a;
 }
 
 code {
@@ -24,7 +24,7 @@ code {
 }
 
 ::selection {
-  background: rgba(139, 92, 246, 0.36);
+  background: rgba(0, 133, 250, 0.2);
 }
 
 ::-webkit-scrollbar {
@@ -33,12 +33,16 @@ code {
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.02);
+  background: #f0f0f0;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
-  border-radius: 999px;
+  background: #c4c4c4;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a0a0a0;
 }
 
 .graph-edge-flow {

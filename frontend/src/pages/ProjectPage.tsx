@@ -157,12 +157,12 @@ const ProjectPage: React.FC = () => {
     minHeight: 170,
     p: 3,
     borderRadius: 2,
-    border: '1px solid rgba(148, 163, 184, 0.45)',
-    backgroundColor: 'rgba(30, 41, 59, 0.85)',
-    transition: 'border-color 0.2s ease, transform 0.2s ease, background-color 0.2s ease',
+    border: '1px solid #e0e0e0',
+    backgroundColor: '#ffffff',
+    transition: 'border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease',
     '&:hover': {
-      borderColor: 'rgba(34, 211, 238, 0.7)',
-      backgroundColor: 'rgba(30, 41, 59, 1)',
+      borderColor: '#0085fa',
+      boxShadow: '0 4px 12px rgba(0, 133, 250, 0.12)',
       transform: 'translateY(-1px)',
     },
   } as const;
@@ -172,7 +172,7 @@ const ProjectPage: React.FC = () => {
       <Paper
         sx={{
           p: { xs: 2, md: 3 },
-          border: '1px solid rgba(148, 163, 184, 0.45)',
+          border: '1px solid #e0e0e0',
           boxShadow: 'none',
           mb: 3,
         }}
@@ -212,7 +212,7 @@ const ProjectPage: React.FC = () => {
           </Typography>
           <Typography sx={infoTextSx}>
             Git mode:{' '}
-            <span style={{ color: project.git_mode === 'swarm' ? '#a78bfa' : '#22d3ee' }}>
+            <span style={{ color: project.git_mode === 'swarm' ? '#0085fa' : '#4169e1' }}>
               {project.git_mode === 'swarm' ? 'Swarm (AgentHub)' : 'Legacy structured'}
             </span>
           </Typography>
@@ -272,7 +272,7 @@ const ProjectPage: React.FC = () => {
         <Paper
           sx={{
             p: { xs: 2, md: 3 },
-            border: '1px solid rgba(148, 163, 184, 0.45)',
+            border: '1px solid #e0e0e0',
             boxShadow: 'none',
             mb: 3,
           }}
@@ -289,7 +289,7 @@ const ProjectPage: React.FC = () => {
                 key={ticket.id}
                 sx={{
                   p: 1.5,
-                  border: '1px solid rgba(148, 163, 184, 0.25)',
+                  border: '1px solid #e0e0e0',
                   borderRadius: 1.5,
                 }}
               >

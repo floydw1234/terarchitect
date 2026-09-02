@@ -186,7 +186,7 @@ const AgenthubPage: React.FC = () => {
                 <Chip
                   size="small"
                   label={`Refreshed ${timeAgo(lastRefresh.toISOString())}`}
-                  sx={{ bgcolor: 'rgba(255, 255, 255, 0.05)' }}
+                  sx={{ bgcolor: '#f0f0f0' }}
                 />
               )}
               <Tooltip title="Refresh project DAG">
@@ -279,10 +279,10 @@ const AgenthubPage: React.FC = () => {
               gap: 2,
             }}
           >
-            <StatCard label="Scoped commits" value={commits.length} accent="#8b5cf6" />
-            <StatCard label="Project frontier" value={leaves.length} accent="#22d3ee" />
-            <StatCard label="Channels" value={channels.length} accent="#38bdf8" />
-            <StatCard label="Agents seen" value={uniqueAgents.length} accent="#a78bfa" />
+            <StatCard label="Scoped commits" value={commits.length} accent="#0085fa" />
+            <StatCard label="Project frontier" value={leaves.length} accent="#4169e1" />
+            <StatCard label="Channels" value={channels.length} accent="#0ea5e9" />
+            <StatCard label="Agents seen" value={uniqueAgents.length} accent="#6366f1" />
           </Box>
 
           {uniqueAgents.length > 0 && (

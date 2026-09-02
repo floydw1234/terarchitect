@@ -46,10 +46,9 @@ const Navbar: React.FC<NavbarProps> = () => {
         <Box
           sx={{
             p: 0.5,
-            borderRadius: 999,
-            border: '1px solid rgba(255, 255, 255, 0.08)',
-            bgcolor: alpha('#0b0e12', 0.6),
-            boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.04)',
+            borderRadius: 8,
+            border: '1px solid #e0e0e0',
+            bgcolor: '#ecf4ff',
           }}
         >
           <Stack direction="row" spacing={0.5}>
@@ -64,7 +63,7 @@ const Navbar: React.FC<NavbarProps> = () => {
                   color: item.active ? 'common.white' : 'text.secondary',
                   px: 2,
                   '&:hover': {
-                    bgcolor: item.active ? undefined : 'rgba(255, 255, 255, 0.04)',
+                    bgcolor: item.active ? undefined : 'rgba(0, 133, 250, 0.08)',
                   },
                 }}
               >

@@ -284,7 +284,7 @@ const RunningStrip: React.FC<RunningStripProps> = ({ tickets, projectId, onStop,
                           overflowY: 'auto',
                           fontSize: '0.7rem',
                           display: 'block',
-                          bgcolor: 'rgba(0,0,0,0.2)',
+                          bgcolor: '#f0f0f0',
                           p: 1,
                           borderRadius: 0.5,
                         }}

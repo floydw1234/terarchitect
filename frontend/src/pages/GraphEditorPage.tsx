@@ -586,7 +586,7 @@ const GraphEditorPage: React.FC = () => {
                     />
                     <path
                       d={buildCurvedPath(startX, startY, endX, endY)}
-                      stroke="#d8d4ff"
+                      stroke="#0085fa"
                       strokeWidth={1.1}
                       fill="none"
                       strokeDasharray="10 12"
@@ -634,7 +634,7 @@ const GraphEditorPage: React.FC = () => {
                     px: 1.25,
                     py: 0.75,
                     minWidth: 176,
-                    borderColor: 'rgba(255, 255, 255, 0.12)',
+                    borderColor: '#e0e0e0',
                     cursor: 'pointer',
                   }}
                 >
@@ -645,10 +645,10 @@ const GraphEditorPage: React.FC = () => {
                         label={edge.data.protocol}
                         sx={{
                           height: 22,
-                          bgcolor: alpha('#22d3ee', 0.12),
-                          color: '#9ae8ff',
+                          bgcolor: alpha('#0085fa', 0.1),
+                          color: '#0085fa',
                           fontFamily: '"JetBrains Mono", monospace',
-                          border: '1px solid rgba(34, 211, 238, 0.24)',
+                          border: '1px solid rgba(0, 133, 250, 0.24)',
                         }}
                       />
                     )}
@@ -683,8 +683,8 @@ const GraphEditorPage: React.FC = () => {
                     cursor: dragging ? 'grabbing' : 'grab',
                     borderColor: selected ? alpha(appearance.accent, 0.68) : alpha(appearance.accent, 0.22),
                     boxShadow: selected
-                      ? `0 18px 48px ${alpha(appearance.accent, 0.24)}, inset 0 0 0 1px ${alpha(appearance.accent, 0.18)}`
-                      : `0 16px 38px rgba(0, 0, 0, 0.36), inset 0 0 0 1px ${alpha(appearance.accent, 0.1)}`,
+                      ? `0 4px 16px ${alpha(appearance.accent, 0.2)}`
+                      : `0 2px 8px rgba(0, 0, 0, 0.08)`,
                     transform: dragging ? 'scale(1.02)' : selected ? 'translateY(-2px)' : 'none',
                     transition: 'transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease',
                   }}
@@ -693,10 +693,7 @@ const GraphEditorPage: React.FC = () => {
                     sx={{
                       position: 'absolute',
                       inset: 0,
-                      background: `
-                        radial-gradient(circle at 0% 0%, ${alpha(appearance.accent, 0.16)}, transparent 34%),
-                        linear-gradient(180deg, ${alpha(appearance.surface, 0.88)} 0%, rgba(9, 10, 14, 0.82) 100%)
-                      `,
+                      background: appearance.surface,
                       pointerEvents: 'none',
                     }}
                   />
