@@ -39,17 +39,16 @@ import { getProject, getTickets, type Project, type Ticket, type DisplayState } 
 // ---------------------------------------------------------------------------
 
 const SECTIONS: { state: DisplayState; label: string; color: string; description: string }[] = [
-  { state: 'running',       label: 'Running',        color: '#22d3ee', description: 'Agent executing now' },
-  { state: 'blocked',       label: 'Blocked',        color: '#f87171', description: 'Waiting on dep or external blocker' },
-  { state: 'failed',        label: 'Failed',         color: '#f87171', description: 'Last attempt failed validation or agent crashed' },
-  { state: 'attempt_ready', label: 'Attempt Ready',  color: '#60a5fa', description: 'Agent done — attempt awaiting review' },
-  { state: 'stale',         label: 'Stale',          color: '#fbbf24', description: 'Accepted but built before frontier advanced' },
-  { state: 'accepted',      label: 'Accepted',       color: '#34d399', description: 'Ready for composition into a release' },
-  { state: 'composed',      label: 'Composed',       color: '#a78bfa', description: 'In a release branch' },
-  { state: 'release_pr_open', label: 'PR Open',      color: '#a78bfa', description: 'Release PR open on GitHub' },
-  { state: 'shipped',       label: 'Shipped',        color: '#34d399', description: 'Reached main / shipped frontier' },
-  { state: 'queued',        label: 'Queued',         color: '#94a3b8', description: 'Ready to dispatch' },
-  // draft and archived are excluded from the inbox view — they're shown separately if needed
+  { state: 'running',       label: 'Running',        color: '#0085FA', description: 'Agent executing now' },
+  { state: 'blocked',       label: 'Blocked',        color: '#ef4444', description: 'Waiting on dep or external blocker' },
+  { state: 'failed',        label: 'Failed',         color: '#ef4444', description: 'Last attempt failed validation or agent crashed' },
+  { state: 'attempt_ready', label: 'Attempt Ready',  color: '#45C3F8', description: 'Agent done — attempt awaiting review' },
+  { state: 'stale',         label: 'Stale',          color: '#f59e0b', description: 'Accepted but built before frontier advanced' },
+  { state: 'accepted',      label: 'Accepted',       color: '#10b981', description: 'Ready for composition into a release' },
+  { state: 'composed',      label: 'Composed',       color: '#0085FA', description: 'In a release branch' },
+  { state: 'release_pr_open', label: 'PR Open',      color: '#0085FA', description: 'Release PR open on GitHub' },
+  { state: 'shipped',       label: 'Shipped',        color: '#10b981', description: 'Reached main / shipped frontier' },
+  { state: 'queued',        label: 'Queued',         color: '#6b7280', description: 'Ready to dispatch' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -66,7 +65,7 @@ function IntentCard({ ticket, projectId }: { ticket: Ticket; projectId: string }
         p: 1.5,
         borderRadius: 1,
         bgcolor: 'background.default',
-        border: '1px solid rgba(148,163,184,0.2)',
+        border: '1px solid #D4D4D4',
       }}
     >
       <Stack direction="row" spacing={1} alignItems="flex-start" justifyContent="space-between">
@@ -190,7 +189,7 @@ const IntentInboxPage: React.FC = () => {
   return (
     <Box sx={{ maxWidth: 900, mx: 'auto', width: '100%' }}>
       {/* Header */}
-      <Paper sx={{ p: { xs: 2, md: 3 }, mb: 3, border: '1px solid rgba(148,163,184,0.45)', boxShadow: 'none' }}>
+      <Paper sx={{ p: { xs: 2, md: 3 }, mb: 3, border: '1px solid #D4D4D4', boxShadow: 'none' }}>
         <Stack direction="row" alignItems="center" justifyContent="space-between">
           <Box>
             <Typography variant="h4">Intent Inbox</Typography>
@@ -213,7 +212,7 @@ const IntentInboxPage: React.FC = () => {
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
       {tickets.length === 0 && (
-        <Paper sx={{ p: 4, textAlign: 'center', border: '1px solid rgba(148,163,184,0.45)', boxShadow: 'none' }}>
+        <Paper sx={{ p: 4, textAlign: 'center', border: '1px solid #D4D4D4', boxShadow: 'none' }}>
           <Typography color="text.secondary">No active intents.</Typography>
         </Paper>
       )}

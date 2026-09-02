@@ -96,7 +96,7 @@ const AttemptDetailPage: React.FC = () => {
 
   return (
     <Box sx={{ maxWidth: 960, mx: 'auto', width: '100%' }}>
-      <Paper sx={{ p: { xs: 2, md: 3 }, mb: 3, border: '1px solid rgba(148,163,184,0.45)', boxShadow: 'none' }}>
+      <Paper sx={{ p: { xs: 2, md: 3 }, mb: 3, border: '1px solid #D4D4D4', boxShadow: 'none' }}>
         <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'flex-start', sm: 'center' }} justifyContent="space-between" spacing={2}>
           <Box>
             <Typography variant="h4">Attempt Detail</Typography>
@@ -117,7 +117,7 @@ const AttemptDetailPage: React.FC = () => {
       {rerunMessage && <Alert severity={rerunMessage.startsWith('API') ? 'error' : 'success'} sx={{ mb: 2 }}>{rerunMessage}</Alert>}
 
       {attempt && projectId && (
-        <Paper sx={{ p: 2.5, border: '1px solid rgba(148,163,184,0.45)', boxShadow: 'none' }}>
+        <Paper sx={{ p: 2.5, border: '1px solid #D4D4D4', boxShadow: 'none' }}>
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mb: 1 }}>
             <Typography variant="subtitle1" fontWeight={600}>Attempt #{attempt.attempt_num}</Typography>
             <Chip
@@ -184,7 +184,7 @@ const AttemptDetailPage: React.FC = () => {
                 p: 1.5,
                 borderRadius: 1,
                 bgcolor: 'background.default',
-                border: '1px solid rgba(148,163,184,0.18)',
+                border: '1px solid #D4D4D4',
                 fontSize: '0.75rem',
                 whiteSpace: 'pre-wrap',
                 overflow: 'auto',
