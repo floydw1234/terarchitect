@@ -11,7 +11,7 @@ import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { ThemeProvider, createTheme } from '@mui/material';
+import { ThemeContextProvider } from '../contexts/ThemeContext';
 
 jest.mock('../utils/api', () => ({
   getProject: jest.fn(),
@@ -44,17 +44,15 @@ jest.mock('../utils/api', () => ({
 import * as api from '../utils/api';
 import WorkspacePage from '../pages/WorkspacePage';
 
-const theme = createTheme({ palette: { mode: 'dark' } });
-
 function renderWorkspace(projectId = 'proj-1') {
   return render(
-    <ThemeProvider theme={theme}>
+    <ThemeContextProvider>
       <MemoryRouter initialEntries={[`/projects/${projectId}/workspace`]}>
         <Routes>
           <Route path="/projects/:projectId/workspace" element={<WorkspacePage />} />
         </Routes>
       </MemoryRouter>
-    </ThemeProvider>,
+    </ThemeContextProvider>,
   );
 }
 

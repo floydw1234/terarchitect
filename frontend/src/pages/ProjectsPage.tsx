@@ -153,7 +153,8 @@ const ProjectsPage: React.FC = () => {
         sx={{
           p: { xs: 2, md: 3 },
           mb: 3,
-          border: '1px solid #D4D4D4',
+          border: '1px solid',
+          borderColor: 'divider',
           boxShadow: 'none',
         }}
       >
@@ -187,9 +188,10 @@ const ProjectsPage: React.FC = () => {
           sx={{
             p: 4,
             textAlign: 'center',
-            border: '1px dashed #45C3F8',
+            border: '1px dashed',
+            borderColor: 'secondary.main',
             boxShadow: 'none',
-            bgcolor: '#ECF4FF',
+            bgcolor: 'background.default',
           }}
         >
           <Typography color="text.secondary">
@@ -204,14 +206,15 @@ const ProjectsPage: React.FC = () => {
                 sx={{
                   height: '100%',
                   p: 3,
-                  border: '1px solid #D4D4D4',
+                  border: '1px solid',
+                  borderColor: 'divider',
                   boxShadow: 'none',
                   display: 'flex',
                   flexDirection: 'column',
-                  bgcolor: '#FFFFFF',
+                  bgcolor: 'background.paper',
                   transition: 'all 0.15s ease',
                   '&:hover': {
-                    borderColor: '#0085FA',
+                    borderColor: 'primary.main',
                     transform: 'translateY(-2px)',
                   },
                 }}

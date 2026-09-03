@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Chip, Stack, Typography } from '@mui/material';
+import { Box, Chip, Stack, Typography, useTheme } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 
 export const GRAPH_NODE_WIDTH = 188;
@@ -28,25 +28,26 @@ export function accentFromString(value?: string) {
   return ACCENT_SEQUENCE[hash % ACCENT_SEQUENCE.length];
 }
 
-export function getArchitectureNodeAppearance(type: string) {
+export function getArchitectureNodeAppearance(type: string, isDark = false) {
+  const surface = isDark ? '#1b2838' : '#FFFFFF';
   switch (type) {
     case 'database':
-      return { label: 'Database', accent: '#0085FA', surface: '#FFFFFF', icon: 'DB' };
+      return { label: 'Database', accent: '#0085FA', surface, icon: 'DB' };
     case 'cache':
-      return { label: 'Cache', accent: '#10b981', surface: '#FFFFFF', icon: 'CA' };
+      return { label: 'Cache', accent: '#10b981', surface, icon: 'CA' };
     case 'queue':
-      return { label: 'Queue', accent: '#f59e0b', surface: '#FFFFFF', icon: 'QU' };
+      return { label: 'Queue', accent: '#f59e0b', surface, icon: 'QU' };
     case 'api':
-      return { label: 'API', accent: '#0085FA', surface: '#FFFFFF', icon: 'AP' };
+      return { label: 'API', accent: '#0085FA', surface, icon: 'AP' };
     case 'worker':
-      return { label: 'Worker', accent: '#ec4899', surface: '#FFFFFF', icon: 'WK' };
+      return { label: 'Worker', accent: '#ec4899', surface, icon: 'WK' };
     case 'view':
-      return { label: 'View', accent: '#45C3F8', surface: '#FFFFFF', icon: 'VW' };
+      return { label: 'View', accent: '#45C3F8', surface, icon: 'VW' };
     case 'frontend':
-      return { label: 'Frontend', accent: '#6366f1', surface: '#FFFFFF', icon: 'FE' };
+      return { label: 'Frontend', accent: '#6366f1', surface, icon: 'FE' };
     case 'service':
     default:
-      return { label: 'Service', accent: '#0085FA', surface: '#FFFFFF', icon: 'SV' };
+      return { label: 'Service', accent: '#0085FA', surface, icon: 'SV' };
   }
 }
 
@@ -107,8 +108,9 @@ export function graphSvgIds(scope: string) {
 
 export const graphGlassPanelSx = {
   position: 'relative',
-  border: '1px solid #D4D4D4',
-  background: '#FFFFFF',
+  border: '1px solid',
+  borderColor: 'divider',
+  bgcolor: 'background.paper',
   borderRadius: 1.5,
   boxShadow: 'none',
 } as const;
@@ -117,8 +119,9 @@ export const graphCanvasSx = {
   position: 'relative',
   overflow: 'auto',
   borderRadius: 1.5,
-  border: '1px solid #D4D4D4',
-  backgroundColor: '#E9F7FF',
+  border: '1px solid',
+  borderColor: 'divider',
+  bgcolor: 'background.default',
   backgroundImage: `
     linear-gradient(rgba(0, 133, 250, 0.06) 1px, transparent 1px),
     linear-gradient(90deg, rgba(0, 133, 250, 0.06) 1px, transparent 1px)
@@ -195,11 +198,7 @@ export const GraphEmptyState: React.FC<GraphEmptyStateProps> = ({
         <Chip
           size="small"
           label="Graph Surface"
-          sx={{
-            bgcolor: '#E9F7FF',
-            color: '#0085FA',
-            border: '1px solid #D4D4D4',
-          }}
+          color="info"
         />
         <Typography variant="h6" fontWeight={700}>
           {title}

@@ -2,7 +2,7 @@ import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { MemoryRouter } from 'react-router-dom';
-import { ThemeProvider, createTheme } from '@mui/material';
+import { ThemeContextProvider } from '../contexts/ThemeContext';
 
 jest.mock('../utils/api', () => ({
   getProjects: jest.fn(),
@@ -11,8 +11,6 @@ jest.mock('../utils/api', () => ({
 
 import * as api from '../utils/api';
 import AgenthubPage from '../pages/AgenthubPage';
-
-const theme = createTheme({ palette: { mode: 'dark' } });
 
 const projectOne = {
   id: 'proj-1',
@@ -34,11 +32,11 @@ const projectTwo = {
 
 function renderAgenthubPage() {
   return render(
-    <ThemeProvider theme={theme}>
+    <ThemeContextProvider>
       <MemoryRouter>
         <AgenthubPage />
       </MemoryRouter>
-    </ThemeProvider>,
+    </ThemeContextProvider>,
   );
 }
 

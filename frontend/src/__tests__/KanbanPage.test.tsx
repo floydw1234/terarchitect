@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { ThemeProvider, createTheme } from '@mui/material';
+import { ThemeContextProvider } from '../contexts/ThemeContext';
 
 jest.mock('../utils/api', () => ({
   getKanban: jest.fn(),
@@ -30,17 +30,15 @@ jest.mock('../utils/api', () => ({
 import * as api from '../utils/api';
 import KanbanPage from '../pages/KanbanPage';
 
-const theme = createTheme({ palette: { mode: 'dark' } });
-
 function renderKanbanPage() {
   return render(
-    <ThemeProvider theme={theme}>
+    <ThemeContextProvider>
       <MemoryRouter initialEntries={['/projects/proj-1/kanban']}>
         <Routes>
           <Route path="/projects/:projectId/kanban" element={<KanbanPage />} />
         </Routes>
       </MemoryRouter>
-    </ThemeProvider>,
+    </ThemeContextProvider>,
   );
 }
 

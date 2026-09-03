@@ -1,12 +1,16 @@
 import React from 'react';
 import { AppBar, Toolbar, Typography, Button, Box, Stack } from '@mui/material';
-import { alpha } from '@mui/material/styles';
 import { Link, useLocation } from 'react-router-dom';
+import { useThemeMode } from '../contexts/ThemeContext';
+import ThemeToggle from './ThemeToggle';
 
 interface NavbarProps {}
 
 const Navbar: React.FC<NavbarProps> = () => {
   const location = useLocation();
+  const { mode } = useThemeMode();
+  const isDark = mode === 'dark';
+
   const items = [
     { label: 'Projects', to: '/projects', active: location.pathname === '/projects' || location.pathname === '/' || location.pathname.startsWith('/projects/') },
     { label: 'AgentHub', to: '/agenthub', active: location.pathname === '/agenthub' },
@@ -17,8 +21,9 @@ const Navbar: React.FC<NavbarProps> = () => {
       position="sticky"
       elevation={0}
       sx={{
-        backgroundColor: '#FFFFFF',
-        borderBottom: '2px solid #0085FA',
+        backgroundColor: isDark ? 'background.paper' : '#FFFFFF',
+        borderBottom: '2px solid',
+        borderColor: isDark ? 'primary.main' : '#0085FA',
       }}
     >
       <Toolbar
@@ -54,8 +59,9 @@ const Navbar: React.FC<NavbarProps> = () => {
           sx={{
             p: 0.5,
             borderRadius: 1,
-            border: '1px solid #45C3F8',
-            bgcolor: '#ECF4FF',
+            border: '1px solid',
+            borderColor: isDark ? 'divider' : '#45C3F8',
+            bgcolor: isDark ? 'background.default' : '#ECF4FF',
           }}
         >
           <Stack direction="row" spacing={0.5}>
@@ -67,12 +73,18 @@ const Navbar: React.FC<NavbarProps> = () => {
                 variant={item.active ? 'contained' : 'text'}
                 color={item.active ? 'primary' : 'inherit'}
                 sx={{
-                  color: item.active ? 'common.white' : 'text.primary',
+                  color: item.active
+                    ? (isDark ? 'background.default' : 'common.white')
+                    : 'text.primary',
                   px: 2,
                   fontWeight: 600,
-                  bgcolor: item.active ? '#0085FA' : 'transparent',
+                  bgcolor: item.active
+                    ? (isDark ? 'primary.main' : '#0085FA')
+                    : 'transparent',
                   '&:hover': {
-                    bgcolor: item.active ? '#0066cc' : 'rgba(0, 133, 250, 0.12)',
+                    bgcolor: item.active
+                      ? (isDark ? 'primary.light' : '#0066cc')
+                      : (isDark ? 'rgba(69, 195, 248, 0.12)' : 'rgba(0, 133, 250, 0.12)'),
                   },
                 }}
               >
@@ -81,6 +93,7 @@ const Navbar: React.FC<NavbarProps> = () => {
             ))}
           </Stack>
         </Box>
+        <ThemeToggle />
       </Toolbar>
     </AppBar>
   );

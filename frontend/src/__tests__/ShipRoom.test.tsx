@@ -2,7 +2,7 @@ import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { ThemeProvider, createTheme } from '@mui/material';
+import { ThemeContextProvider } from '../contexts/ThemeContext';
 
 jest.mock('../utils/api', () => ({
   getProject: jest.fn(),
@@ -22,18 +22,16 @@ jest.mock('../utils/api', () => ({
 import * as api from '../utils/api';
 import ShipRoomPage from '../pages/ShipRoomPage';
 
-const theme = createTheme({ palette: { mode: 'dark' } });
-
 function renderShipRoom(projectId = 'proj-1') {
   return render(
-    <ThemeProvider theme={theme}>
+    <ThemeContextProvider>
       <MemoryRouter initialEntries={[`/projects/${projectId}/ship`]}>
         <Routes>
           <Route path="/projects/:projectId/ship" element={<ShipRoomPage />} />
           <Route path="/projects/:projectId/tickets/:ticketId/attempts/:attemptId" element={<div>Attempt detail route</div>} />
         </Routes>
       </MemoryRouter>
-    </ThemeProvider>,
+    </ThemeContextProvider>,
   );
 }
 

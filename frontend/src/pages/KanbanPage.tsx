@@ -26,6 +26,7 @@ import {
   CircularProgress,
   Chip,
   Stack,
+  useTheme,
 } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
@@ -169,7 +170,7 @@ const RunningStrip: React.FC<RunningStripProps> = ({ tickets, projectId, onStop,
           mb: 3,
           borderLeft: 4,
           borderLeftColor: 'primary.main',
-          bgcolor: '#E9F7FF',
+          bgcolor: 'info.light',
         }}
       >
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
@@ -284,7 +285,7 @@ const RunningStrip: React.FC<RunningStripProps> = ({ tickets, projectId, onStop,
                           overflowY: 'auto',
                           fontSize: '0.7rem',
                           display: 'block',
-                          bgcolor: '#E9F7FF',
+                          bgcolor: 'info.light',
                           p: 1,
                           borderRadius: 0.5,
                         }}
@@ -837,11 +838,11 @@ const KanbanPage: React.FC = () => {
       )}
 
       {/* Board — Backlog / Queued / Done columns */}
-      <Paper sx={{ p: 2, mb: 3, bgcolor: '#FFFFFF' }}>
+      <Paper sx={{ p: 2, mb: 3, bgcolor: 'background.paper' }}>
         <Box sx={{ display: 'flex', gap: 3, alignItems: 'stretch' }}>
           {boardColumns.map((column) => {
             const colTickets = tickets.filter((t) => t.column_id === column.id);
-            const columnBgColor = column.id === 'done' ? '#d1fae5' : column.id === 'queued' ? '#E9F7FF' : '#ECF4FF';
+            const columnBgColor = column.id === 'done' ? 'success.light' : column.id === 'queued' ? 'info.light' : 'background.default';
             return (
               <Box key={column.id} sx={{ flex: 1, minWidth: 220, display: 'flex', flexDirection: 'column' }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
@@ -859,8 +860,9 @@ const KanbanPage: React.FC = () => {
                     maxHeight: '70vh',
                     overflowY: 'auto',
                     p: 1.5,
-                    backgroundColor: columnBgColor,
-                    border: '1px solid #D4D4D4',
+                    bgcolor: columnBgColor,
+                    border: '1px solid',
+                    borderColor: 'divider',
                   }}
                 >
                   {colTickets.map((ticket) => (
@@ -880,7 +882,7 @@ const KanbanPage: React.FC = () => {
                     />
                   ))}
                   {colTickets.length === 0 && (
-                    <Box sx={{ p: 2, textAlign: 'center', bgcolor: 'rgba(255, 255, 255, 0.6)', borderRadius: 1, border: '1px dashed #D4D4D4' }}>
+                    <Box sx={{ p: 2, textAlign: 'center', bgcolor: 'background.paper', borderRadius: 1, border: '1px dashed', borderColor: 'divider', opacity: 0.8 }}>
                       <Typography variant="body2" color="text.secondary">
                         No tickets
                       </Typography>
@@ -1229,7 +1231,7 @@ const KanbanPage: React.FC = () => {
       </Dialog>
 
       {/* Notes section */}
-      <Paper sx={{ p: 2, bgcolor: '#FFFFFF' }}>
+      <Paper sx={{ p: 2, bgcolor: 'background.paper' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2, gap: 2, flexWrap: 'wrap' }}>
           <Typography variant="h6">Notes</Typography>
           <Button variant="contained" size="small" onClick={openCreateNote}>
@@ -1238,14 +1240,14 @@ const KanbanPage: React.FC = () => {
         </Box>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
           {notes.length === 0 ? (
-            <Box sx={{ p: 3, textAlign: 'center', bgcolor: '#E9F7FF', borderRadius: 1, border: '1px dashed #45C3F8' }}>
+            <Box sx={{ p: 3, textAlign: 'center', bgcolor: 'info.light', borderRadius: 1, border: '1px dashed', borderColor: 'secondary.main' }}>
               <Typography variant="body2" color="text.secondary">
                 No notes yet.
               </Typography>
             </Box>
           ) : (
             notes.map((note) => (
-              <Paper key={note.id} sx={{ p: 2, backgroundColor: '#ECF4FF', border: '1px solid #D4D4D4' }}>
+              <Paper key={note.id} sx={{ p: 2, bgcolor: 'background.default', border: '1px solid', borderColor: 'divider' }}>
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                   <Box sx={{ flex: 1 }} onClick={() => openEditNote(note)} style={{ cursor: 'pointer' }}>
                     <Typography variant="subtitle2" fontWeight="bold">

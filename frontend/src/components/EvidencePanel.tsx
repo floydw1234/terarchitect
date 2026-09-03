@@ -343,7 +343,7 @@ export default function EvidencePanel({
   const hasRerunnableFailure = !!bundle?.checks?.some(check => check.status === 'failed' && !!check.command);
 
   return (
-    <Paper sx={{ p: 1.5, mt: 2, bgcolor: 'background.default', border: '1px solid #D4D4D4', boxShadow: 'none' }}>
+    <Paper sx={{ p: 1.5, mt: 2, bgcolor: 'background.default', border: '1px solid', borderColor: 'divider', boxShadow: 'none' }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
           <Typography variant="subtitle2">Evidence</Typography>

@@ -539,7 +539,7 @@ const WorkspacePage: React.FC = () => {
   return (
     <Box sx={{ maxWidth: 1200, mx: 'auto', width: '100%' }}>
       {/* Header */}
-      <Paper sx={{ p: { xs: 2, md: 3 }, mb: 3, border: '1px solid #D4D4D4', boxShadow: 'none' }}>
+      <Paper sx={{ p: { xs: 2, md: 3 }, mb: 3, border: '1px solid', borderColor: 'divider', boxShadow: 'none' }}>
         <Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ xs: 'flex-start', md: 'center' }} justifyContent="space-between" spacing={2}>
           <Box>
             <Typography variant="h4">Workspace</Typography>
@@ -564,7 +564,7 @@ const WorkspacePage: React.FC = () => {
         {/* Left: leaf selector + workspace list */}
         <Box sx={{ flex: selectedWs ? '0 0 380px' : 1, minWidth: 0 }}>
           {/* Leaf selector */}
-          <Paper sx={{ p: 2, mb: 2, border: '1px solid #D4D4D4', boxShadow: 'none' }}>
+          <Paper sx={{ p: 2, mb: 2, border: '1px solid', borderColor: 'divider', boxShadow: 'none' }}>
             {projectId && (
               <LeafSelector
                 projectId={projectId}
@@ -578,7 +578,7 @@ const WorkspacePage: React.FC = () => {
 
           {/* Workspace list */}
           {active.length > 0 && (
-            <Paper sx={{ p: 2, border: '1px solid #D4D4D4', boxShadow: 'none' }}>
+            <Paper sx={{ p: 2, border: '1px solid', borderColor: 'divider', boxShadow: 'none' }}>
               <Typography variant="subtitle2" gutterBottom>Workspaces</Typography>
               <Stack spacing={1}>
                 {active.map(ws => (
@@ -587,8 +587,8 @@ const WorkspacePage: React.FC = () => {
                     onClick={() => setSelectedWs(prev => prev === ws.id ? null : ws.id)}
                     sx={{
                       cursor: 'pointer',
-                      border: selectedWs === ws.id ? '2px solid' : '1px solid #D4D4D4',
-                      borderColor: selectedWs === ws.id ? 'primary.main' : undefined,
+                      border: selectedWs === ws.id ? '2px solid' : '1px solid',
+                      borderColor: selectedWs === ws.id ? 'primary.main' : 'divider',
                       '&:hover': { borderColor: 'primary.light' },
                     }}
                   >
@@ -620,7 +620,7 @@ const WorkspacePage: React.FC = () => {
         {/* Right: workspace detail */}
         {selectedWs && projectId && (
           <Box sx={{ flex: 1, minWidth: 0 }}>
-            <Paper sx={{ p: 3, border: '1px solid #D4D4D4', boxShadow: 'none' }}>
+            <Paper sx={{ p: 3, border: '1px solid', borderColor: 'divider', boxShadow: 'none' }}>
               <WorkspacePanel
                 projectId={projectId}
                 wsId={selectedWs}

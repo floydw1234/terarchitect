@@ -41,7 +41,7 @@ function timeAgo(iso: string) {
 }
 
 const StatCard: React.FC<{ label: string; value: number; accent: string }> = ({ label, value, accent }) => (
-  <Card sx={{ minHeight: 132, backgroundColor: '#ECF4FF', borderLeft: `4px solid ${accent}` }}>
+  <Card sx={{ minHeight: 132, bgcolor: 'background.default', borderLeft: `4px solid ${accent}` }}>
     <CardContent>
       <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: '0.14em' }}>
         {label}
@@ -186,7 +186,7 @@ const AgenthubPage: React.FC = () => {
                 <Chip
                   size="small"
                   label={`Refreshed ${timeAgo(lastRefresh.toISOString())}`}
-                  sx={{ bgcolor: '#E9F7FF' }}
+                  sx={{ bgcolor: 'info.light' }}
                 />
               )}
               <Tooltip title="Refresh project DAG">
