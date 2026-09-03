@@ -64,12 +64,13 @@ function IntentCard({ ticket, projectId }: { ticket: Ticket; projectId: string }
       sx={{
         p: 1.5,
         borderRadius: 1,
-        bgcolor: '#ECF4FF',
-        border: '1px solid #D4D4D4',
+        bgcolor: 'background.default',
+        border: '1px solid',
+        borderColor: 'divider',
         transition: 'all 0.15s ease',
         '&:hover': {
-          borderColor: '#45C3F8',
-          bgcolor: '#E9F7FF',
+          borderColor: 'secondary.main',
+          bgcolor: 'info.light',
         },
       }}
     >
@@ -194,7 +195,7 @@ const IntentInboxPage: React.FC = () => {
   return (
     <Box sx={{ maxWidth: 900, mx: 'auto', width: '100%' }}>
       {/* Header */}
-      <Paper sx={{ p: { xs: 2, md: 3 }, mb: 3, border: '1px solid #D4D4D4', boxShadow: 'none' }}>
+      <Paper sx={{ p: { xs: 2, md: 3 }, mb: 3, border: '1px solid', borderColor: 'divider', boxShadow: 'none' }}>
         <Stack direction="row" alignItems="center" justifyContent="space-between">
           <Box>
             <Typography variant="h4">Intent Inbox</Typography>
@@ -217,7 +218,7 @@ const IntentInboxPage: React.FC = () => {
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
       {tickets.length === 0 && (
-        <Paper sx={{ p: 4, textAlign: 'center', border: '1px solid #D4D4D4', boxShadow: 'none' }}>
+        <Paper sx={{ p: 4, textAlign: 'center', border: '1px solid', borderColor: 'divider', boxShadow: 'none' }}>
           <Typography color="text.secondary">No active intents.</Typography>
         </Paper>
       )}

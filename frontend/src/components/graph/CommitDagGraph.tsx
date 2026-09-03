@@ -238,7 +238,7 @@ const CommitDagGraph: React.FC<CommitDagGraphProps> = ({
                   width: GRAPH_COMMIT_WIDTH,
                   minHeight: GRAPH_COMMIT_HEIGHT,
                   p: 1.5,
-                  borderColor: isLeaf ? '#0085FA' : '#D4D4D4',
+                  borderColor: isLeaf ? 'primary.main' : 'divider',
                   boxShadow: 'none',
                   overflow: 'hidden',
                 }}
@@ -264,11 +264,9 @@ const CommitDagGraph: React.FC<CommitDagGraphProps> = ({
                         <Chip
                           size="small"
                           label="Frontier"
+                          color="info"
                           sx={{
                             height: 20,
-                            bgcolor: '#E9F7FF',
-                            color: '#0085FA',
-                            border: '1px solid #D4D4D4',
                           }}
                         />
                       )}
@@ -278,7 +276,7 @@ const CommitDagGraph: React.FC<CommitDagGraphProps> = ({
                           label="Root"
                           sx={{
                             height: 20,
-                            bgcolor: '#E9F7FF',
+                            bgcolor: 'info.light',
                             color: 'text.secondary',
                           }}
                         />

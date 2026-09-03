@@ -157,12 +157,13 @@ const ProjectPage: React.FC = () => {
     minHeight: 170,
     p: 3,
     borderRadius: 1.5,
-    border: '1px solid #D4D4D4',
-    backgroundColor: '#ECF4FF',
+    border: '1px solid',
+    borderColor: 'divider',
+    bgcolor: 'background.default',
     transition: 'all 0.2s ease',
     '&:hover': {
-      borderColor: '#0085FA',
-      backgroundColor: '#E9F7FF',
+      borderColor: 'primary.main',
+      bgcolor: 'info.light',
       transform: 'translateY(-2px)',
     },
   } as const;
@@ -172,7 +173,8 @@ const ProjectPage: React.FC = () => {
       <Paper
         sx={{
           p: { xs: 2, md: 3 },
-          border: '1px solid #D4D4D4',
+          border: '1px solid',
+          borderColor: 'divider',
           boxShadow: 'none',
           mb: 3,
         }}
@@ -272,7 +274,8 @@ const ProjectPage: React.FC = () => {
         <Paper
           sx={{
             p: { xs: 2, md: 3 },
-            border: '1px solid #D4D4D4',
+            border: '1px solid',
+          borderColor: 'divider',
             boxShadow: 'none',
             mb: 3,
           }}
@@ -289,7 +292,8 @@ const ProjectPage: React.FC = () => {
                 key={ticket.id}
                 sx={{
                   p: 1.5,
-                  border: '1px solid #D4D4D4',
+                  border: '1px solid',
+          borderColor: 'divider',
                   borderRadius: 1.5,
                 }}
               >

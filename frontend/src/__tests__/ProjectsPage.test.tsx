@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom';
 import { MemoryRouter } from 'react-router-dom';
-import { ThemeProvider, createTheme } from '@mui/material';
+import { ThemeContextProvider } from '../contexts/ThemeContext';
 
 jest.mock('../utils/api', () => ({
   getProjects: jest.fn(),
@@ -15,15 +15,13 @@ jest.mock('../utils/api', () => ({
 import * as api from '../utils/api';
 import ProjectsPage from '../pages/ProjectsPage';
 
-const theme = createTheme({ palette: { mode: 'dark' } });
-
 function renderProjectsPage() {
   return render(
-    <ThemeProvider theme={theme}>
+    <ThemeContextProvider>
       <MemoryRouter>
         <ProjectsPage />
       </MemoryRouter>
-    </ThemeProvider>,
+    </ThemeContextProvider>,
   );
 }
 

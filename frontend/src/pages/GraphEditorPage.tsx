@@ -634,7 +634,7 @@ const GraphEditorPage: React.FC = () => {
                     px: 1.25,
                     py: 0.75,
                     minWidth: 176,
-                    borderColor: '#D4D4D4',
+                    borderColor: 'divider',
                     cursor: 'pointer',
                   }}
                 >
@@ -643,12 +643,10 @@ const GraphEditorPage: React.FC = () => {
                       <Chip
                         size="small"
                         label={edge.data.protocol}
+                        color="info"
                         sx={{
                           height: 22,
-                          bgcolor: '#E9F7FF',
-                          color: '#0085FA',
                           fontFamily: '"JetBrains Mono", monospace',
-                          border: '1px solid #D4D4D4',
                         }}
                       />
                     )}
