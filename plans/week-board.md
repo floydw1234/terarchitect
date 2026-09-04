@@ -13,4 +13,4 @@ Each point fits one weekday PR: test, bugfix, docs, or screenshot.
 
 4. **Thu 2026-09-03 — screenshot.** Refresh `pictures/project_view.png` (or kanban) so README matches current UI after optional-memory. Capture a screenshot ONLY if the app actually boots in the cloud agent. If Docker-in-Docker or the UI will not run, skip the screenshot and note the blocker under this point. Do not fake an image. Status: `blocked: no Docker/Compose in cloud agent environment — docker command not found, cannot start postgres/backend/frontend/agenthub stack to capture real screenshot`.
 
-5. **Fri 2026-09-04 — docs slice.** Add a short pointer in `plans/README.md` (Operator files) to `plans/week-board.md` and `plans/outreach.md`. Do not rewrite the MVP reading order. Status: `todo`.
+5. **Fri 2026-09-04 — docs slice.** Add a short pointer in `plans/README.md` (Operator files) to `plans/week-board.md` and `plans/outreach.md`. Do not rewrite the MVP reading order. Status: `done: Operator Files section already present in plans/README.md (added with week-board creation in PR #8)`.
