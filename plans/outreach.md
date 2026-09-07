@@ -4,6 +4,17 @@ Outreach to potential design partners. Public professional emails only. Max 3 ne
 
 ---
 
+## ⏸️ PAUSED — 2026-09-07
+
+**Outreach is paused until William reopens it.**
+
+- Do not research new contacts.
+- Do not send Gmail.
+- Do not retry Ronacher / Neubig / Yang.
+- Do not re-email Huntley / Zechner / Ball.
+
+---
+
 ## Sent 2026-08-30 (Sat)
 
 From: floydw1234@gmail.com
