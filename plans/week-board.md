@@ -9,7 +9,7 @@ Each point fits one weekday PR: a functional product slice toward the MVP spine.
 
 1. **Mon 2026-09-07 — wave→candidate cutover.** Resolve the wave-removal cutover: rebase or redo PR #7 onto current main so candidate/ShipRun is the only operator ship path. Remove any remaining wave-keyed compose/ship contract from the operator surface. Verify: CLI `ta ship` subcommands use candidate/ShipRun exclusively; no wave-keyed ship APIs remain callable. Status: `todo`.
 
-2. **Tue 2026-09-08 — harden accept/choose-winner.** Ensure accepting a validated TicketAttempt marks it as the integrated winner and makes it candidate-eligible without frontier/base drift. If the winner's base differs from current frontier, the accept path must reconcile or reject cleanly. Verify: add or extend a focused test proving accept → winner → candidate-eligible transition with no drift. Status: `todo`.
+2. **Tue 2026-09-08 — harden accept/choose-winner.** Ensure accepting a validated TicketAttempt marks it as the integrated winner and makes it candidate-eligible without frontier/base drift. If the winner's base differs from current frontier, the accept path must reconcile or reject cleanly. Verify: add or extend a focused test proving accept → winner → candidate-eligible transition with no drift. Status: `done`.
 
 3. **Wed 2026-09-09 — deterministic base selection after ship.** After a ShipRun ships and shipped_frontier advances, subsequent independent jobs must base on the new frontier (or one accepted dependency if specified). Verify: add a test that ships a run, confirms shipped_frontier advances, then spawns a new job and asserts its base equals the new frontier. Status: `todo`.
 

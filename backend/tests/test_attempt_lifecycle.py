@@ -309,3 +309,130 @@ def test_promotion_candidate_blocks_non_integrated_or_non_winner_attempts(client
     data = create_resp.get_json()
     assert data["status"] == "blocked"
     assert "winning integrated attempt" in (data["conflict_summary"] or "")
+
+
+def test_accept_winner_makes_attempt_candidate_eligible_with_no_drift(client, project):
+    """Accept → winner → candidate-eligible transition with no drift.
+
+    An attempt based on shipped_frontier should be accepted and immediately
+    candidate-eligible without any frontier drift. This tests the alignment
+    between accept validation and candidate eligibility.
+    """
+    from models.db import Project, Ticket, TicketAttempt, db
+
+    pid = project["id"]
+    shipped_frontier = "s" * 40
+
+    with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        stored_project.shipped_frontier = shipped_frontier
+        stored_project.accepted_frontier_id = shipped_frontier
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Candidate-eligible ticket",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="c" * 40,
+            base_hash=shipped_frontier,
+            attempt_num=1,
+            status="validated",
+            validated_at=_now(),
+            summary="attempt for candidate eligibility test",
+        )
+        db.session.add(attempt)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+        attempt_id = str(attempt.id)
+
+    choose_resp = client.post(
+        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{attempt_id}/choose-winner"
+    )
+    assert choose_resp.status_code == 200
+    assert choose_resp.get_json()["is_winner"] is True
+
+    accept_resp = client.post(
+        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{attempt_id}/accept"
+    )
+    assert accept_resp.status_code == 200
+    accept_data = accept_resp.get_json()
+    assert accept_data["is_winner"] is True
+    assert accept_data["integrated"] is True
+    assert accept_data["shipped_frontier"] == shipped_frontier
+
+    candidate_resp = client.post(
+        f"/api/projects/{pid}/ship/candidates",
+        json={"selected_attempt_ids": [attempt_id]},
+    )
+    assert candidate_resp.status_code == 201
+    candidate_data = candidate_resp.get_json()
+    assert candidate_data["status"] == "valid", (
+        f"Accepted attempt should be candidate-eligible: {candidate_data.get('conflict_summary')}"
+    )
+    assert candidate_data["base_root_hash"] == shipped_frontier
+
+    with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        assert stored_project.shipped_frontier == shipped_frontier
+
+
+def test_accept_rejects_attempt_with_base_not_matching_shipped_frontier(client, project):
+    """Accept cleanly rejects an attempt whose base differs from shipped_frontier.
+
+    When an attempt's base_hash does not match shipped_frontier (and is not an
+    integrated dependency winner), the accept path must reject clearly rather
+    than silently allowing drift between accept validation and candidate eligibility.
+    """
+    from models.db import Project, Ticket, TicketAttempt, db
+
+    pid = project["id"]
+    shipped_frontier = "s" * 40
+    stale_base = "old_" + "x" * 36
+
+    with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        stored_project.shipped_frontier = shipped_frontier
+        stored_project.accepted_frontier_id = shipped_frontier
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Stale-base ticket",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="d" * 40,
+            base_hash=stale_base,
+            attempt_num=1,
+            status="validated",
+            validated_at=_now(),
+            is_winner=True,
+            winner_chosen_at=_now(),
+            summary="attempt with stale base",
+        )
+        db.session.add(attempt)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+        attempt_id = str(attempt.id)
+
+    accept_resp = client.post(
+        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{attempt_id}/accept"
+    )
+    assert accept_resp.status_code == 409
+    accept_data = accept_resp.get_json()
+    assert "stale" in accept_data["error"].lower()
+    assert "shipped_frontier" in accept_data["error"].lower()
+    assert accept_data["shipped_frontier"] == shipped_frontier
+
+    with client.application.app_context():
+        stored_attempt = db.session.get(TicketAttempt, attempt_id)
+        assert stored_attempt.status == "validated"
+        assert stored_attempt.integrated_at is None

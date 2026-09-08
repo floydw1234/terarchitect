@@ -57,7 +57,9 @@ from .services.github_service import (
 )
 from .services.project_service import (
     bootstrap_project_memory as _bootstrap_project_memory,
+    compare_base_to_shipped_frontier as _compare_base_to_shipped_frontier,
     get_project_frontier_id as _get_project_frontier_id,
+    get_project_shipped_frontier as _get_project_shipped_frontier,
     infer_project_source_type as _infer_project_source_type,
     normalize_github_ref as _normalize_github_ref,
     normalize_frontier_id as _normalize_frontier_id,
@@ -195,12 +197,13 @@ def _fail_job_with_ticket_recovery(job, *, reset_column_id: str = "queued") -> N
 def _acceptance_allowed_base_hashes(project, ticket: Ticket | None) -> set[str]:
     """Return commit hashes that may legitimately serve as an attempt base for acceptance.
 
-    Accepting a winner does not advance ``project.accepted_frontier_id``. A dependent
-    ticket can therefore still be valid when its attempt was based on an already
-    integrated dependency winner rather than the project's current frontier leaf.
+    Uses ``shipped_frontier`` (not ``accepted_frontier_id``) to ensure that any
+    accepted attempt is automatically candidate-eligible. A dependent ticket can
+    still be valid when its attempt was based on an already integrated dependency
+    winner rather than the project's current shipped frontier.
     """
     allowed: set[str] = set()
-    frontier = _get_project_frontier_id(project)
+    frontier = _get_project_shipped_frontier(project)
     if frontier:
         allowed.add(frontier)
     if ticket is None:
@@ -2423,7 +2426,13 @@ def ticket_attempt_accept(project_id, ticket_id, attempt_id):
             allowed_bases = _acceptance_allowed_base_hashes(project, ticket)
             normalized_base = _normalize_frontier_id(getattr(attempt, "base_hash", None))
             if normalized_base not in allowed_bases:
-                stale, stale_reason = _attempt_stale_status(attempt, project)
+                shipped_frontier = _get_project_shipped_frontier(project)
+                stale, stale_reason = _compare_base_to_shipped_frontier(
+                    getattr(attempt, "base_hash", None),
+                    shipped_frontier,
+                    subject_name="attempt",
+                    base_field_name="attempt.base_hash",
+                )
                 if stale is None:
                     raise ValueError(stale_reason or "Cannot determine attempt staleness.")
                 if stale:
@@ -2431,7 +2440,7 @@ def ticket_attempt_accept(project_id, ticket_id, attempt_id):
                         allowed_preview = ", ".join(sorted(base[:12] for base in allowed_bases))
                         raise ValueError(
                             "Attempt is stale and cannot be accepted/integrated without an explicit override. "
-                            f"attempt.base_hash must match project.accepted_frontier_id or an integrated dependency winner "
+                            f"attempt.base_hash must match project.shipped_frontier or an integrated dependency winner "
                             f"({allowed_preview})."
                         )
                     raise ValueError(
@@ -2466,12 +2475,14 @@ def ticket_attempt_accept(project_id, ticket_id, attempt_id):
         return jsonify({
             "error": str(e),
             "accepted_frontier_id": _get_project_frontier_id(project),
+            "shipped_frontier": _get_project_shipped_frontier(project),
         }), 409
     except Exception:
         db.session.rollback()
         raise
     payload = _attempt_to_json(attempt, accepted_frontier_id=_get_project_frontier_id(project))
     payload["accepted_frontier_id"] = project.accepted_frontier_id
+    payload["shipped_frontier"] = _get_project_shipped_frontier(project)
     payload["project"] = _project_to_json(project)
     return jsonify(payload)
 

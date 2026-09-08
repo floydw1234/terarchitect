@@ -30,6 +30,11 @@ def get_project_frontier_id(project: Project) -> str | None:
     return normalize_frontier_id(getattr(project, "accepted_frontier_id", None))
 
 
+def get_project_shipped_frontier(project: Project) -> str | None:
+    """Return the shipped_frontier for a project, which is the canonical base for candidate eligibility."""
+    return normalize_frontier_id(getattr(project, "shipped_frontier", None))
+
+
 def normalize_project_source_type(value) -> str | None:
     if value is None:
         return None
@@ -97,6 +102,33 @@ def compare_base_to_accepted_frontier(
         return None, f"Cannot determine {subject_name} staleness: {' and '.join(missing)}."
     if normalized_base != normalized_frontier:
         return True, f"{base_field_name} differs from project.accepted_frontier_id."
+    return False, None
+
+
+def compare_base_to_shipped_frontier(
+    base_value,
+    shipped_frontier,
+    *,
+    subject_name: str,
+    base_field_name: str,
+) -> tuple[Optional[bool], Optional[str]]:
+    """Compare a base hash against shipped_frontier for candidate eligibility.
+
+    This is the canonical staleness check for acceptance, as candidate eligibility
+    is determined relative to shipped_frontier (the last shipped commit) rather
+    than accepted_frontier_id.
+    """
+    normalized_base = normalize_frontier_id(base_value)
+    normalized_frontier = normalize_frontier_id(shipped_frontier)
+    missing = []
+    if normalized_base is None:
+        missing.append(f"{base_field_name} is not set")
+    if normalized_frontier is None:
+        missing.append("project.shipped_frontier is not set")
+    if missing:
+        return None, f"Cannot determine {subject_name} staleness: {' and '.join(missing)}."
+    if normalized_base != normalized_frontier:
+        return True, f"{base_field_name} differs from project.shipped_frontier."
     return False, None
 
 
