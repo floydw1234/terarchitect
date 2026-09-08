@@ -841,6 +841,8 @@ def test_accept_attempt_integrates_winner_without_advancing_project_accepted_fro
     from models.db import db, Project, Ticket, TicketAttempt
 
     with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        stored_project.shipped_frontier = initial_frontier
         ticket = Ticket(
             project_id=pid,
             column_id="done",
@@ -934,9 +936,11 @@ def test_accept_attempt_fails_clearly_without_agenthub_commit_hash(client, proje
 
 def test_accept_attempt_does_not_fallback_to_local_git_head(client, project):
     pid = project["id"]
-    from models.db import db, Ticket, TicketAttempt
+    from models.db import db, Project, Ticket, TicketAttempt
 
     with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        stored_project.shipped_frontier = project["accepted_frontier_id"]
         ticket = Ticket(
             project_id=pid,
             column_id="done",

@@ -155,13 +155,20 @@ def test_e2e_ship_happy_path(client, project):
     pid = project["id"]
     initial_frontier = project["accepted_frontier_id"]
 
+    # Set shipped_frontier to match accepted_frontier for candidate eligibility
+    from models.db import db, Project
+    with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        stored_project.shipped_frontier = initial_frontier
+        db.session.commit()
+
     # Step 1+2: Create two dependency-linked tickets
     t_a = _create_ticket(client, pid, "Ticket A — no deps")
     t_b = _create_ticket(client, pid, "Ticket B — depends on A", deps=[t_a["id"]], column_id="queued")
 
-    # Step 3: Move A to in_progress and complete it
+    # Step 3: Move A to in_progress and complete it (base on shipped_frontier)
     _move_to_in_progress(client, pid, t_a["id"])
-    resp = _complete_ticket(client, pid, t_a["id"], "a" * 40)
+    resp = _complete_ticket(client, pid, t_a["id"], "a" * 40, base_hash=initial_frontier)
     assert resp.status_code == 200
 
     attempts_by_commit = _attempts_by_commit(client, pid)
@@ -238,9 +245,10 @@ def test_e2e_ship_happy_path(client, project):
     assert claim_data["commit_hashes"] == ["a" * 40]
 
     # Step 8: Shipper reports composed
+    # base_main_hash must match shipped_frontier for ship validation to pass
     composed_resp = client.post(f"/api/worker/ship-run/{run_id}/composed", json={
         "composed_commit_hash": "c" * 40,
-        "base_main_hash": "d" * 40,
+        "base_main_hash": initial_frontier,
         "test_status": "passed",
         "test_output": "All tests pass.",
         "changed_files": ["src/app.py"],
@@ -249,7 +257,7 @@ def test_e2e_ship_happy_path(client, project):
     composed_data = composed_resp.get_json()
     assert composed_data["status"] == "ready_to_ship"
     assert composed_data["composed_commit_hash"] == "c" * 40
-    assert composed_data["base_main_hash"] == "d" * 40
+    assert composed_data["base_main_hash"] == initial_frontier
     assert composed_data["changed_files"] == ["src/app.py"]
     assert composed_data["test_status"] == "passed"
     assert composed_data["test_output"] == "All tests pass."
@@ -259,7 +267,7 @@ def test_e2e_ship_happy_path(client, project):
     # from composed_commit_hash without any gh pr merge call.
     ship_resp = client.post(f"/api/projects/{pid}/ship/candidates/{candidate['id']}/ship", json={})
 
-    assert ship_resp.status_code == 200
+    assert ship_resp.status_code == 200, ship_resp.get_json()
     data = ship_resp.get_json()
     assert data["status"] == "shipped"
     # shipped_commit_hash == composed_commit_hash (no gh PR needed)
@@ -283,6 +291,13 @@ def test_e2e_ship_happy_path(client, project):
 def test_e2e_create_promotion_candidate_from_accepted_attempts(client, project):
     pid = project["id"]
     frontier = project["accepted_frontier_id"]
+
+    # Set shipped_frontier to match accepted_frontier for candidate eligibility
+    from models.db import db, Project
+    with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        stored_project.shipped_frontier = frontier
+        db.session.commit()
 
     t_a = _create_ticket(client, pid, "Ticket A")
     t_b = _create_ticket(client, pid, "Ticket B depends on A", deps=[t_a["id"]], column_id="queued")

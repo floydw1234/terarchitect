@@ -333,8 +333,10 @@ def test_accept_attempt_while_compose_running(client, project, accepted_attempt_
     pid = project["id"]
 
     # Put a run in "running" state (simulate shipper mid-run)
-    from models.db import db, ShipRun
+    from models.db import db, Project, ShipRun
     with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        stored_project.shipped_frontier = project["accepted_frontier_id"]
         run = ShipRun(project_id=pid, status="running")
         db.session.add(run)
         db.session.commit()
