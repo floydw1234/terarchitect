@@ -84,7 +84,7 @@ def test_run_once_reports_ephemeral_runtime_when_shipping_without_project_path(t
     posts = []
 
     run_payload = {
-        "run": {"id": "run-12345678", "wave_num": 3, "promotion_candidate_id": "cand-1"},
+        "run": {"id": "run-12345678", "promotion_candidate_id": "cand-1"},
         "candidate": {"id": "cand-1"},
         "project": {
             "name": "Demo",
@@ -100,7 +100,7 @@ def test_run_once_reports_ephemeral_runtime_when_shipping_without_project_path(t
             return type("R", (), {"returncode": 0, "stdout": "b" * 40 + "\n", "stderr": ""})()
         if args == ["diff", "origin/main...HEAD", "--name-only"]:
             return type("R", (), {"returncode": 0, "stdout": "src/app.py\n", "stderr": ""})()
-        if args == ["push", "-u", "origin", "terarchitect/release/wave-3-run12345", "--force-with-lease"]:
+        if args == ["push", "-u", "origin", "terarchitect/release/ship-run12345", "--force-with-lease"]:
             return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
         raise AssertionError(f"Unexpected git args: {args}")
 
@@ -124,7 +124,7 @@ def test_run_once_reports_ephemeral_runtime_when_shipping_without_project_path(t
                  "cache_source": "github_url",
                  "ephemeral_repo": True,
              })), \
-             patch("agent.shipper.shipper._compose_release_branch", return_value=("terarchitect/release/wave-3-run12345", "c" * 40)), \
+             patch("agent.shipper.shipper._compose_release_branch", return_value=("terarchitect/release/ship-run12345", "c" * 40)), \
              patch("agent.shipper.shipper._run_tests", return_value=("passed", "")), \
              patch("agent.shipper.shipper._git", side_effect=fake_git), \
              patch("agent.shipper.shipper.subprocess.run", side_effect=fake_subprocess_run), \

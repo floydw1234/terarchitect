@@ -107,7 +107,6 @@ def test_project_agenthub_graph_scopes_commits_and_sends_backend_bearer_key(clie
             ticket_id=ticket.id,
             agenthub_commit_hash="c" * 40,
             base_hash="b" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="scoped attempt",

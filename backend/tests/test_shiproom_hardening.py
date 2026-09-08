@@ -30,11 +30,10 @@ def test_ship_run_merge_failure_preserves_detail_and_hint(client, project):
     with client.application.app_context():
         run = ShipRun(
             project_id=pid,
-            wave_num=0,
             status="ready_to_ship",
             composed_commit_hash="c" * 40,
             base_main_hash="f" * 40,
-            release_branch="terarchitect/release/wave-0-abc12345",
+            release_branch="terarchitect/release/ship-abc12345",
             release_pr_number=42,
             release_pr_url="https://github.com/owner/repo/pull/42",
         )
@@ -50,7 +49,7 @@ def test_ship_run_merge_failure_preserves_detail_and_hint(client, project):
 
     view_response = MagicMock(returncode=0)
     view_response.stdout = json.dumps(
-        {"state": "OPEN", "headRefName": "terarchitect/release/wave-0-abc12345", "headRefOid": "c" * 40}
+        {"state": "OPEN", "headRefName": "terarchitect/release/ship-abc12345", "headRefOid": "c" * 40}
     )
     merge_response = MagicMock(returncode=1)
     merge_response.stderr = "GraphQL: Base branch protection prevents merge"
@@ -82,7 +81,6 @@ def test_ship_run_already_merged_reconciles_and_returns_evidence_summary(client,
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash="f" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="done",
@@ -101,11 +99,10 @@ def test_ship_run_already_merged_reconciles_and_returns_evidence_summary(client,
         run = ShipRun(
             project_id=pid,
             promotion_candidate_id=str(candidate.id),
-            wave_num=0,
             status="ready_to_ship",
             composed_commit_hash="c" * 40,
             base_main_hash="f" * 40,
-            release_branch="terarchitect/release/wave-0-abc12345",
+            release_branch="terarchitect/release/ship-abc12345",
             release_pr_number=42,
             release_pr_url="https://github.com/owner/repo/pull/42",
             summary="Ship summary",
@@ -130,7 +127,7 @@ def test_ship_run_already_merged_reconciles_and_returns_evidence_summary(client,
         {
             "state": "MERGED",
             "mergedAt": "2026-06-10T12:00:00Z",
-            "headRefName": "terarchitect/release/wave-0-abc12345",
+            "headRefName": "terarchitect/release/ship-abc12345",
             "headRefOid": "c" * 40,
         }
     )
@@ -172,7 +169,6 @@ def test_ship_happy_path_creates_candidate_and_queued_run(client, project):
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash="f" * 40,
-            wave_num=0,
             attempt_num=1,
             status="accepted",
             summary="done",

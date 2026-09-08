@@ -234,7 +234,6 @@ def attempt_to_json(
         "base_hash": attempt.base_hash,
         "base_leaf_id": attempt.base_hash,
         "parent_leaf_id": attempt.base_hash,
-        "wave_num": attempt.wave_num,
         "attempt_num": attempt.attempt_num,
         "agent_id": attempt.agent_id,
         "worker_job_id": attempt.agent_id,
@@ -297,16 +296,6 @@ def get_accepted_attempt(ticket_id) -> Optional[TicketAttempt]:
     return get_integrated_winner_attempt(ticket_id)
 
 
-def list_wave_attempts(project_id, wave_num: int) -> list[TicketAttempt]:
-    """Return all attempts for a given wave, newest attempt per ticket first."""
-    return (
-        TicketAttempt.query
-        .filter_by(project_id=project_id, wave_num=wave_num)
-        .order_by(TicketAttempt.ticket_id, TicketAttempt.attempt_num.desc())
-        .all()
-    )
-
-
 def list_ready_attempts(project_id) -> list[TicketAttempt]:
     """Return accepted attempts that have not yet been composed into a release."""
     return (
@@ -327,16 +316,11 @@ def create_attempt(
     ticket_id,
     commit_hash: Optional[str] = None,
     base_hash: Optional[str] = None,
-    wave_num: Optional[int] = None,
     agent_id: Optional[str] = None,
     summary: Optional[str] = None,
     initial_status: str = "proposed",
 ) -> TicketAttempt:
-    """Create and persist a new TicketAttempt, auto-incrementing attempt_num.
-
-    `wave_num` is legacy-only compatibility metadata. Callers no longer need to
-    supply it for acceptance, inspection, or later promotion selection paths.
-    """
+    """Create and persist a new TicketAttempt, auto-incrementing attempt_num."""
     if initial_status not in ALL_STATUSES:
         raise ValueError(f"Unknown initial status: {initial_status!r}")
 
@@ -347,14 +331,12 @@ def create_attempt(
         .first()
     )
     attempt_num = (last.attempt_num + 1) if last else 1
-    compatibility_wave_num = 0 if wave_num is None else wave_num
 
     attempt = TicketAttempt(
         project_id=project_id,
         ticket_id=ticket_id,
         agenthub_commit_hash=commit_hash,
         base_hash=base_hash,
-        wave_num=compatibility_wave_num,
         attempt_num=attempt_num,
         agent_id=agent_id,
         status=initial_status,

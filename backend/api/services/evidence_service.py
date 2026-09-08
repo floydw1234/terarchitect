@@ -18,7 +18,7 @@ from .channel_service import (
     post_event as _post_event,
     project_channel as _project_channel,
     ticket_channel as _ticket_channel,
-    wave_channel as _wave_channel,
+    ship_run_channel as _ship_run_channel,
 )
 
 
@@ -3221,7 +3221,7 @@ def _repair_event_channels(project: Project, bundle: EvidenceBundle) -> list[str
     elif bundle.target_type == "ship_run":
         run = ShipRun.query.filter_by(project_id=project.id, id=bundle.target_id).first()
         if run:
-            channels.add(_wave_channel(project.name, run.wave_num))
+            channels.add(_ship_run_channel(project.name, str(run.id)))
     elif bundle.target_type == "composite_workspace":
         ws = CompositeWorkspace.query.filter_by(project_id=project.id, id=bundle.target_id).first()
         if ws:

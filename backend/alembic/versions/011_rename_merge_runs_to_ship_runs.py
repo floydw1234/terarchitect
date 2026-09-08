@@ -5,7 +5,7 @@ Revises: 010
 Create Date: 2026-05-22
 
 Phase 11 cleanup:
-- merge_runs renamed to ship_runs — the table tracks wave ship runs, not merges.
+- merge_runs renamed to ship_runs — the table tracks candidate-backed ship runs, not merges.
 - prs table dropped — per-ticket PRs are gone; release PR data lives on ship_runs directly.
 """
 from typing import Sequence, Union

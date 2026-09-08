@@ -40,7 +40,6 @@ def test_ticket_ledger_projects_existing_work_chain_and_evidence(client, project
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
             base_hash="b" * 40,
-            wave_num=3,
             attempt_num=1,
             status="accepted",
             summary="Added status endpoint",
@@ -64,7 +63,6 @@ def test_ticket_ledger_projects_existing_work_chain_and_evidence(client, project
         ship_run = ShipRun(
             project_id=pid,
             promotion_candidate_id=candidate.id,
-            wave_num=3,
             status="shipped",
             base_main_hash="b" * 40,
             composed_commit_hash="c" * 40,
@@ -179,7 +177,6 @@ def test_ticket_context_includes_agent_channels_recent_events_and_recovery_hints
             ticket_id=ticket.id,
             agenthub_commit_hash="e" * 40,
             base_hash="f" * 40,
-            wave_num=2,
             attempt_num=1,
             status="accepted",
             summary="Runner resumed work",
@@ -201,7 +198,6 @@ def test_ticket_context_includes_agent_channels_recent_events_and_recovery_hints
         ship_run = ShipRun(
             project_id=pid,
             promotion_candidate_id=candidate.id,
-            wave_num=2,
             status="ready_to_ship",
             base_main_hash="f" * 40,
             composed_commit_hash="9" * 40,
@@ -264,7 +260,7 @@ def test_ticket_context_includes_agent_channels_recent_events_and_recovery_hints
     assert data["candidate"]["id"] == candidate_id
     assert data["ship_run"]["id"] == ship_run_id
     assert data["channels"]["ticket"].startswith("ticket-")
-    assert data["channels"]["wave"].startswith("wave-")
+    assert data["channels"]["candidate"].startswith("cand-")
     assert data["channels"]["project"].startswith("project-")
     assert len(data["recent_events"]) == 2
     assert data["recent_events"][0]["event_type"] == "attempt_published"

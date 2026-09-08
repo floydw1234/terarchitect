@@ -8,12 +8,13 @@ jest.mock('../utils/api', () => ({
   getProject: jest.fn(),
   getShipCandidates: jest.fn(),
   getShipCandidateDetail: jest.fn(),
-  getShipWaves: jest.fn(),
-  getShipWaveDetail: jest.fn(),
   getTicketAttempts: jest.fn(),
   composeShipCandidate: jest.fn(),
   shipCandidate: jest.fn(),
   sendCandidateFeedback: jest.fn(),
+  dryComposeShipCandidate: jest.fn(),
+  getCandidateDiff: jest.fn(),
+  getCandidateTimeline: jest.fn(),
   acceptAttempt: jest.fn(),
   rejectAttempt: jest.fn(),
   rerunTicketFromCurrentFrontier: jest.fn(),
@@ -48,7 +49,6 @@ const mockReadyToShipRun = {
   id: 'run-1',
   project_id: 'proj-1',
   promotion_candidate_id: 'candidate-1',
-  wave_num: 0,
   status: 'ready_to_ship',
   error: null,
   release_branch: 'terarchitect/release/candidate-abc',
@@ -67,7 +67,7 @@ const mockReadyToShipRun = {
   candidate: null,
   membership: null,
   validation_errors: [],
-  wave_tickets: [],
+  tickets: [],
   commit_hashes: [],
 };
 
@@ -106,7 +106,6 @@ const mockAcceptedAttempt = {
   agenthub_commit_hash: 'a'.repeat(40),
   short_commit_hash: 'aaaaaaaaaaaa',
   base_hash: 'b'.repeat(40),
-  wave_num: 0,
   attempt_num: 1,
   agent_id: 'agent-1',
   status: 'accepted',
@@ -130,7 +129,6 @@ const mockProposedAttempt = {
   agenthub_commit_hash: 'b'.repeat(40),
   short_commit_hash: 'bbbbbbbbbbbb',
   base_hash: 'c'.repeat(40),
-  wave_num: 0,
   attempt_num: 2,
   agent_id: 'agent-2',
   status: 'proposed',
@@ -168,7 +166,6 @@ function makeCandidateDetail(overrides: Partial<any> = {}) {
       attempts: [mockAcceptedAttempt],
       tickets: [{ id: 'ticket-1', title: 'Ticket Alpha', column_id: 'done', depends_on_ticket_ids: [] }],
       commit_hashes: ['a'.repeat(40)],
-      legacy_wave_num: 0,
     },
     validation_errors: [],
     latest_ship_run: null,
@@ -179,8 +176,30 @@ function makeCandidateDetail(overrides: Partial<any> = {}) {
 beforeEach(() => {
   jest.clearAllMocks();
   (api.getProject as jest.Mock).mockResolvedValue(mockProject);
-  (api.getShipWaves as jest.Mock).mockResolvedValue([]);
   (api.getTicketAttempts as jest.Mock).mockResolvedValue([]);
+  (api.dryComposeShipCandidate as jest.Mock).mockResolvedValue({
+    candidate_id: 'candidate-1',
+    safe_to_compose: true,
+    blockers: [],
+    next_actions: ['Compose this promotion candidate when you want a release-branch preview.'],
+    shipped_frontier: mockProject.shipped_frontier,
+    commit_hashes: [],
+    changed_files: [],
+    existing_ship_run: null,
+    tickets: [],
+  });
+  (api.getCandidateDiff as jest.Mock).mockResolvedValue({
+    candidate_id: 'candidate-1',
+    base_hash: 'base123',
+    composed_commit_hash: 'composed123',
+    changed_files: ['src/app.py'],
+    diff: ' src/app.py | 2 ++',
+    truncated: false,
+    note: null,
+    next_actions: [],
+    blockers: [],
+  });
+  (api.getCandidateTimeline as jest.Mock).mockResolvedValue([]);
 });
 
 test('Ship Room header shows the accepted frontier hash', async () => {
@@ -202,7 +221,6 @@ test('stale attempts show lineage and rerun affordance', async () => {
       attempts: [{ ...mockAcceptedAttempt, stale: true, stale_reason: 'attempt.base_hash differs from project.accepted_frontier_id.' }],
       tickets: [{ id: 'ticket-1', title: 'Ticket Alpha', column_id: 'done', depends_on_ticket_ids: [] }],
       commit_hashes: ['a'.repeat(40)],
-      legacy_wave_num: 0,
     },
   }));
   (api.getTicketAttempts as jest.Mock).mockResolvedValue([
@@ -230,6 +248,9 @@ test('ready_to_ship run shows the release PR at ShipRun level', async () => {
   await waitFor(() => {
     expect(screen.getAllByText(/Candidate 1/i).length).toBeGreaterThan(0);
     expect(screen.getAllByRole('link', { name: /Release PR #42/i }).length).toBeGreaterThan(0);
+    expect(screen.getByText('Compose preview')).toBeInTheDocument();
+    expect(screen.getByText('Safe to compose this candidate.')).toBeInTheDocument();
+    expect(screen.getByText('Composed diff')).toBeInTheDocument();
   });
 
   fireEvent.click(screen.getAllByText(/Candidate 1/i).at(-1)!);
@@ -277,7 +298,6 @@ test('shipped state is visually distinct from accepted state', async () => {
         attempts: [mockAcceptedAttempt],
         tickets: [{ id: 'ticket-1', title: 'Ticket Alpha', column_id: 'done', depends_on_ticket_ids: [] }],
         commit_hashes: ['a'.repeat(40)],
-        legacy_wave_num: 2,
       },
       latest_ship_run: mockShippedRun,
     }));
@@ -305,7 +325,6 @@ test('Ship Room review controls can accept a proposed attempt', async () => {
       attempts: [],
       tickets: [{ id: 'ticket-1', title: 'Ticket Alpha', column_id: 'done', depends_on_ticket_ids: [] }],
       commit_hashes: [],
-      legacy_wave_num: 0,
     },
   }));
   (api.getTicketAttempts as jest.Mock).mockResolvedValue([mockProposedAttempt, mockAcceptedAttempt]);
@@ -337,7 +356,6 @@ test('Ship Room review controls can reject a proposed attempt', async () => {
       attempts: [],
       tickets: [{ id: 'ticket-1', title: 'Ticket Alpha', column_id: 'done', depends_on_ticket_ids: [] }],
       commit_hashes: [],
-      legacy_wave_num: 0,
     },
   }));
   (api.getTicketAttempts as jest.Mock).mockResolvedValue([mockProposedAttempt]);

@@ -282,7 +282,6 @@ def attempt_inspection_json(project: Project, attempt: TicketAttempt) -> dict:
         "base_hash": attempt.base_hash,
         "base_leaf_id": attempt.base_hash,
         "parent_leaf_id": attempt.base_hash,
-        "wave_num": attempt.wave_num,
         "attempt_num": attempt.attempt_num,
         "agent_id": attempt.agent_id,
         "worker_job_id": attempt.agent_id,

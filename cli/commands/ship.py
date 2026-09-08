@@ -26,6 +26,21 @@ def register(subparsers) -> None:
     cc.add_argument("candidate_id")
     cc.add_argument("--json", action="store_true", help="Print JSON for this command")
 
+    dry = sub.add_parser("dry-compose", help="Preview whether a promotion candidate is safe to compose")
+    dry.add_argument("project_id")
+    dry.add_argument("candidate_id")
+    dry.add_argument("--json", action="store_true", help="Print JSON for this command")
+
+    diff = sub.add_parser("diff", help="Show the composed diff for a promotion candidate")
+    diff.add_argument("project_id")
+    diff.add_argument("candidate_id")
+    diff.add_argument("--json", action="store_true", help="Print JSON for this command")
+
+    tl = sub.add_parser("timeline", help="Show AgentHub events for a promotion candidate")
+    tl.add_argument("project_id")
+    tl.add_argument("candidate_id")
+    tl.add_argument("--json", action="store_true", help="Print JSON for this command")
+
     rn = sub.add_parser("run", help="Show one ShipRun")
     rn.add_argument("project_id")
     rn.add_argument("run_id")
@@ -56,7 +71,7 @@ def register(subparsers) -> None:
                     help="Merge method when shipping (default: merge)")
     hp.add_argument("--json", action="store_true", help="Print JSON for this command")
 
-    fb = sub.add_parser("feedback", help="Send operator feedback on a promotion candidate when supported")
+    fb = sub.add_parser("feedback", help="Send operator feedback on a promotion candidate")
     fb.add_argument("project_id")
     fb.add_argument("candidate_id")
     fb.add_argument("message", help="Feedback message")
@@ -75,6 +90,12 @@ def _dispatch(args, api: API) -> None:
         _cmd_candidate(args, api)
     elif cmd == "compose-candidate":
         _cmd_compose_candidate(args, api)
+    elif cmd == "dry-compose":
+        _cmd_dry_compose(args, api)
+    elif cmd == "diff":
+        _cmd_diff(args, api)
+    elif cmd == "timeline":
+        _cmd_timeline(args, api)
     elif cmd == "run":
         _cmd_run(args, api)
     elif cmd == "ship-run":
@@ -196,6 +217,7 @@ def _print_candidate_detail(detail: dict) -> None:
 
     print("\n  Next:")
     print(f"    ta ship compose-candidate {detail['project_id']} {detail['id']}")
+    print(f"    ta ship dry-compose {detail['project_id']} {detail['id']}")
     if latest_run:
         print(f"    ta ship run {detail['project_id']} {latest_run['id']}")
         if latest_run.get("status") == "ready_to_ship":
@@ -266,6 +288,87 @@ def _cmd_compose_candidate(args, api: API) -> None:
         return
     print(_ship_run_line(run))
     print("Coordinator will compose the candidate. Inspect the ShipRun before shipping.")
+
+
+def _cmd_dry_compose(args, api: API) -> None:
+    try:
+        report = api.get(
+            f"/api/projects/{args.project_id}/ship/candidates/{args.candidate_id}/dry-compose"
+        )
+    except APIError as e:
+        die(e, output=args.output)
+    if _want_json(args):
+        print_json(report)
+        return
+    print(f"\n{_candidate_label({'id': args.candidate_id})}")
+    print(f"  Safe to compose:  {'yes' if report.get('safe_to_compose') else 'no'}")
+    hashes = report.get("commit_hashes") or []
+    print(f"  Commits:          {len(hashes)}")
+    for commit in hashes:
+        print(f"    - {commit[:12]}")
+    blockers = report.get("blockers") or []
+    print(f"\n  Blockers ({len(blockers)}):")
+    if blockers:
+        for blocker in blockers:
+            print(f"    - {blocker}")
+    else:
+        print("    none")
+    actions = report.get("next_actions") or []
+    if actions:
+        print("\n  Next:")
+        for action in actions:
+            print(f"    {action}")
+
+
+def _cmd_diff(args, api: API) -> None:
+    try:
+        report = api.get(
+            f"/api/projects/{args.project_id}/ship/candidates/{args.candidate_id}/diff"
+        )
+    except APIError as e:
+        die(e, output=args.output)
+    if _want_json(args):
+        print_json(report)
+        return
+    print(f"\n{_candidate_label({'id': args.candidate_id})}")
+    print(f"  Base:      {(report.get('base_hash') or 'unknown')[:12]}")
+    print(f"  Composed:  {(report.get('composed_commit_hash') or 'unknown')[:12]}")
+    files = report.get("changed_files") or []
+    print(f"\n  Changed files ({len(files)}):")
+    for path in files[:40]:
+        print(f"    - {path}")
+    if report.get("note"):
+        print(f"\n  Note: {report['note']}")
+    diff_text = report.get("diff")
+    if diff_text:
+        print("\n  Diff:")
+        print(diff_text)
+    elif not report.get("note"):
+        print("\n  Diff: (not available in this runtime)")
+
+
+def _cmd_timeline(args, api: API) -> None:
+    try:
+        events = api.get(
+            f"/api/projects/{args.project_id}/ship/candidates/{args.candidate_id}/timeline"
+        )
+    except APIError as e:
+        die(e, output=args.output)
+    if _want_json(args):
+        print_json(events)
+        return
+    if not events:
+        print("No timeline events yet.")
+        return
+    for event in events:
+        stamp = event.get("created_at") or ""
+        channel = event.get("_channel_type") or event.get("_channel") or ""
+        message = event.get("message") or event.get("event_type") or event.get("content") or ""
+        title = event.get("_ticket_title")
+        prefix = f"{stamp}  {channel}"
+        if title:
+            prefix += f"  {title}"
+        print(f"{prefix}  {message}")
 
 
 def _cmd_ship_run(args, api: API) -> None:
@@ -359,17 +462,13 @@ def _cmd_feedback(args, api: API) -> None:
         detail = _fetch_candidate_detail(api, args.project_id, args.candidate_id)
     except APIError as e:
         die(e, output=args.output)
-    membership = detail.get("membership") or {}
-    legacy_wave_num = membership.get("legacy_wave_num")
-    if legacy_wave_num is None:
-        die("Feedback is not supported for this candidate on the current backend.")
 
     body = {"message": args.message}
     if args.target_ticket_id:
         body["target_ticket_id"] = args.target_ticket_id
     try:
         result = api.post(
-            f"/api/projects/{args.project_id}/ship/waves/{legacy_wave_num}/feedback", body
+            f"/api/projects/{args.project_id}/ship/candidates/{args.candidate_id}/feedback", body
         )
     except APIError as e:
         die(str(e))

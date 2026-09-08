@@ -4,7 +4,7 @@ Unit tests (plan 12.1).
 Tests that require no HTTP or DB — pure service/model logic.
 
 Covers:
-  - wave computation
+  - topological ticket ranking
   - promotion candidate graph analysis
   - base selection (compute_base_hash)
   - TicketAttempt state transitions, including legacy compatibility paths
@@ -23,7 +23,7 @@ if _BACKEND_DIR not in sys.path:
 
 
 # ---------------------------------------------------------------------------
-# 12.1a  Wave computation
+# 12.1a  Topological ticket ranking
 # ---------------------------------------------------------------------------
 
 def _make_ticket(tid, deps=None):
@@ -33,62 +33,60 @@ def _make_ticket(tid, deps=None):
     return t
 
 
-def test_compute_waves_no_deps():
-    from api.services.merge_service import compute_waves
+def test_topological_rank_no_deps():
+    from api.services.merge_service import topological_ticket_rank
     tickets = [_make_ticket("a"), _make_ticket("b"), _make_ticket("c")]
-    waves = compute_waves(tickets)
-    assert waves["a"] == 0
-    assert waves["b"] == 0
-    assert waves["c"] == 0
+    ranks = topological_ticket_rank(tickets)
+    assert ranks["a"] == 0
+    assert ranks["b"] == 0
+    assert ranks["c"] == 0
 
 
-def test_compute_waves_linear_chain():
-    from api.services.merge_service import compute_waves
+def test_topological_rank_linear_chain():
+    from api.services.merge_service import topological_ticket_rank
     tickets = [
         _make_ticket("a"),
         _make_ticket("b", deps=["a"]),
         _make_ticket("c", deps=["b"]),
     ]
-    waves = compute_waves(tickets)
-    assert waves["a"] == 0
-    assert waves["b"] == 1
-    assert waves["c"] == 2
+    ranks = topological_ticket_rank(tickets)
+    assert ranks["a"] == 0
+    assert ranks["b"] == 1
+    assert ranks["c"] == 2
 
 
-def test_compute_waves_diamond():
-    from api.services.merge_service import compute_waves
-    # a → b, a → c, b+c → d
+def test_topological_rank_diamond():
+    from api.services.merge_service import topological_ticket_rank
     tickets = [
         _make_ticket("a"),
         _make_ticket("b", deps=["a"]),
         _make_ticket("c", deps=["a"]),
         _make_ticket("d", deps=["b", "c"]),
     ]
-    waves = compute_waves(tickets)
-    assert waves["a"] == 0
-    assert waves["b"] == 1
-    assert waves["c"] == 1
-    assert waves["d"] == 2
+    ranks = topological_ticket_rank(tickets)
+    assert ranks["a"] == 0
+    assert ranks["b"] == 1
+    assert ranks["c"] == 1
+    assert ranks["d"] == 2
 
 
-def test_compute_waves_handles_unknown_dep():
-    """A dep that doesn't exist in the ticket set should be ignored (wave 0)."""
-    from api.services.merge_service import compute_waves
+def test_topological_rank_handles_unknown_dep():
+    from api.services.merge_service import topological_ticket_rank
     tickets = [_make_ticket("a", deps=["nonexistent"])]
-    waves = compute_waves(tickets)
-    assert waves["a"] == 0
+    ranks = topological_ticket_rank(tickets)
+    assert ranks["a"] == 0
 
 
-def test_compute_waves_cycle_fallback():
-    """Circular deps should fall back to wave 0 without infinite loop."""
-    from api.services.merge_service import compute_waves
+def test_topological_rank_cycle_fallback():
+    """Circular deps should fall back to rank 0 without infinite loop."""
+    from api.services.merge_service import topological_ticket_rank
     tickets = [
         _make_ticket("a", deps=["b"]),
         _make_ticket("b", deps=["a"]),
     ]
-    waves = compute_waves(tickets)
-    assert waves["a"] == 0
-    assert waves["b"] == 0
+    ranks = topological_ticket_rank(tickets)
+    assert ranks["a"] == 0
+    assert ranks["b"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +401,7 @@ def test_ship_run_to_json_has_required_fields():
     run = MagicMock()
     run.id = "run-1"
     run.project_id = "proj-1"
-    run.wave_num = 0
+    run.promotion_candidate_id = "cand-1"
     run.status = "queued"
     run.error = None
     run.release_branch = None
@@ -421,7 +419,7 @@ def test_ship_run_to_json_has_required_fields():
     run.updated_at = None
 
     result = ship_run_to_json(run)
-    for field in ("id", "project_id", "wave_num", "status", "release_pr_url",
+    for field in ("id", "project_id", "promotion_candidate_id", "status", "release_pr_url",
                   "release_pr_number", "shipped_commit_hash", "test_status"):
         assert field in result, f"Missing field: {field}"
 

@@ -428,7 +428,6 @@ function LeafSelector({
                   <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
                     {a.short_commit_hash || '?'}
                   </Typography>
-                  <Chip label={`wave ${a.wave_num}`} size="small" variant="outlined" sx={{ fontSize: '0.6rem' }} />
                   {a.stale && <Chip label="stale" size="small" color="warning" sx={{ fontSize: '0.6rem' }} />}
                   <Typography variant="caption" color="text.secondary" noWrap sx={{ maxWidth: 200 }}>
                     {a.summary?.slice(0, 60)}
