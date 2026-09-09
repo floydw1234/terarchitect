@@ -33,24 +33,37 @@ def client(app):
 
 @pytest.fixture
 def project(client):
-    """Swarm project."""
+    """Swarm project with both accepted_frontier_id and shipped_frontier set."""
+    frontier = "leaf_01HZX3FIXTURE0123456789ABCDE"
     resp = client.post(
         "/api/projects",
         json={
             "name": "test-proj",
             "git_mode": "swarm",
-            "accepted_frontier_id": "leaf_01HZX3FIXTURE0123456789ABCDE",
+            "accepted_frontier_id": frontier,
             "is_existing_repo": True,
         },
     )
     assert resp.status_code == 201
-    return resp.get_json()
+    project_data = resp.get_json()
+
+    # Set shipped_frontier for deterministic base selection
+    from models.db import db, Project
+    with client.application.app_context():
+        proj = db.session.get(Project, project_data["id"])
+        proj.shipped_frontier = frontier
+        db.session.commit()
+        project_data["shipped_frontier"] = frontier
+
+    return project_data
 
 
 @pytest.fixture
 def accepted_ticket_and_attempt(client, project):
-    """Ticket with an accepted attempt."""
+    """Ticket with an accepted attempt based on the project's shipped_frontier."""
     from models.db import db, Ticket, TicketAttempt
+    # Use shipped_frontier as the base_hash so the attempt is candidate-eligible
+    frontier = project.get("shipped_frontier") or project["accepted_frontier_id"]
     with client.application.app_context():
         ticket = Ticket(
             project_id=project["id"],
@@ -64,7 +77,7 @@ def accepted_ticket_and_attempt(client, project):
             project_id=project["id"],
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
-            base_hash="b" * 40,
+            base_hash=frontier,
             attempt_num=1,
             status="accepted",
             summary="done",

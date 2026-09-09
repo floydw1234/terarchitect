@@ -796,6 +796,7 @@ def test_collect_workspace_evidence_from_composer_results(client, project):
 
 def test_collect_ship_run_evidence_allows_policy_gated_ship(client, project, accepted_ticket_and_attempt):
     pid = project["id"]
+    frontier = project.get("shipped_frontier") or project["accepted_frontier_id"]
 
     client.put(f"/api/projects/{pid}/verification-policy", json={
         "required_checks": ["unit"],
@@ -807,7 +808,7 @@ def test_collect_ship_run_evidence_allows_policy_gated_ship(client, project, acc
         run = ShipRun(
             project_id=pid,
             status="ready_to_ship",
-            base_main_hash="b" * 40,
+            base_main_hash=frontier,
             composed_commit_hash="c" * 40,
             changed_files=["src/app.py"],
             test_status="passed",

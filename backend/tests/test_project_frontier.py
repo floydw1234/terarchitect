@@ -676,6 +676,8 @@ def test_import_agenthub_root_requires_project_path(client):
 
 
 def test_create_ticket_defaults_base_leaf_id_from_project_frontier(client):
+    from models.db import db, Project
+
     frontier_id = "leaf_01HZX3ABCD9EF0123456789XYZ"
     create_project = client.post(
         "/api/projects",
@@ -688,6 +690,12 @@ def test_create_ticket_defaults_base_leaf_id_from_project_frontier(client):
     )
     assert create_project.status_code == 201
     project_id = create_project.get_json()["id"]
+
+    # Set shipped_frontier for deterministic base selection
+    with client.application.app_context():
+        proj = db.session.get(Project, project_id)
+        proj.shipped_frontier = frontier_id
+        db.session.commit()
 
     response = client.post(
         f"/api/projects/{project_id}/tickets",

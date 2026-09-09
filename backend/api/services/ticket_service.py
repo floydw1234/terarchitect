@@ -8,6 +8,7 @@ from models.db import db, Project, Ticket, AgentJob, TicketAttempt
 from .project_service import (
     compare_base_to_accepted_frontier as _compare_base_to_accepted_frontier,
     get_project_frontier_id as _get_project_frontier_id,
+    get_project_shipped_frontier as _get_project_shipped_frontier,
     normalize_frontier_id as _normalize_frontier_id,
     validate_project_frontier_candidate as _validate_project_frontier_candidate,
 )
@@ -110,10 +111,15 @@ def _has_accepted_attempt(ticket_id) -> bool:
 
 
 def resolve_ticket_base_leaf_id(project: Project | None, explicit_value, *, explicit_provided: bool) -> str | None:
-    """Resolve ticket base leaf from explicit input or the project's accepted frontier."""
+    """Resolve ticket base leaf from explicit input or the project's shipped frontier.
+
+    Uses shipped_frontier (not accepted_frontier_id) for deterministic base selection:
+    after a ShipRun advances shipped_frontier, new independent jobs will base on the
+    new frontier rather than the older accepted state.
+    """
     if explicit_provided:
         return _normalize_frontier_id(explicit_value)
-    return _get_project_frontier_id(project) if project else None
+    return _get_project_shipped_frontier(project) if project else None
 
 
 def validate_ticket_base_leaf(project: Project | None, base_leaf_id) -> tuple[bool, str | None]:
@@ -128,7 +134,7 @@ def validate_ticket_base_leaf(project: Project | None, base_leaf_id) -> tuple[bo
     if normalized is None:
         return (
             False,
-            "base_leaf_id is required for swarm projects; set project.accepted_frontier_id or provide base_leaf_id explicitly",
+            "base_leaf_id is required for swarm projects; set project.shipped_frontier or provide base_leaf_id explicitly",
         )
 
     valid, error = _validate_project_frontier_candidate(project, normalized)
@@ -143,7 +149,12 @@ def ensure_ticket_base_leaf_id(
     *,
     persist: bool = False,
 ) -> tuple[str | None, str | None]:
-    """Resolve and optionally persist the base leaf used for swarm ticket execution."""
+    """Resolve and optionally persist the base leaf used for swarm ticket execution.
+
+    Uses shipped_frontier (not accepted_frontier_id) for deterministic base selection:
+    after a ShipRun advances shipped_frontier, new independent jobs will base on the
+    new frontier rather than the older accepted state.
+    """
     if not ticket:
         return None, "Ticket not found"
 
@@ -152,12 +163,12 @@ def ensure_ticket_base_leaf_id(
     if git_mode != "swarm":
         return current_value, None
 
-    resolved = current_value or _get_project_frontier_id(project)
+    resolved = current_value or _get_project_shipped_frontier(project)
     if resolved is None:
         return (
             None,
             "No AgentHub frontier/base available for ticket dispatch: "
-            "ticket.base_leaf_id is not set and project.accepted_frontier_id is not set.",
+            "ticket.base_leaf_id is not set and project.shipped_frontier is not set.",
         )
 
     if current_value != resolved:

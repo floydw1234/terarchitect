@@ -356,6 +356,7 @@ def test_e2e_create_promotion_candidate_from_accepted_attempts(client, project):
 
 def test_e2e_ship_candidate_only_marks_candidate_attempts_shipped(client, project):
     pid = project["id"]
+    frontier = project.get("shipped_frontier") or project["accepted_frontier_id"]
     from models.db import db, Ticket, TicketAttempt
 
     with client.application.app_context():
@@ -367,7 +368,7 @@ def test_e2e_ship_candidate_only_marks_candidate_attempts_shipped(client, projec
             project_id=pid,
             ticket_id=ticket_a.id,
             agenthub_commit_hash="a" * 40,
-            base_hash="f" * 40,
+            base_hash=frontier,
             attempt_num=1,
             status="accepted",
             summary="a",
@@ -376,7 +377,7 @@ def test_e2e_ship_candidate_only_marks_candidate_attempts_shipped(client, projec
             project_id=pid,
             ticket_id=ticket_b.id,
             agenthub_commit_hash="b" * 40,
-            base_hash="f" * 40,
+            base_hash=frontier,
             attempt_num=1,
             status="accepted",
             summary="b",
@@ -399,7 +400,7 @@ def test_e2e_ship_candidate_only_marks_candidate_attempts_shipped(client, projec
 
     composed_resp = client.post(f"/api/worker/ship-run/{run['id']}/composed", json={
         "composed_commit_hash": "c" * 40,
-        "base_main_hash": "f" * 40,
+        "base_main_hash": frontier,
         "test_status": "passed",
         "test_output": "ok",
         "changed_files": ["src/a.py"],
