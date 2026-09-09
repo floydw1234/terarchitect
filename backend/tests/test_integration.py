@@ -376,6 +376,7 @@ def test_compose_auto_includes_unshipped_dependency(client, project):
     """Selecting a child without including its unshipped parent still auto-includes the parent."""
     pid = project["id"]
     from models.db import db, Ticket, TicketAttempt
+    frontier = project.get("shipped_frontier") or project["accepted_frontier_id"]
     parent_hash = "p" * 40
     child_hash = "c" * 40
 
@@ -401,7 +402,7 @@ def test_compose_auto_includes_unshipped_dependency(client, project):
             project_id=pid,
             ticket_id=parent.id,
             agenthub_commit_hash=parent_hash,
-            base_hash="f" * 40,
+            base_hash=frontier,
             attempt_num=1,
             status="accepted",
             summary="parent",
@@ -429,6 +430,7 @@ def test_compose_auto_includes_unshipped_dependency(client, project):
 def test_dry_compose_reports_blockers_and_commit_hashes(client, project):
     pid = project["id"]
     from models.db import db, Ticket, TicketAttempt
+    frontier = project.get("shipped_frontier") or project["accepted_frontier_id"]
 
     with client.application.app_context():
         ticket = Ticket(
@@ -443,7 +445,7 @@ def test_dry_compose_reports_blockers_and_commit_hashes(client, project):
             project_id=pid,
             ticket_id=ticket.id,
             agenthub_commit_hash="e" * 40,
-            base_hash="f" * 40,
+            base_hash=frontier,
             attempt_num=1,
             status="accepted",
             summary="done",
@@ -542,6 +544,7 @@ def test_compose_returns_existing_active_run_instead_of_duplicating(client, proj
 def test_worker_claim_moves_ship_run_to_composing(client, project):
     pid = project["id"]
     from models.db import db, Ticket, TicketAttempt
+    frontier = project.get("shipped_frontier") or project["accepted_frontier_id"]
 
     with client.application.app_context():
         ticket = Ticket(
@@ -556,7 +559,7 @@ def test_worker_claim_moves_ship_run_to_composing(client, project):
             project_id=pid,
             ticket_id=ticket.id,
             agenthub_commit_hash="c" * 40,
-            base_hash="f" * 40,
+            base_hash=frontier,
             attempt_num=1,
             status="accepted",
             summary="done",
@@ -705,6 +708,7 @@ def test_ship_rejects_stale_composition_validation(client, project):
 def test_candidate_compose_and_inspect_run(client, project):
     pid = project["id"]
     from models.db import db, Ticket, TicketAttempt
+    frontier = project.get("shipped_frontier") or project["accepted_frontier_id"]
 
     with client.application.app_context():
         ticket = Ticket(
@@ -719,7 +723,7 @@ def test_candidate_compose_and_inspect_run(client, project):
             project_id=pid,
             ticket_id=ticket.id,
             agenthub_commit_hash="h" * 40,
-            base_hash="f" * 40,
+            base_hash=frontier,
             attempt_num=1,
             status="accepted",
             summary="done",
@@ -751,6 +755,7 @@ def test_candidate_compose_and_inspect_run(client, project):
 def test_candidate_ship_only_transitions_candidate_membership(client, project):
     pid = project["id"]
     from models.db import db, Ticket, TicketAttempt
+    frontier = project.get("shipped_frontier") or project["accepted_frontier_id"]
 
     with client.application.app_context():
         ticket_a = Ticket(project_id=pid, column_id="done", title="A", intent_status="active")
@@ -761,7 +766,7 @@ def test_candidate_ship_only_transitions_candidate_membership(client, project):
             project_id=pid,
             ticket_id=ticket_a.id,
             agenthub_commit_hash="a" * 40,
-            base_hash="f" * 40,
+            base_hash=frontier,
             attempt_num=1,
             status="accepted",
             summary="a",
@@ -770,7 +775,7 @@ def test_candidate_ship_only_transitions_candidate_membership(client, project):
             project_id=pid,
             ticket_id=ticket_b.id,
             agenthub_commit_hash="b" * 40,
-            base_hash="f" * 40,
+            base_hash=frontier,
             attempt_num=1,
             status="accepted",
             summary="b",
@@ -790,7 +795,7 @@ def test_candidate_ship_only_transitions_candidate_membership(client, project):
 
     composed = client.post(f"/api/worker/ship-run/{run_id}/composed", json={
         "composed_commit_hash": "c" * 40,
-        "base_main_hash": "f" * 40,
+        "base_main_hash": frontier,
         "test_status": "passed",
         "test_output": "ok",
         "changed_files": ["src/app.py"],
@@ -1095,8 +1100,9 @@ def test_shipped_dependency_ticket_dispatches_from_current_frontier(client, proj
 
 
 def test_github_first_job_payload_uses_project_frontier_without_project_path(client):
-    from models.db import AgentJob, Ticket, db
+    from models.db import AgentJob, Project, Ticket, db
 
+    frontier = "leaf_01HZX3GITHUBFIRST012345678"
     create_project = client.post(
         "/api/projects",
         json={
@@ -1105,13 +1111,19 @@ def test_github_first_job_payload_uses_project_frontier_without_project_path(cli
             "source_type": "github",
             "github_url": "https://github.com/example/repo",
             "github_ref": "main",
-            "accepted_frontier_id": "leaf_01HZX3GITHUBFIRST012345678",
+            "accepted_frontier_id": frontier,
             "is_existing_repo": True,
         },
     )
     assert create_project.status_code == 201
     project = create_project.get_json()
     pid = project["id"]
+
+    # Set shipped_frontier for deterministic base selection
+    with client.application.app_context():
+        proj = db.session.get(Project, pid)
+        proj.shipped_frontier = frontier
+        db.session.commit()
 
     with client.application.app_context():
         ticket = Ticket(
@@ -1129,7 +1141,8 @@ def test_github_first_job_payload_uses_project_frontier_without_project_path(cli
     with client.application.app_context():
         dispatch_unblocked_queued(pid)
         stored_ticket = db.session.get(Ticket, ticket_id)
-        assert stored_ticket.base_leaf_id == "leaf_01HZX3GITHUBFIRST012345678"
+        # Ticket picks up shipped_frontier as its base
+        assert stored_ticket.base_leaf_id == frontier
         assert AgentJob.query.filter_by(ticket_id=ticket_id).count() == 3
 
     resp = client.post("/api/worker/jobs/start", json={"project_id": pid})
@@ -1138,13 +1151,15 @@ def test_github_first_job_payload_uses_project_frontier_without_project_path(cli
     assert payload["project_id"] == pid
     assert payload["ticket_id"] == ticket_id
     assert payload["job_id"]
-    assert payload["base_leaf_id"] == "leaf_01HZX3GITHUBFIRST012345678"
-    assert payload["accepted_frontier_id"] == "leaf_01HZX3GITHUBFIRST012345678"
+    assert payload["base_leaf_id"] == frontier
+    assert payload["shipped_frontier"] == frontier
+    assert payload["accepted_frontier_id"] == frontier
     assert payload["github_url"] == "https://github.com/example/repo"
     assert payload["source_metadata"]["github_url"] == "https://github.com/example/repo"
     assert payload["source_metadata"]["github_ref"] == "main"
     assert payload["source_metadata"]["source_type"] == "github"
     assert "project_path" not in payload
+    # base_source is "ticket_base_leaf" because dispatch wrote the base to the ticket
     assert payload["base_selection"]["base_source"] == "ticket_base_leaf"
     assert payload["parallel_attempt_count"] == 3
     assert payload["attempt_count"] == "3"
@@ -1410,7 +1425,152 @@ def test_multi_dependency_ticket_stays_queued_in_mvp(client, project):
 
 
 # ---------------------------------------------------------------------------
-# 12.2g  Intent fields persist and are returned
+# 12.2g  Deterministic base selection after ship
+# ---------------------------------------------------------------------------
+
+def test_ship_advances_frontier_then_new_job_uses_new_frontier(client, project, accepted_ticket_and_attempt):
+    """After ShipRun ships and shipped_frontier advances, a new independent job's base equals the new frontier.
+
+    This tests the deterministic base selection: subsequent independent jobs must base on
+    the newly shipped frontier (or an accepted dependency if specified).
+    """
+    from models.db import db, ShipRun, Project, Ticket
+
+    pid = project["id"]
+    old_frontier = project["accepted_frontier_id"]
+
+    # Set up project for shipping: github_url is required for the shipping flow
+    client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
+
+    # Set initial shipped_frontier to the old value
+    with client.application.app_context():
+        proj = db.session.get(Project, pid)
+        proj.shipped_frontier = old_frontier
+        db.session.commit()
+
+    # Create a ShipRun with a NEW composed_commit_hash
+    new_frontier = "n" * 40
+    with client.application.app_context():
+        run = ShipRun(
+            project_id=pid,
+            status="ready_to_ship",
+            composed_commit_hash=new_frontier,
+        )
+        db.session.add(run)
+        db.session.commit()
+        run_id = str(run.id)
+
+    # Ship the run: this should advance shipped_frontier to the new value
+    resp = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["status"] == "shipped"
+    assert data["shipped_commit_hash"] == new_frontier
+
+    # Verify shipped_frontier was advanced
+    with client.application.app_context():
+        proj = db.session.get(Project, pid)
+        assert proj.shipped_frontier == new_frontier
+
+    # Now create a NEW ticket without an explicit base_leaf_id
+    # This ticket should pick up the NEW shipped_frontier as its base
+    with client.application.app_context():
+        new_ticket = Ticket(
+            project_id=pid,
+            column_id="queued",
+            title="New independent ticket after ship",
+            intent_status="ready",
+            base_leaf_id=None,  # No explicit base - should default to shipped_frontier
+        )
+        db.session.add(new_ticket)
+        db.session.commit()
+        new_ticket_id = str(new_ticket.id)
+
+    # Dispatch the queued ticket
+    from api.services.ticket_service import dispatch_unblocked_queued
+    dispatch_unblocked_queued(pid)
+
+    # Start the job and verify it uses the NEW shipped_frontier as base
+    job_resp = client.post("/api/worker/jobs/start", json={"project_id": pid})
+    assert job_resp.status_code == 200
+    job_payload = job_resp.get_json()
+
+    # The key assertion: base should be the NEW shipped_frontier, not the old accepted_frontier_id
+    assert job_payload["base_hash"] == new_frontier
+    assert job_payload["base_leaf_id"] == new_frontier
+    assert job_payload["agenthub_root_hash"] == new_frontier
+    assert job_payload["shipped_frontier"] == new_frontier
+    # Source is "ticket_base_leaf" because dispatch wrote the resolved shipped_frontier to the ticket
+    assert job_payload["base_selection"]["base_source"] == "ticket_base_leaf"
+    assert job_payload["base_selection"]["blocked"] is False
+
+
+def test_ship_advances_frontier_existing_ticket_base_preserved(client, project, accepted_ticket_and_attempt):
+    """When a ticket has an explicit base_leaf_id, shipping doesn't change it.
+
+    Only tickets created AFTER the ship (with no explicit base) should pick up the new frontier.
+    """
+    from models.db import db, ShipRun, Project, Ticket
+
+    pid = project["id"]
+    old_frontier = project["accepted_frontier_id"]
+
+    # Create a ticket BEFORE shipping with an explicit base_leaf_id
+    with client.application.app_context():
+        existing_ticket = Ticket(
+            project_id=pid,
+            column_id="queued",
+            title="Existing ticket before ship",
+            intent_status="ready",
+            base_leaf_id=old_frontier,  # Explicit base set before ship
+        )
+        db.session.add(existing_ticket)
+        db.session.commit()
+        existing_ticket_id = str(existing_ticket.id)
+
+    # Set up project for shipping
+    client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
+    with client.application.app_context():
+        proj = db.session.get(Project, pid)
+        proj.shipped_frontier = old_frontier
+        db.session.commit()
+
+    # Ship with a NEW frontier
+    new_frontier = "m" * 40
+    with client.application.app_context():
+        run = ShipRun(
+            project_id=pid,
+            status="ready_to_ship",
+            composed_commit_hash=new_frontier,
+        )
+        db.session.add(run)
+        db.session.commit()
+        run_id = str(run.id)
+
+    resp = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
+    assert resp.status_code == 200
+    assert resp.get_json()["shipped_commit_hash"] == new_frontier
+
+    # Dispatch the EXISTING ticket
+    from api.services.ticket_service import dispatch_unblocked_queued
+    dispatch_unblocked_queued(pid)
+
+    # Start the job for the existing ticket
+    job_resp = client.post("/api/worker/jobs/start", json={"project_id": pid})
+    assert job_resp.status_code == 200
+    job_payload = job_resp.get_json()
+
+    # The existing ticket should STILL use its stored base_leaf_id (the old frontier)
+    assert job_payload["base_hash"] == old_frontier
+    assert job_payload["base_leaf_id"] == old_frontier
+    # shipped_frontier shows the current state
+    assert job_payload["shipped_frontier"] == new_frontier
+    # Source should be "ticket_base_leaf" since the ticket had an explicit base
+    assert job_payload["base_selection"]["base_source"] == "ticket_base_leaf"
+
+
+# ---------------------------------------------------------------------------
+# 12.2h  Intent fields persist and are returned
 # ---------------------------------------------------------------------------
 
 def test_intent_fields_roundtrip(client, project):

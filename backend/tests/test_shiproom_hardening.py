@@ -18,12 +18,14 @@ def test_ship_doctor_reports_partial_checks_and_next_commands(client, project):
     assert checks["github_auth"]["status"] == "warn"
     assert checks["agenthub"]["status"] == "warn"
     assert checks["project_repo"]["status"] == "warn"
-    assert checks["frontier"]["status"] == "warn"
+    # Project fixture now sets shipped_frontier, so this check passes
+    assert checks["frontier"]["status"] == "pass"
     assert any(cmd.startswith("ta ship doctor ") for cmd in payload["next_commands"])
 
 
 def test_ship_run_merge_failure_preserves_detail_and_hint(client, project):
     pid = project["id"]
+    frontier = project.get("shipped_frontier") or project["accepted_frontier_id"]
 
     from models.db import ShipRun, db
 
@@ -32,7 +34,7 @@ def test_ship_run_merge_failure_preserves_detail_and_hint(client, project):
             project_id=pid,
             status="ready_to_ship",
             composed_commit_hash="c" * 40,
-            base_main_hash="f" * 40,
+            base_main_hash=frontier,
             release_branch="terarchitect/release/ship-abc12345",
             release_pr_number=42,
             release_pr_url="https://github.com/owner/repo/pull/42",
@@ -43,7 +45,7 @@ def test_ship_run_merge_failure_preserves_detail_and_hint(client, project):
 
     update_resp = client.put(
         f"/api/projects/{pid}",
-        json={"github_url": "https://github.com/owner/repo", "shipped_frontier": "f" * 40},
+        json={"github_url": "https://github.com/owner/repo"},
     )
     assert update_resp.status_code == 200
 
@@ -69,6 +71,7 @@ def test_ship_run_merge_failure_preserves_detail_and_hint(client, project):
 
 def test_ship_run_already_merged_reconciles_and_returns_evidence_summary(client, project):
     pid = project["id"]
+    frontier = project.get("shipped_frontier") or project["accepted_frontier_id"]
 
     from models.db import PromotionCandidate, ShipRun, Ticket, TicketAttempt, db
 
@@ -80,7 +83,7 @@ def test_ship_run_already_merged_reconciles_and_returns_evidence_summary(client,
             project_id=pid,
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
-            base_hash="f" * 40,
+            base_hash=frontier,
             attempt_num=1,
             status="accepted",
             summary="done",
@@ -91,7 +94,7 @@ def test_ship_run_already_merged_reconciles_and_returns_evidence_summary(client,
             project_id=pid,
             selected_attempt_ids=[str(attempt.id)],
             selected_leaf_hashes=["a" * 40],
-            base_root_hash="f" * 40,
+            base_root_hash=frontier,
             status="composed",
         )
         db.session.add(candidate)
@@ -101,7 +104,7 @@ def test_ship_run_already_merged_reconciles_and_returns_evidence_summary(client,
             promotion_candidate_id=str(candidate.id),
             status="ready_to_ship",
             composed_commit_hash="c" * 40,
-            base_main_hash="f" * 40,
+            base_main_hash=frontier,
             release_branch="terarchitect/release/ship-abc12345",
             release_pr_number=42,
             release_pr_url="https://github.com/owner/repo/pull/42",
@@ -118,7 +121,7 @@ def test_ship_run_already_merged_reconciles_and_returns_evidence_summary(client,
 
     update_resp = client.put(
         f"/api/projects/{pid}",
-        json={"github_url": "https://github.com/owner/repo", "shipped_frontier": "f" * 40},
+        json={"github_url": "https://github.com/owner/repo"},
     )
     assert update_resp.status_code == 200
 
@@ -157,6 +160,7 @@ def test_ship_run_already_merged_reconciles_and_returns_evidence_summary(client,
 
 def test_ship_happy_path_creates_candidate_and_queued_run(client, project):
     pid = project["id"]
+    frontier = project.get("shipped_frontier") or project["accepted_frontier_id"]
 
     from models.db import Ticket, TicketAttempt, db
 
@@ -168,7 +172,7 @@ def test_ship_happy_path_creates_candidate_and_queued_run(client, project):
             project_id=pid,
             ticket_id=ticket.id,
             agenthub_commit_hash="a" * 40,
-            base_hash="f" * 40,
+            base_hash=frontier,
             attempt_num=1,
             status="accepted",
             summary="done",
