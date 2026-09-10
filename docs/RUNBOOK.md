@@ -289,3 +289,27 @@ Keep operators on one path for swarm projects:
 Agents and coordinators are the primary users of the system. The UI remains a review/ship boundary for humans, and the long-term CLI/API contract is candidate review plus `ShipRun` execution.
 
 The operator path is `ta ship candidates`, `ta ship candidate`, `ta ship compose-candidate`, `ta ship run`, `ta ship ship-run`, and `ta ship ship-candidate`.
+
+---
+
+## Headless CLI dogfood (spark)
+
+**Authorized local checkout for dogfood/testing:** `/home/william/Documents/codingProj/terarchitect` on William's Ubuntu host **spark**.
+
+Spark is **headless** (no screen or desktop). Do **not** use the browser, open `localhost:3000`, or take UI screenshots to verify the MVP loop. Prove behavior with the **`ta` CLI** and HTTP APIs against the running backend on that checkout.
+
+**Execution path:** Local AgentHub + OpenCode remains the preferred runtime. GitHub appears only at the **release PR** boundary (Ship Room export), not per-ticket.
+
+**MVP spine to verify (CLI-first):**
+
+1. After worker attempts complete: `ta ticket choose-winner <project_id> <ticket_id> <attempt_id>`
+2. Integrate the winner: `ta ticket accept-winner <project_id> <ticket_id> <attempt_id>`
+3. Ship Room — stepwise:
+   - `ta ship candidates <project_id>`
+   - `ta ship compose-candidate <project_id> <candidate_id>`
+   - `ta ship run <project_id> <run_id>` (inspect)
+   - `ta ship ship-run <project_id> <run_id>` or `ta ship ship-candidate <project_id> <candidate_id>`
+4. Or one-shot from an accepted attempt: `ta ship happy-path <project_id> --ticket <ticket_id>`
+5. Confirm `shipped_frontier` advanced (API or `ta ship candidates --json`).
+
+Use `--output json` / `--json` when scripting. No UI required for verification on spark.
