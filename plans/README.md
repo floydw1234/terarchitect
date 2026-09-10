@@ -73,6 +73,8 @@ Agents and coordinators are the primary users of this system. The UI and human a
 
 Ticket-level PR review is not part of swarm mode. The review and ship boundary lives at the promotion-candidate/`ShipRun` level.
 
+On the authorized headless dogfood host (**spark**, checkout `/home/william/Documents/codingProj/terarchitect`), verify this spine with `ta` + APIs only — see `../docs/RUNBOOK.md` → Headless CLI dogfood.
+
 ## Related Operational Docs
 
 - `../docs/PHASE1_WORKER_API.md` — worker/coordinator contract
