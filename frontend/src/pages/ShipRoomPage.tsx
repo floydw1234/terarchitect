@@ -22,6 +22,7 @@ import {
   getProject,
   getShipCandidateDetail,
   getShipCandidates,
+  getShipRun,
   getTicketAttempts,
   rejectAttempt,
   rerunTicketFromCurrentFrontier,
@@ -89,6 +90,8 @@ const ATTEMPT_LABEL: Record<string, string> = {
 };
 
 const REVIEWABLE_ATTEMPT_STATUSES = new Set(['proposed', 'validating']);
+const POLLING_SHIP_RUN_STATUSES = new Set(['queued', 'running', 'composing', 'shipping']);
+const SHIP_RUN_POLL_MS = 3000;
 
 type ShipRoomTicket = {
   id: string;
@@ -963,6 +966,54 @@ const ShipRoomPage: React.FC = () => {
     load();
   }, [load]);
 
+  const activeShipRun = useMemo(
+    () =>
+      candidates
+        .map(candidate => candidate.shipRun)
+        .filter((run): run is ShipRun => !!run && !['shipped', 'done'].includes(run.status))[0] ?? null,
+    [candidates],
+  );
+
+  useEffect(() => {
+    if (!projectId || !activeShipRun || !POLLING_SHIP_RUN_STATUSES.has(activeShipRun.status)) {
+      return;
+    }
+
+    const runId = activeShipRun.id;
+    const candidateId = activeShipRun.promotion_candidate_id;
+    let cancelled = false;
+
+    const pollShipRun = async () => {
+      try {
+        const runDetail = await getShipRun(projectId, runId);
+        if (cancelled) return;
+        setCandidates(current =>
+          current.map(candidate => {
+            if (candidateId && candidate.id === candidateId) {
+              return { ...candidate, shipRun: runDetail };
+            }
+            if (candidate.shipRun?.id === runId) {
+              return { ...candidate, shipRun: runDetail };
+            }
+            return candidate;
+          }),
+        );
+      } catch {
+        // Keep the last known run state if polling fails transiently.
+      }
+    };
+
+    void pollShipRun();
+    const intervalId = window.setInterval(() => {
+      void pollShipRun();
+    }, SHIP_RUN_POLL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [projectId, activeShipRun?.id, activeShipRun?.status, activeShipRun?.promotion_candidate_id]);
+
   const selectedCandidate = useMemo(
     () => candidates.find(candidate => candidate.id === selectedCandidateId) ?? null,
     [candidates, selectedCandidateId],
@@ -970,14 +1021,6 @@ const ShipRoomPage: React.FC = () => {
 
   const acceptedCount = useMemo(
     () => candidates.reduce((sum, candidate) => sum + candidate.acceptedAttempts.length, 0),
-    [candidates],
-  );
-
-  const activeShipRun = useMemo(
-    () =>
-      candidates
-        .map(candidate => candidate.shipRun)
-        .filter((run): run is ShipRun => !!run && !['shipped', 'done'].includes(run.status))[0] ?? null,
     [candidates],
   );
 
