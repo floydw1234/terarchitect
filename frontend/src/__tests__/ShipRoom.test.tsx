@@ -8,6 +8,7 @@ jest.mock('../utils/api', () => ({
   getProject: jest.fn(),
   getShipCandidates: jest.fn(),
   getShipCandidateDetail: jest.fn(),
+  getShipRun: jest.fn(),
   getTicketAttempts: jest.fn(),
   composeShipCandidate: jest.fn(),
   shipCandidate: jest.fn(),
@@ -434,4 +435,117 @@ test('empty state shown when no candidates exist', async () => {
   await waitFor(() => {
     expect(screen.getByText(/No promotion candidates yet/)).toBeInTheDocument();
   });
+});
+
+test('loads promotion candidates from ship APIs on mount', async () => {
+  (api.getShipCandidates as jest.Mock).mockResolvedValue([baseCandidate]);
+  (api.getShipCandidateDetail as jest.Mock).mockResolvedValue(makeCandidateDetail());
+
+  renderShipRoom();
+
+  await waitFor(() => {
+    expect(api.getShipCandidates).toHaveBeenCalledWith('proj-1');
+    expect(api.getShipCandidateDetail).toHaveBeenCalledWith('proj-1', 'candidate-1');
+    expect(screen.getAllByText('Promotion candidates').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Candidate 1/i).length).toBeGreaterThan(0);
+  });
+});
+
+test('compose candidate calls composeShipCandidate and refreshes detail', async () => {
+  (api.getShipCandidates as jest.Mock).mockResolvedValue([baseCandidate]);
+  (api.getShipCandidateDetail as jest.Mock).mockResolvedValue(makeCandidateDetail());
+  (api.composeShipCandidate as jest.Mock).mockResolvedValue({
+    ...mockReadyToShipRun,
+    status: 'queued',
+  });
+
+  renderShipRoom();
+
+  await waitFor(() => {
+    expect(screen.getAllByText(/Candidate 1/i).length).toBeGreaterThan(0);
+  });
+
+  fireEvent.click(screen.getAllByText(/Candidate 1/i).at(-1)!);
+
+  await waitFor(() => {
+    expect(screen.getByRole('button', { name: 'Compose candidate' })).toBeInTheDocument();
+  });
+
+  fireEvent.click(screen.getByRole('button', { name: 'Compose candidate' }));
+
+  await waitFor(() => {
+    expect(api.composeShipCandidate).toHaveBeenCalledWith('proj-1', 'candidate-1');
+    expect(api.getShipCandidateDetail).toHaveBeenCalledTimes(2);
+  });
+});
+
+test('ship candidate calls shipCandidate and refreshes detail', async () => {
+  (api.getShipCandidates as jest.Mock).mockResolvedValue([baseCandidate]);
+  (api.getShipCandidateDetail as jest.Mock).mockResolvedValue(makeCandidateDetail({
+    latest_ship_run: mockReadyToShipRun,
+  }));
+  (api.shipCandidate as jest.Mock).mockResolvedValue({
+    ...mockReadyToShipRun,
+    status: 'shipped',
+    shipped_commit_hash: 'shipped789',
+  });
+
+  renderShipRoom();
+
+  await waitFor(() => {
+    expect(screen.getAllByText(/Candidate 1/i).length).toBeGreaterThan(0);
+  });
+
+  fireEvent.click(screen.getAllByText(/Candidate 1/i).at(-1)!);
+
+  await waitFor(() => {
+    expect(screen.getByRole('button', { name: 'Ship candidate' })).toBeInTheDocument();
+  });
+
+  fireEvent.click(screen.getByRole('button', { name: 'Ship candidate' }));
+
+  await waitFor(() => {
+    expect(api.shipCandidate).toHaveBeenCalledWith('proj-1', 'candidate-1');
+    expect(api.getShipCandidateDetail).toHaveBeenCalledTimes(2);
+  });
+});
+
+test('polls ship-run status while compose is in progress', async () => {
+  jest.useFakeTimers({ advanceTimers: true });
+
+  const composingRun = {
+    ...mockReadyToShipRun,
+    status: 'composing',
+    release_pr_url: null,
+    release_pr_number: null,
+  };
+  const readyRun = {
+    ...composingRun,
+    status: 'ready_to_ship',
+    release_pr_url: mockReadyToShipRun.release_pr_url,
+    release_pr_number: mockReadyToShipRun.release_pr_number,
+  };
+
+  (api.getShipCandidates as jest.Mock).mockResolvedValue([baseCandidate]);
+  (api.getShipCandidateDetail as jest.Mock).mockResolvedValue(makeCandidateDetail({
+    latest_ship_run: composingRun,
+  }));
+  (api.getShipRun as jest.Mock)
+    .mockResolvedValueOnce(composingRun)
+    .mockResolvedValueOnce(readyRun);
+
+  renderShipRoom();
+
+  await waitFor(() => {
+    expect(api.getShipRun).toHaveBeenCalledWith('proj-1', 'run-1');
+  });
+
+  jest.advanceTimersByTime(3000);
+
+  await waitFor(() => {
+    expect(api.getShipRun).toHaveBeenCalledTimes(2);
+    expect(screen.getAllByText('Ready to Ship').length).toBeGreaterThan(0);
+  });
+
+  jest.useRealTimers();
 });
