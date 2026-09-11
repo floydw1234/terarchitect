@@ -2,6 +2,7 @@
 
 from cli._api import API, APIError
 from cli._output import die, print_json, print_receipt, print_table, short_id
+from cli._shipper import run_local_shipper
 
 
 def register(subparsers) -> None:
@@ -24,7 +25,20 @@ def register(subparsers) -> None:
     cc = sub.add_parser("compose-candidate", help="Compose a promotion candidate into a ShipRun")
     cc.add_argument("project_id")
     cc.add_argument("candidate_id")
+    cc.add_argument(
+        "--sync",
+        action="store_true",
+        help="Run the local shipper after queueing (no coordinator container required)",
+    )
     cc.add_argument("--json", action="store_true", help="Print JSON for this command")
+
+    cr = sub.add_parser(
+        "compose-run",
+        help="Run the local shipper for an existing queued or composing ShipRun",
+    )
+    cr.add_argument("project_id")
+    cr.add_argument("run_id")
+    cr.add_argument("--json", action="store_true", help="Print JSON for this command")
 
     dry = sub.add_parser("dry-compose", help="Preview whether a promotion candidate is safe to compose")
     dry.add_argument("project_id")
@@ -69,6 +83,11 @@ def register(subparsers) -> None:
     hp.add_argument("--ticket", dest="ticket_id", required=True, help="Ticket ID with an accepted attempt")
     hp.add_argument("--method", default="merge", choices=["merge", "squash", "rebase"],
                     help="Merge method when shipping (default: merge)")
+    hp.add_argument(
+        "--sync",
+        action="store_true",
+        help="Compose locally via agent.shipper after queueing (no coordinator required)",
+    )
     hp.add_argument("--json", action="store_true", help="Print JSON for this command")
 
     fb = sub.add_parser("feedback", help="Send operator feedback on a promotion candidate")
@@ -90,6 +109,8 @@ def _dispatch(args, api: API) -> None:
         _cmd_candidate(args, api)
     elif cmd == "compose-candidate":
         _cmd_compose_candidate(args, api)
+    elif cmd == "compose-run":
+        _cmd_compose_run(args, api)
     elif cmd == "dry-compose":
         _cmd_dry_compose(args, api)
     elif cmd == "diff":
@@ -278,16 +299,99 @@ def _cmd_run(args, api: API) -> None:
     _print_run_detail(detail)
 
 
+def _run_status_needs_local_compose(status: str | None) -> bool:
+    return (status or "") in ("queued", "composing")
+
+
+def _sync_compose_ship_run(api: API, project_id: str, run_id: str, *, output: str = "human") -> dict:
+    """Run agent.shipper locally and return the refreshed ShipRun detail."""
+    rc = run_local_shipper(api.base_url, run_id)
+    try:
+        run = api.get(f"/api/projects/{project_id}/ship/runs/{run_id}")
+    except APIError as e:
+        die(e, output=output)
+        raise
+    if rc != 0:
+        die(
+            APIError(
+                1,
+                f"Local shipper exited {rc}",
+                detail=(run.get("error") or "")[:500] or None,
+                hint="Check AgentHub, GitHub token, and MERGE_TEST_COMMAND. "
+                "Set TERARCHITECT_WORKER_API_KEY when worker auth is enabled.",
+                next_commands=[
+                    f"ta ship run {project_id} {run_id}",
+                    f"ta ship doctor {project_id}",
+                ],
+            ),
+            output=output,
+        )
+    if run.get("status") in ("compose_failed", "failed"):
+        die(
+            APIError(
+                1,
+                f"ShipRun composition failed ({run.get('status')})",
+                detail=(run.get("error") or "")[:500] or None,
+                next_commands=[
+                    f"ta ship run {project_id} {run_id}",
+                    f"ta ship doctor {project_id}",
+                ],
+            ),
+            output=output,
+        )
+    return run
+
+
 def _cmd_compose_candidate(args, api: API) -> None:
     try:
         run = api.post(f"/api/projects/{args.project_id}/ship/candidates/{args.candidate_id}/compose", {})
     except APIError as e:
         die(e, output=args.output)
+    if getattr(args, "sync", False) and _run_status_needs_local_compose(run.get("status")):
+        run = _sync_compose_ship_run(api, args.project_id, run["id"], output=args.output)
     if _want_json(args):
         print_json(run)
         return
     print(_ship_run_line(run))
-    print("Coordinator will compose the candidate. Inspect the ShipRun before shipping.")
+    if run.get("status") == "ready_to_ship":
+        print("Composition complete. Ship when ready:")
+        print(f"  ta ship ship-run {args.project_id} {run['id']}")
+    elif not getattr(args, "sync", False):
+        print("Coordinator will compose the candidate. Inspect the ShipRun before shipping.")
+        print(f"  Or run locally: ta ship compose-run {args.project_id} {run['id']}")
+
+
+def _cmd_compose_run(args, api: API) -> None:
+    try:
+        run = api.get(f"/api/projects/{args.project_id}/ship/runs/{args.run_id}")
+    except APIError as e:
+        die(e, output=args.output)
+    status = run.get("status")
+    if status == "ready_to_ship":
+        if _want_json(args):
+            print_json(run)
+            return
+        print(_ship_run_line(run))
+        print("Already ready_to_ship. Ship with:")
+        print(f"  ta ship ship-run {args.project_id} {args.run_id}")
+        return
+    if status not in ("queued", "composing"):
+        die(
+            APIError(
+                409,
+                f"ShipRun is {status!r}; local compose applies to queued or composing runs only.",
+                next_commands=[f"ta ship run {args.project_id} {args.run_id}"],
+            ),
+            output=args.output,
+        )
+    run = _sync_compose_ship_run(api, args.project_id, args.run_id, output=args.output)
+    if _want_json(args):
+        print_json(run)
+        return
+    print(_ship_run_line(run))
+    if run.get("status") == "ready_to_ship":
+        print("Composition complete. Ship when ready:")
+        print(f"  ta ship ship-run {args.project_id} {run['id']}")
 
 
 def _cmd_dry_compose(args, api: API) -> None:
@@ -427,13 +531,23 @@ def _cmd_doctor(args, api: API) -> None:
 
 
 def _cmd_happy_path(args, api: API) -> None:
+    body = {"ticket_id": args.ticket_id, "merge_method": args.method}
     try:
-        receipt = api.post(
-            f"/api/projects/{args.project_id}/ship/happy-path",
-            {"ticket_id": args.ticket_id, "merge_method": args.method},
-        )
+        receipt = api.post(f"/api/projects/{args.project_id}/ship/happy-path", body)
     except APIError as e:
         die(e, output=args.output)
+    if getattr(args, "sync", False) and _run_status_needs_local_compose(receipt.get("status")):
+        run_id = receipt.get("ship_run_id")
+        if not run_id:
+            die(
+                APIError(500, "Happy-path response missing ship_run_id for --sync compose."),
+                output=args.output,
+            )
+        _sync_compose_ship_run(api, args.project_id, run_id, output=args.output)
+        try:
+            receipt = api.post(f"/api/projects/{args.project_id}/ship/happy-path", body)
+        except APIError as e:
+            die(e, output=args.output)
     if _want_json(args):
         print_json(receipt)
         return

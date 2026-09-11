@@ -304,12 +304,13 @@ Spark is **headless** (no screen or desktop). Do **not** use the browser, open `
 
 1. After worker attempts complete: `ta ticket choose-winner <project_id> <ticket_id> <attempt_id>`
 2. Integrate the winner: `ta ticket accept-winner <project_id> <ticket_id> <attempt_id>`
-3. Ship Room — stepwise:
+3. Ship Room — stepwise (no coordinator container required when using `--sync` / `compose-run`):
    - `ta ship candidates <project_id>`
-   - `ta ship compose-candidate <project_id> <candidate_id>`
+   - `ta ship compose-candidate <project_id> <candidate_id> --sync` (queues then runs `python -m agent.shipper` locally)
+   - Or, if a run is already queued: `ta ship compose-run <project_id> <run_id>`
    - `ta ship run <project_id> <run_id>` (inspect)
    - `ta ship ship-run <project_id> <run_id>` or `ta ship ship-candidate <project_id> <candidate_id>`
-4. Or one-shot from an accepted attempt: `ta ship happy-path <project_id> --ticket <ticket_id>`
+4. Or one-shot from an accepted attempt: `ta ship happy-path <project_id> --ticket <ticket_id> --sync` (compose locally, then ship when ready)
 5. Confirm `shipped_frontier` advanced (API or `ta ship candidates --json`).
 
 Use `--output json` / `--json` when scripting. No UI required for verification on spark.
