@@ -7,6 +7,11 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse, urlunparse
+
+# Docker-compose service hostnames that do not resolve on the host OS.
+_DOCKER_AGENTHUB_HOSTS = frozenset({"agenthub"})
+_HOST_AGENTHUB_PORT = 8088
 
 # Env vars forwarded to the shipper subprocess (mirrors coordinator/coordinator.py).
 SHIPPER_ENV_KEYS = (
@@ -29,6 +34,41 @@ def _repo_root() -> Path:
     if raw:
         return Path(raw)
     return Path(__file__).resolve().parent.parent
+
+
+def remap_agenthub_url_for_host(url: str) -> tuple[str, Optional[str]]:
+    """Remap docker-internal AgentHub URLs for host-side CLI shipper runs.
+
+    Returns ``(url, warning)`` where ``warning`` is set when a remap occurred.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return raw, None
+
+    parsed = urlparse(raw)
+    hostname = (parsed.hostname or "").lower()
+    if hostname not in _DOCKER_AGENTHUB_HOSTS:
+        return raw, None
+
+    port = parsed.port
+    if port in (None, 8080):
+        new_port = _HOST_AGENTHUB_PORT
+    else:
+        new_port = port
+
+    netloc = f"127.0.0.1:{new_port}"
+    remapped = urlunparse(
+        (
+            parsed.scheme or "http",
+            netloc,
+            parsed.path,
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+    warning = f"Warning: remapped AGENTHUB_URL for host CLI: {raw} -> {remapped}"
+    return remapped, warning
 
 
 def _runtime_pythonpath(existing: Optional[str] = None) -> str:
@@ -54,7 +94,14 @@ def run_local_shipper(api_url: str, ship_run_id: str) -> int:
     env: dict[str, str] = {}
     for key in SHIPPER_ENV_KEYS:
         val = os.environ.get(key)
-        if val:
+        if not val:
+            continue
+        if key == "AGENTHUB_URL":
+            remapped, warning = remap_agenthub_url_for_host(val)
+            env[key] = remapped
+            if warning:
+                print(warning, file=sys.stderr)
+        else:
             env[key] = val
     env["TERARCHITECT_API_URL"] = api_url.rstrip("/")
     env["SHIP_RUN_ID"] = str(ship_run_id)
