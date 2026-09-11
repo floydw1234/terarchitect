@@ -314,3 +314,5 @@ Spark is **headless** (no screen or desktop). Do **not** use the browser, open `
 5. Confirm `shipped_frontier` advanced (API or `ta ship candidates --json`).
 
 Use `--output json` / `--json` when scripting. No UI required for verification on spark.
+
+**AgentHub URL on spark:** Host-side `ta ship … --sync` (local shipper) must reach AgentHub at `http://127.0.0.1:8088` (compose publishes `8088:8080`). Docker-compose services on the internal network still use `http://agenthub:8080`. The CLI shipper remaps docker-default `AGENTHUB_URL` values automatically when needed; set `AGENTHUB_URL=http://127.0.0.1:8088` in operator `.env` to avoid ambiguity.
