@@ -1,18 +1,20 @@
-# Week Board — 2026-09-07
+# Week Board — 2026-09-14
 
-Weekday cloud-agent slots for the week of Mon 2026-09-07 through Fri 2026-09-11.
+Weekday cloud-agent slots for the week of Mon 2026-09-14 through Fri 2026-09-18.
 Each point fits one weekday PR: a functional product slice toward the MVP spine.
 
 **This week is functional work only — no docs-only, theme, screenshot-for-screenshot, or outreach tasks.**
 
+Product spine: Ticket → TicketAttempt → accepted attempt → promotion candidate → ShipRun → one release PR → `shipped_frontier`.
+
 ---
 
-1. **Mon 2026-09-07 — wave→candidate cutover.** Resolve the wave-removal cutover: rebase or redo PR #7 onto current main so candidate/ShipRun is the only operator ship path. Remove any remaining wave-keyed compose/ship contract from the operator surface. Verify: CLI `ta ship` subcommands use candidate/ShipRun exclusively; no wave-keyed ship APIs remain callable. Status: `done`.
+1. **Mon 2026-09-14 — CLI ticket winner flow on `shipped_frontier`.** Align `ta ticket choose-winner` / `accept-winner` preflight with backend accept rules: compare attempt `base_hash` against `project.shipped_frontier` (not `accepted_frontier_id`), surface `candidate_eligible` and `shipped_frontier` in accept-winner JSON, and add CLI tests for non-dry-run choose-winner POST plus frontier-divergence cases. Verify: `pytest tests/test_ticket_command.py -k "choose_winner or accept_winner or candidate_eligible" backend/tests/test_attempt_lifecycle.py -q`. Status: `todo`.
 
-2. **Tue 2026-09-08 — harden accept/choose-winner.** Ensure accepting a validated TicketAttempt marks it as the integrated winner and makes it candidate-eligible without frontier/base drift. If the winner's base differs from current frontier, the accept path must reconcile or reject cleanly. Verify: add or extend a focused test proving accept → winner → candidate-eligible transition with no drift. Status: `done`.
+2. **Tue 2026-09-15 — Ship-run ship idempotency + release-PR e2e anchor.** Harden the final ship boundary: idempotent 200 when re-shipping an already-shipped run; recover stale `shipping` runs via reset-stale or PR-reconcile; add `test_e2e` coverage for release-PR merge → `shipped_frontier` advance (mocked `gh`). Verify: `pytest backend/tests/test_e2e.py backend/tests/test_shiproom_hardening.py backend/tests/test_concurrency.py -k "ship" -q`. Status: `todo`.
 
-3. **Wed 2026-09-09 — deterministic base selection after ship.** After a ShipRun ships and shipped_frontier advances, subsequent independent jobs must base on the new frontier (or one accepted dependency if specified). Verify: add a test that ships a run, confirms shipped_frontier advances, then spawns a new job and asserts its base equals the new frontier. Status: `done`.
+3. **Wed 2026-09-16 — AgentHub boring path: claim → TicketAttempt → finalize.** Unblock GitHub-free swarm ticket execution (require `shipped_frontier`/AgentHub, not `github_url`, until release PR); fail the job when `swarm_publish` or ticket `/complete` fails; extend AGENTHUB_URL host remap (#25 parity) to coordinator host shipper subprocesses. Verify: `pytest backend/tests/test_agenthub.py backend/tests/test_integration.py coordinator/tests/test_docker_runtime_contract.py tests/test_cli_shipper.py -q`. Status: `todo`.
 
-4. **Thu 2026-09-10 — Ship Room wiring slice.** Connect Ship Room UI to the existing candidate/ShipRun APIs the CLI already exposes (list candidates, candidate detail, compose-candidate, ship-run status). This is wiring, not a UI redesign. Verify: frontend test or manual check that Ship Room displays live candidate/run data from the backend. Status: `done`.
+4. **Thu 2026-09-17 — Dependency base dispatch for child jobs.** Wire `mvp_dependency_base_context` into job claim/dispatch so a ticket with one accepted-unshipped parent gets `base_hash` from the parent attempt commit (not stale `shipped_frontier`); block unsupported multi-parent bases at claim time. Verify: `pytest backend/tests/test_agenthub.py backend/tests/test_integration.py -k "dependency or base_selection or accepted_dependency" -q`. Status: `todo`.
 
-5. **Fri 2026-09-11 — dogfood-loop blocker fix.** Close one concrete blocker preventing a full dogfood loop on a real local project (reviewFeed or similar): choose-winner → accept-winner → compose promotion candidate → ShipRun → release PR → `shipped_frontier` advances. Identify the specific API/behavior gap and fix it. Verify: end-to-end test or CLI/`ta` run on the spark checkout (`/home/william/Documents/codingProj/terarchitect`) — no browser or UI required. Status: `done`.
+5. **Fri 2026-09-18 — Second CLI dogfood loop from new frontier.** Close one concrete blocker for repeating the full headless loop on reviewFeed (or similar): next independent ticket after first ship bases on advanced `shipped_frontier`, compose → release PR → ship-run → frontier advance without UI. Verify: `pytest backend/tests/test_e2e.py::test_e2e_ship_happy_path backend/tests/test_integration.py -k "frontier" -q` plus CLI sequence `ta ship happy-path <project_id> --ticket <ticket_id> --sync` on spark checkout (`/home/william/Documents/codingProj/terarchitect`). Status: `todo`.
