@@ -185,14 +185,14 @@ def register(subparsers) -> None:
     cw.add_argument("attempt_id")
     cw.add_argument("--reason", help="Operator note recorded client-side for context")
     cw.add_argument("--dry-run", action="store_true", help="Run local preflights without mutating backend state")
-    cw.add_argument("--expect-frontier", help="Fail unless project.accepted_frontier_id matches this hash")
+    cw.add_argument("--expect-frontier", help="Fail unless project.shipped_frontier matches this hash")
     cw.add_argument("--json", action="store_true", help="Print JSON output")
 
     aw = sub.add_parser("accept-winner", help="Accept/integrate the chosen winner attempt")
     aw.add_argument("project_id")
     aw.add_argument("ticket_id")
     aw.add_argument("attempt_id")
-    aw.add_argument("--expect-frontier", help="Fail unless project.accepted_frontier_id matches this hash")
+    aw.add_argument("--expect-frontier", help="Fail unless project.shipped_frontier matches this hash")
     aw.add_argument("--json", action="store_true", help="Print JSON output")
 
     ra = sub.add_parser("reject-attempt", help="Reject a ticket attempt")
@@ -425,24 +425,93 @@ def _stale_reason_is_indeterminate(stale_reason: str | None) -> bool:
     return bool(stale_reason and stale_reason.lower().startswith("cannot determine"))
 
 
-def _stale_acceptance_reason(attempt: dict, project: dict) -> str | None:
-    stale = attempt.get("stale")
+def _normalize_frontier_id(value: object) -> str | None:
+    text = (value or "").strip() if isinstance(value, str) else None
+    return text or None
+
+
+def _get_shipped_frontier(project: dict) -> str | None:
+    return _normalize_frontier_id(project.get("shipped_frontier"))
+
+
+def _dependency_winner_base_hashes(
+    api: API,
+    project_id: str,
+    ticket: dict,
+    *,
+    output: str,
+) -> set[str]:
+    hashes: set[str] = set()
+    for dep_id in ticket.get("depends_on_ticket_ids") or []:
+        dep_id = str(dep_id).strip()
+        if not dep_id:
+            continue
+        dep_attempts = _get_ticket_attempts(api, project_id, dep_id, output=output)
+        for item in dep_attempts:
+            if not item.get("is_winner"):
+                continue
+            if not (
+                item.get("integrated")
+                or item.get("status") in {"accepted", "composed", "release_pr_open", "shipped"}
+            ):
+                continue
+            commit_hash = _normalize_frontier_id(item.get("agenthub_commit_hash"))
+            if commit_hash:
+                hashes.add(commit_hash)
+                break
+    return hashes
+
+
+def _acceptance_allowed_base_hashes(
+    project: dict,
+    ticket: dict,
+    api: API | None = None,
+    *,
+    project_id: str | None = None,
+    output: str = "human",
+) -> set[str]:
+    allowed: set[str] = set()
+    shipped = _get_shipped_frontier(project)
+    if shipped:
+        allowed.add(shipped)
+    if api is not None and project_id and ticket.get("depends_on_ticket_ids"):
+        allowed |= _dependency_winner_base_hashes(api, project_id, ticket, output=output)
+    return allowed
+
+
+def _stale_acceptance_reason(
+    attempt: dict,
+    project: dict,
+    *,
+    allowed_bases: set[str] | None = None,
+) -> str | None:
     stale_reason = (attempt.get("stale_reason") or "").strip() or None
-    frontier = (project.get("accepted_frontier_id") or "").strip() or None
-    base_hash = (attempt.get("base_hash") or "").strip() or None
-    if stale is None:
-        if frontier and base_hash:
-            if base_hash != frontier:
-                return stale_reason or "attempt.base_hash differs from project.accepted_frontier_id."
-            return None
-        return stale_reason or "Cannot determine attempt staleness."
-    if _stale_reason_is_indeterminate(stale_reason):
-        return stale_reason
-    if stale is True:
-        return stale_reason or "Attempt is stale."
-    if stale_reason and frontier and base_hash and base_hash != frontier:
-        return stale_reason
-    return None
+    base_hash = _normalize_frontier_id(attempt.get("base_hash"))
+    if not base_hash:
+        return stale_reason or "Cannot determine attempt staleness: attempt.base_hash is not set."
+
+    allowed = set(allowed_bases or ())
+    shipped = _get_shipped_frontier(project)
+    if shipped:
+        allowed.add(shipped)
+
+    if not allowed:
+        if stale_reason and _stale_reason_is_indeterminate(stale_reason):
+            return stale_reason
+        return stale_reason or "Cannot determine attempt staleness: project.shipped_frontier is not set."
+
+    if base_hash in allowed:
+        return None
+
+    if shipped and len(allowed) == 1:
+        return stale_reason or "attempt.base_hash differs from project.shipped_frontier."
+    if allowed:
+        preview = ", ".join(sorted(base[:12] for base in allowed))
+        return (
+            "attempt.base_hash must match project.shipped_frontier or an integrated dependency winner "
+            f"({preview})."
+        )
+    return stale_reason or "Cannot determine attempt staleness."
 
 
 def _attempt_is_reviewable_candidate(attempt: dict) -> bool:
@@ -699,7 +768,7 @@ def _preflight_attempt(
     forbid_integrated: bool = False,
 ) -> tuple[dict, dict, dict, list[dict]]:
     project = _get_project(api, args.project_id, output=args.output)
-    _get_ticket(api, args.project_id, args.ticket_id, output=args.output)
+    ticket = _get_ticket(api, args.project_id, args.ticket_id, output=args.output)
     attempts = _get_ticket_attempts(api, args.project_id, args.ticket_id, output=args.output)
     attempt_index = {
         (item.get("id") or item.get("attempt_id")): item
@@ -716,14 +785,14 @@ def _preflight_attempt(
             f"Attempt {args.attempt_id} does not belong to ticket {args.ticket_id}.",
             output=args.output,
         )
-    frontier = (project.get("accepted_frontier_id") or "").strip() or None
+    frontier = _get_shipped_frontier(project)
     expected = (getattr(args, "expect_frontier", None) or "").strip() or None
     commands = _winner_flow_commands(args.project_id, args.ticket_id, args.attempt_id, frontier=frontier)
     if expected and frontier != expected:
         die(
             _winner_flow_error(
                 409,
-                f"Expected frontier {expected}, but project.accepted_frontier_id is now {frontier or 'unset'}.",
+                f"Expected frontier {expected}, but project.shipped_frontier is now {frontier or 'unset'}.",
                 detail="The project frontier changed after this command was prepared, so the winner flow must be re-evaluated against the current frontier.",
                 hint="Inspect the latest attempts, then choose or accept again from the current frontier.",
                 next_commands=[commands["attempts"], commands["evaluate"]],
@@ -751,7 +820,7 @@ def _preflight_attempt(
             ),
             output=args.output,
         )
-    return project, {"id": args.ticket_id}, attempt, attempts
+    return project, ticket, attempt, attempts
 
 
 def _cmd_attempts(args, api: API) -> None:
@@ -837,7 +906,7 @@ def _cmd_evaluate_attempts(args, api: API) -> None:
     _get_ticket(api, args.project_id, args.ticket_id, output=args.output)
     ticket_attempts = _get_ticket_attempts(api, args.project_id, args.ticket_id, output=args.output)
     selected = _filter_attempts(ticket_attempts, list(args.attempt_ids or []), args.latest)
-    frontier = (project.get("accepted_frontier_id") or "").strip() or None
+    frontier = _get_shipped_frontier(project)
 
     evaluated: list[dict] = []
     for item in selected:
@@ -944,11 +1013,12 @@ def _cmd_choose_winner(args, api: API) -> None:
         require_winner=False,
         forbid_integrated=True,
     )
+    shipped_frontier = _get_shipped_frontier(project)
     integrated_sibling = _find_integrated_sibling_attempt(attempts, args.attempt_id)
     if integrated_sibling is not None:
         sibling_id = integrated_sibling.get("id") or integrated_sibling.get("attempt_id") or "unknown"
         sibling_status = _attempt_status_value(integrated_sibling) or "unknown"
-        commands = _winner_flow_commands(args.project_id, args.ticket_id, args.attempt_id, frontier=(project.get("accepted_frontier_id") or "").strip() or None)
+        commands = _winner_flow_commands(args.project_id, args.ticket_id, args.attempt_id, frontier=shipped_frontier)
         die(
             _winner_flow_error(
                 409,
@@ -959,10 +1029,9 @@ def _cmd_choose_winner(args, api: API) -> None:
             ),
             output=args.output,
         )
-    frontier = (project.get("accepted_frontier_id") or "").strip() or None
     next_command = f"ta ticket accept-winner {args.project_id} {args.ticket_id} {args.attempt_id}"
-    if frontier:
-        next_command += f" --expect-frontier {frontier}"
+    if shipped_frontier:
+        next_command += f" --expect-frontier {shipped_frontier}"
     if args.dry_run:
         payload = {
             "project_id": args.project_id,
@@ -970,7 +1039,8 @@ def _cmd_choose_winner(args, api: API) -> None:
             "attempt_id": args.attempt_id,
             "dry_run": True,
             "frontier_changed": False,
-            "accepted_frontier_id": frontier,
+            "accepted_frontier_id": (project.get("accepted_frontier_id") or "").strip() or None,
+            "shipped_frontier": shipped_frontier,
             "validated": True,
             "is_winner": bool(attempt.get("is_winner")),
             "next_command": next_command,
@@ -1003,7 +1073,13 @@ def _cmd_choose_winner(args, api: API) -> None:
         "attempt_id": args.attempt_id,
         "dry_run": False,
         "frontier_changed": False,
-        "accepted_frontier_id": (response.get("project") or {}).get("accepted_frontier_id") or response.get("accepted_frontier_id") or frontier,
+        "accepted_frontier_id": (
+            (response.get("project") or {}).get("accepted_frontier_id")
+            or response.get("accepted_frontier_id")
+            or (project.get("accepted_frontier_id") or "").strip()
+            or None
+        ),
+        "shipped_frontier": response.get("shipped_frontier") or _get_shipped_frontier(project),
         "next_command": next_command,
     }
     if args.output == "json":
@@ -1021,16 +1097,23 @@ def _cmd_choose_winner(args, api: API) -> None:
 
 def _cmd_accept_winner(args, api: API) -> None:
     _apply_json_flag(args)
-    project, _ticket, attempt, _attempts = _preflight_attempt(
+    project, ticket, attempt, _attempts = _preflight_attempt(
         args,
         api,
         require_winner=True,
         forbid_integrated=False,
     )
-    stale_reason = _stale_acceptance_reason(attempt, project)
+    allowed_bases = _acceptance_allowed_base_hashes(
+        project,
+        ticket,
+        api,
+        project_id=args.project_id,
+        output=args.output,
+    )
+    stale_reason = _stale_acceptance_reason(attempt, project, allowed_bases=allowed_bases)
     if stale_reason:
-        frontier = (project.get("accepted_frontier_id") or "").strip() or None
-        commands = _winner_flow_commands(args.project_id, args.ticket_id, args.attempt_id, frontier=frontier)
+        shipped_frontier = _get_shipped_frontier(project)
+        commands = _winner_flow_commands(args.project_id, args.ticket_id, args.attempt_id, frontier=shipped_frontier)
         die(
             _winner_flow_error(
                 409,
@@ -1055,6 +1138,18 @@ def _cmd_accept_winner(args, api: API) -> None:
         or (response.get("project") or {}).get("accepted_frontier_id")
         or response.get("agenthub_commit_hash")
     )
+    shipped_frontier = (
+        response.get("shipped_frontier")
+        or (response.get("project") or {}).get("shipped_frontier")
+        or _get_shipped_frontier(project)
+    )
+    merged_attempt = {**attempt, **response}
+    base_hash = _normalize_frontier_id(merged_attempt.get("base_hash"))
+    candidate_eligible = bool(
+        _attempt_is_integrated_like(merged_attempt)
+        and shipped_frontier
+        and base_hash == shipped_frontier
+    )
     frontier_changed = (not was_already_integrated) and accepted_frontier_id != previous_frontier_id
     payload = {
         **response,
@@ -1063,6 +1158,8 @@ def _cmd_accept_winner(args, api: API) -> None:
         "attempt_id": args.attempt_id,
         "frontier_changed": frontier_changed,
         "accepted_frontier_id": accepted_frontier_id,
+        "shipped_frontier": shipped_frontier,
+        "candidate_eligible": candidate_eligible,
         "next_commands": [
             f"ta attempt show {args.project_id} {args.attempt_id}",
             f"ta ship candidates {args.project_id}",
