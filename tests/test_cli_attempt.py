@@ -299,7 +299,11 @@ def test_ticket_accept_attempt_is_legacy_alias_for_accept_winner(capsys):
         def get(self, path):
             self.calls.append(("GET", path, None))
             if path == "/api/projects/proj":
-                return {"id": "proj", "accepted_frontier_id": "frontier-123"}
+                return {
+                    "id": "proj",
+                    "accepted_frontier_id": "frontier-123",
+                    "shipped_frontier": "frontier-123",
+                }
             if path == "/api/projects/proj/tickets/ticket-1":
                 return {"id": "ticket-1"}
             if path == "/api/projects/proj/tickets/ticket-1/attempts":
