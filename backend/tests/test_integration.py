@@ -649,7 +649,7 @@ def test_ship_rejects_when_run_not_ready_to_ship(client, project):
 
     resp = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
     assert resp.status_code == 409
-    assert "ready_to_ship" in resp.get_json().get("error", "")
+    assert "shippable" in resp.get_json().get("error", "")
 
 
 def test_ship_rejects_stale_composition_validation(client, project):

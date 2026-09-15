@@ -394,6 +394,9 @@ def _collect_ship_run_evidence(run: ShipRun) -> dict | None:
 def _finalize_shipped_run(project, run, *, new_tip: str | None, root_refresh_source: str):
     from datetime import datetime, timezone
 
+    if run.status == "shipped":
+        return jsonify(_ship_run_detail_payload(run))
+
     run.status = "shipped"
     run.shipped_commit_hash = new_tip
     run.shipped_at = datetime.now(timezone.utc)
@@ -3802,14 +3805,70 @@ def ship_run_detail(project_id, run_id):
     return jsonify(_ship_run_detail_payload(run))
 
 
+_SHIP_RUN_SHIPPABLE_STATUSES = ("ready_to_ship", "shipping")
+
+
+def _ship_run_idempotent_ship_response(run: ShipRun):
+    """Return 200 for an already-shipped run without mutating state."""
+    return jsonify(_ship_run_detail_payload(run))
+
+
+def _resolve_ship_run_for_ship(project_id, run_id):
+    """Load a ship run for the ship endpoint."""
+    run = ShipRun.query.filter_by(project_id=project_id, id=run_id).first()
+    if not run:
+        return None, (jsonify({"error": "Ship run not found"}), 404)
+    if run.status == "shipped":
+        return run, "idempotent"
+    if run.status not in _SHIP_RUN_SHIPPABLE_STATUSES:
+        return None, (
+            jsonify({
+                "error": "No ship run in shippable state for this run id",
+                "status": run.status,
+            }),
+            409,
+        )
+    return run, None
+
+
+def _resolve_candidate_ship_run_for_ship(project_id, candidate_id):
+    """Load the latest ship run for a candidate on the ship endpoint."""
+    candidate = PromotionCandidate.query.filter_by(
+        project_id=project_id, id=candidate_id
+    ).first()
+    if not candidate:
+        return None, None, (jsonify({"error": "Promotion candidate not found"}), 404)
+    run = (
+        ShipRun.query
+        .filter_by(project_id=project_id, promotion_candidate_id=candidate.id)
+        .order_by(ShipRun.created_at.desc())
+        .first()
+    )
+    if not run:
+        return None, candidate, (jsonify({"error": "No ship run found for this candidate"}), 404)
+    if run.status == "shipped":
+        return run, candidate, "idempotent"
+    if run.status not in _SHIP_RUN_SHIPPABLE_STATUSES:
+        return None, candidate, (
+            jsonify({
+                "error": "No ship run in shippable state for this candidate",
+                "status": run.status,
+            }),
+            409,
+        )
+    return run, candidate, None
+
+
 @api_bp.route("/projects/<uuid:project_id>/ship/runs/<uuid:run_id>/ship", methods=["POST"])
 def ship_run_ship(project_id, run_id):
     project = _lock_project_for_update(project_id)
     if not project:
         return jsonify({"error": "Project not found"}), 404
-    run = ShipRun.query.filter_by(project_id=project_id, id=run_id, status="ready_to_ship").first()
-    if not run:
-        return jsonify({"error": "No ship run in ready_to_ship state for this run id"}), 409
+    run, resolution = _resolve_ship_run_for_ship(project_id, run_id)
+    if resolution and resolution != "idempotent":
+        return resolution
+    if resolution == "idempotent":
+        return _ship_run_idempotent_ship_response(run)
     merge_method = (request.json or {}).get("merge_method") or "merge"
     return _ship_run_ship_response(project, run, merge_method=str(merge_method).strip().lower())
 
@@ -3819,17 +3878,11 @@ def ship_candidate_ship(project_id, candidate_id):
     project = _lock_project_for_update(project_id)
     if not project:
         return jsonify({"error": "Project not found"}), 404
-    candidate = PromotionCandidate.query.filter_by(
-        project_id=project_id, id=candidate_id
-    ).first_or_404()
-    run = (
-        ShipRun.query
-        .filter_by(project_id=project_id, promotion_candidate_id=candidate.id, status="ready_to_ship")
-        .order_by(ShipRun.created_at.desc())
-        .first()
-    )
-    if not run:
-        return jsonify({"error": "No ship run in ready_to_ship state for this candidate"}), 409
+    run, _candidate, resolution = _resolve_candidate_ship_run_for_ship(project_id, candidate_id)
+    if resolution and resolution != "idempotent":
+        return resolution
+    if resolution == "idempotent":
+        return _ship_run_idempotent_ship_response(run)
     merge_method = (request.json or {}).get("merge_method") or "merge"
     return _ship_run_ship_response(project, run, merge_method=str(merge_method).strip().lower())
 
@@ -4035,7 +4088,7 @@ def worker_ship_run_fail(run_id):
 
 @api_bp.route("/worker/ship-run/reset-stale", methods=["POST"])
 def worker_ship_run_reset_stale():
-    """Reset ship runs stuck in 'composing' or legacy 'running' state after restart.
+    """Reset ship runs stuck in compose/ship progress after restart.
     Body: optional {"max_age_seconds": N} — reset runs older than N seconds (default 1800)."""
     err, status = _require_worker_auth()
     if err is not None:
@@ -4048,12 +4101,15 @@ def worker_ship_run_reset_stale():
     from datetime import datetime, timezone, timedelta
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=max_age)
     stale = ShipRun.query.filter(
-        ShipRun.status.in_(["composing", "running"]),
+        ShipRun.status.in_(["composing", "running", "shipping"]),
         ShipRun.updated_at < cutoff,
     ).all()
     count = len(stale)
     for run in stale:
-        run.status = "queued"  # re-queue so coordinator picks it up again
+        if run.status == "shipping":
+            run.status = "ready_to_ship"
+        else:
+            run.status = "queued"
         run.error = f"Reset by coordinator after {max_age}s stale timeout."
     db.session.commit()
     current_app.logger.info("Reset %d stale active ship run(s) (older than %ds)", count, max_age)

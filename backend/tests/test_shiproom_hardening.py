@@ -158,6 +158,124 @@ def test_ship_run_already_merged_reconciles_and_returns_evidence_summary(client,
         assert refreshed_attempt.status == "shipped"
 
 
+def test_ship_run_reship_idempotent(client, project):
+    """Re-shipping an already-shipped run returns 200 without double-shipping."""
+    pid = project["id"]
+    frontier = project.get("shipped_frontier") or project["accepted_frontier_id"]
+
+    from models.db import Project, ShipRun, db
+
+    with client.application.app_context():
+        run = ShipRun(
+            project_id=pid,
+            status="shipped",
+            composed_commit_hash="c" * 40,
+            shipped_commit_hash="c" * 40,
+            base_main_hash=frontier,
+        )
+        db.session.add(run)
+        db.session.commit()
+        run_id = str(run.id)
+        stored_project = db.session.get(Project, pid)
+        stored_project.shipped_frontier = "c" * 40
+        db.session.commit()
+
+    first = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
+    assert first.status_code == 200
+    first_payload = first.get_json()
+    assert first_payload["status"] == "shipped"
+    assert first_payload["shipped_commit_hash"] == "c" * 40
+
+    second = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
+    assert second.status_code == 200
+    second_payload = second.get_json()
+    assert second_payload["status"] == "shipped"
+    assert second_payload["shipped_commit_hash"] == "c" * 40
+
+    with client.application.app_context():
+        refreshed_project = db.session.get(Project, pid)
+        refreshed_run = db.session.get(ShipRun, run_id)
+        assert refreshed_project.shipped_frontier == "c" * 40
+        assert refreshed_run.status == "shipped"
+
+
+def test_ship_run_stuck_shipping_reconciles_merged_pr(client, project):
+    """A run stuck in shipping can recover via PR-reconcile on retry."""
+    pid = project["id"]
+    frontier = project.get("shipped_frontier") or project["accepted_frontier_id"]
+
+    from models.db import PromotionCandidate, ShipRun, Ticket, TicketAttempt, db
+
+    with client.application.app_context():
+        ticket = Ticket(project_id=pid, column_id="done", title="Recover me", intent_status="active")
+        db.session.add(ticket)
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="a" * 40,
+            base_hash=frontier,
+            attempt_num=1,
+            status="accepted",
+            summary="done",
+        )
+        db.session.add(attempt)
+        db.session.flush()
+        candidate = PromotionCandidate(
+            project_id=pid,
+            selected_attempt_ids=[str(attempt.id)],
+            selected_leaf_hashes=["a" * 40],
+            base_root_hash=frontier,
+            status="composed",
+        )
+        db.session.add(candidate)
+        db.session.flush()
+        run = ShipRun(
+            project_id=pid,
+            promotion_candidate_id=str(candidate.id),
+            status="shipping",
+            composed_commit_hash="c" * 40,
+            base_main_hash=frontier,
+            release_branch="terarchitect/release/ship-abc12345",
+            release_pr_number=42,
+            release_pr_url="https://github.com/owner/repo/pull/42",
+        )
+        db.session.add(run)
+        db.session.commit()
+        run_id = str(run.id)
+
+    update_resp = client.put(
+        f"/api/projects/{pid}",
+        json={"github_url": "https://github.com/owner/repo"},
+    )
+    assert update_resp.status_code == 200
+
+    view_response = MagicMock(returncode=0)
+    view_response.stdout = json.dumps(
+        {
+            "state": "MERGED",
+            "mergedAt": "2026-06-10T12:00:00Z",
+            "headRefName": "terarchitect/release/ship-abc12345",
+            "headRefOid": "c" * 40,
+        }
+    )
+    with patch("subprocess.run", side_effect=[view_response]):
+        response = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["status"] == "shipped"
+    assert payload["shipped_commit_hash"] == "c" * 40
+
+    with client.application.app_context():
+        from models.db import Project
+
+        refreshed_project = db.session.get(Project, pid)
+        refreshed_run = db.session.get(ShipRun, run_id)
+        assert refreshed_project.shipped_frontier == "c" * 40
+        assert refreshed_run.status == "shipped"
+
+
 def test_ship_happy_path_creates_candidate_and_queued_run(client, project):
     pid = project["id"]
     frontier = project.get("shipped_frontier") or project["accepted_frontier_id"]

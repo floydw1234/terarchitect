@@ -354,6 +354,103 @@ def test_e2e_create_promotion_candidate_from_accepted_attempts(client, project):
         assert stored_attempt_ids == {"a" * 40, "b" * 40}
 
 
+def test_e2e_ship_release_pr_merge_advances_frontier(client, project):
+    """Release PR merge (mocked gh) advances shipped_frontier through ShipRun ship."""
+    pid = project["id"]
+    initial_frontier = project.get("shipped_frontier") or project["accepted_frontier_id"]
+
+    from models.db import db, Project, Ticket, TicketAttempt
+    with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        stored_project.shipped_frontier = initial_frontier
+        db.session.commit()
+        ticket = Ticket(project_id=pid, column_id="done", title="Release PR path", intent_status="active")
+        db.session.add(ticket)
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="a" * 40,
+            base_hash=initial_frontier,
+            attempt_num=1,
+            status="accepted",
+            summary="done",
+        )
+        db.session.add(attempt)
+        db.session.commit()
+        attempt_id = str(attempt.id)
+
+    candidate_resp = client.post(
+        f"/api/projects/{pid}/ship/candidates",
+        json={"selected_attempt_ids": [attempt_id]},
+    )
+    assert candidate_resp.status_code == 201
+    candidate = candidate_resp.get_json()
+
+    compose_resp = client.post(
+        f"/api/projects/{pid}/ship/candidates/{candidate['id']}/compose",
+        json={},
+    )
+    assert compose_resp.status_code in (200, 201)
+    run_id = compose_resp.get_json()["id"]
+
+    claim_resp = client.post("/api/worker/ship-run/next", json={})
+    assert claim_resp.status_code == 200
+
+    composed_resp = client.post(f"/api/worker/ship-run/{run_id}/composed", json={
+        "composed_commit_hash": "c" * 40,
+        "base_main_hash": initial_frontier,
+        "release_branch": "terarchitect/release/ship-e2e00001",
+        "release_pr_number": 101,
+        "release_pr_url": "https://github.com/owner/repo/pull/101",
+        "test_status": "passed",
+        "test_output": "All tests pass.",
+        "changed_files": ["src/app.py"],
+    })
+    assert composed_resp.status_code == 200
+    assert composed_resp.get_json()["status"] == "ready_to_ship"
+
+    update_resp = client.put(
+        f"/api/projects/{pid}",
+        json={"github_url": "https://github.com/owner/repo"},
+    )
+    assert update_resp.status_code == 200
+
+    merged_main_sha = "f" * 40
+    verify_ok = MagicMock(
+        returncode=0,
+        stdout=json.dumps({
+            "state": "OPEN",
+            "mergedAt": None,
+            "headRefName": "terarchitect/release/ship-e2e00001",
+            "headRefOid": "c" * 40,
+        }),
+    )
+    merge_ok = MagicMock(returncode=0, stdout="", stderr="")
+    tip_ok = MagicMock(
+        returncode=0,
+        stdout=json.dumps({"object": {"sha": merged_main_sha}}),
+    )
+
+    with patch("subprocess.run", side_effect=[verify_ok, merge_ok, tip_ok]):
+        ship_resp = client.post(
+            f"/api/projects/{pid}/ship/runs/{run_id}/ship",
+            json={"merge_method": "merge"},
+        )
+
+    assert ship_resp.status_code == 200, ship_resp.get_json()
+    ship_data = ship_resp.get_json()
+    assert ship_data["status"] == "shipped"
+    assert ship_data["shipped_commit_hash"] == merged_main_sha
+
+    with client.application.app_context():
+        p = db.session.get(Project, pid)
+        assert p.shipped_frontier == merged_main_sha, "Frontier must advance after release PR merge"
+
+        attempt = db.session.get(TicketAttempt, attempt_id)
+        assert attempt.status == "shipped"
+
+
 def test_e2e_ship_candidate_only_marks_candidate_attempts_shipped(client, project):
     pid = project["id"]
     frontier = project.get("shipped_frontier") or project["accepted_frontier_id"]

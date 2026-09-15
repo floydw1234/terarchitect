@@ -441,3 +441,31 @@ def test_stale_ship_run_reset(client, project):
     with client.application.app_context():
         reset_run = db.session.get(ShipRun, run_id)
         assert reset_run.status == "queued", f"Expected queued, got {reset_run.status}"
+
+
+def test_stale_shipping_run_reset_to_ready_to_ship(client, project):
+    """Shipping runs stuck mid-ship should reset to ready_to_ship for retry."""
+    pid = project["id"]
+    from models.db import db, ShipRun
+    from datetime import datetime, timezone, timedelta
+
+    with client.application.app_context():
+        stale_run = ShipRun(
+            project_id=pid,
+            status="shipping",
+            composed_commit_hash="c" * 40,
+            release_pr_number=7,
+        )
+        db.session.add(stale_run)
+        db.session.commit()
+        stale_run.updated_at = datetime.now(timezone.utc) - timedelta(seconds=3600)
+        db.session.commit()
+        run_id = str(stale_run.id)
+
+    r = client.post("/api/worker/ship-run/reset-stale", json={"max_age_seconds": 1800})
+    assert r.status_code == 200
+    assert r.get_json()["reset"] >= 1
+
+    with client.application.app_context():
+        reset_run = db.session.get(ShipRun, run_id)
+        assert reset_run.status == "ready_to_ship", f"Expected ready_to_ship, got {reset_run.status}"
