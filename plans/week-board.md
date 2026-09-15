@@ -9,7 +9,7 @@ Product spine: Ticket → TicketAttempt → accepted attempt → promotion candi
 
 ---
 
-1. **Mon 2026-09-14 — CLI ticket winner flow on `shipped_frontier`.** Align `ta ticket choose-winner` / `accept-winner` preflight with backend accept rules: compare attempt `base_hash` against `project.shipped_frontier` (not `accepted_frontier_id`), surface `candidate_eligible` and `shipped_frontier` in accept-winner JSON, and add CLI tests for non-dry-run choose-winner POST plus frontier-divergence cases. Verify: `pytest tests/test_ticket_command.py -k "choose_winner or accept_winner or candidate_eligible" backend/tests/test_attempt_lifecycle.py -q`. Status: `todo`.
+1. **Mon 2026-09-14 — CLI ticket winner flow on `shipped_frontier`.** Align `ta ticket choose-winner` / `accept-winner` preflight with backend accept rules: compare attempt `base_hash` against `project.shipped_frontier` (not `accepted_frontier_id`), surface `candidate_eligible` and `shipped_frontier` in accept-winner JSON, and add CLI tests for non-dry-run choose-winner POST plus frontier-divergence cases. Verify: `pytest tests/test_ticket_command.py -k "choose_winner or accept_winner or candidate_eligible" backend/tests/test_attempt_lifecycle.py -q`. Status: `done`.
 
 2. **Tue 2026-09-15 — Ship-run ship idempotency + release-PR e2e anchor.** Harden the final ship boundary: idempotent 200 when re-shipping an already-shipped run; recover stale `shipping` runs via reset-stale or PR-reconcile; add `test_e2e` coverage for release-PR merge → `shipped_frontier` advance (mocked `gh`). Verify: `pytest backend/tests/test_e2e.py backend/tests/test_shiproom_hardening.py backend/tests/test_concurrency.py -k "ship" -q`. Status: `done`.
 

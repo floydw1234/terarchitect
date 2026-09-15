@@ -720,7 +720,11 @@ def test_evaluate_attempts_json_omits_choose_winner_when_sibling_is_already_inte
 
 
 def test_choose_winner_dry_run_returns_frontier_unchanged_and_next_command(capsys):
-    project = {"id": "proj-1", "accepted_frontier_id": "frontier-123"}
+    project = {
+        "id": "proj-1",
+        "accepted_frontier_id": "frontier-123",
+        "shipped_frontier": "frontier-123",
+    }
     attempts = [
         {"id": "attempt-2", "attempt_num": 2, "status": "validated"},
         {"id": "attempt-1", "attempt_num": 1, "status": "failed"},
@@ -765,12 +769,79 @@ def test_choose_winner_dry_run_returns_frontier_unchanged_and_next_command(capsy
     assert payload["frontier_changed"] is False
     assert payload["attempt_id"] == "attempt-2"
     assert payload["next_command"] == "ta ticket accept-winner proj-1 ticket-1 attempt-2 --expect-frontier frontier-123"
+    assert payload["shipped_frontier"] == "frontier-123"
+
+
+def test_choose_winner_posts_to_choose_winner_endpoint_and_returns_next_accept_command(capsys):
+    project = {
+        "id": "proj-1",
+        "accepted_frontier_id": "frontier-123",
+        "shipped_frontier": "frontier-123",
+    }
+    attempts = [{"id": "attempt-2", "attempt_num": 2, "status": "validated"}]
+    attempt_2 = {
+        "id": "attempt-2",
+        "attempt_id": "attempt-2",
+        "ticket_id": "ticket-1",
+        "status": "validated",
+        "validated": True,
+        "is_winner": False,
+        "integrated": False,
+        "agenthub_commit_hash": "commit-222222222222",
+        "base_hash": "frontier-123",
+        "attempt_num": 2,
+    }
+    api = RouteStubAPI(
+        get_map={
+            "/api/projects/proj-1": project,
+            "/api/projects/proj-1/tickets/ticket-1": {"id": "ticket-1"},
+            "/api/projects/proj-1/tickets/ticket-1/attempts": attempts,
+            "/api/projects/proj-1/attempts/attempt-2": attempt_2,
+        },
+        post_map={
+            "/api/projects/proj-1/tickets/ticket-1/attempts/attempt-2/choose-winner": {
+                "id": "attempt-2",
+                "status": "validated",
+                "is_winner": True,
+                "integrated": False,
+                "accepted_frontier_id": "frontier-123",
+            }
+        },
+    )
+    args = SimpleNamespace(
+        project_id="proj-1",
+        ticket_id="ticket-1",
+        attempt_id="attempt-2",
+        reason="best validation",
+        dry_run=False,
+        expect_frontier="frontier-123",
+        json=True,
+        output="json",
+    )
+
+    ticket_cmd._cmd_choose_winner(args, api)
+
+    assert api.post_calls == [
+        (
+            "/api/projects/proj-1/tickets/ticket-1/attempts/attempt-2/choose-winner",
+            {"reason": "best validation"},
+        )
+    ]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["dry_run"] is False
+    assert payload["is_winner"] is True
+    assert payload["shipped_frontier"] == "frontier-123"
+    assert payload["next_command"] == "ta ticket accept-winner proj-1 ticket-1 attempt-2 --expect-frontier frontier-123"
 
 
 def test_choose_winner_dry_run_rejects_integrated_sibling_locally_in_json_mode(capsys):
     api = RouteStubAPI(
         get_map={
-            "/api/projects/proj-1": {"id": "proj-1", "accepted_frontier_id": "frontier-123"},
+            "/api/projects/proj-1": {
+                "id": "proj-1",
+                "accepted_frontier_id": "frontier-123",
+                "shipped_frontier": "frontier-123",
+            },
             "/api/projects/proj-1/tickets/ticket-1": {"id": "ticket-1"},
             "/api/projects/proj-1/tickets/ticket-1/attempts": [
                 {"id": "attempt-3", "attempt_num": 3, "status": "validated"},
@@ -820,7 +891,11 @@ def test_choose_winner_dry_run_rejects_integrated_sibling_locally_in_json_mode(c
 def test_choose_winner_rejects_frontier_mismatch_locally_in_json_mode(capsys):
     api = RouteStubAPI(
         get_map={
-            "/api/projects/proj-1": {"id": "proj-1", "accepted_frontier_id": "frontier-live"},
+            "/api/projects/proj-1": {
+                "id": "proj-1",
+                "accepted_frontier_id": "frontier-live",
+                "shipped_frontier": "frontier-live",
+            },
             "/api/projects/proj-1/tickets/ticket-1": {"id": "ticket-1"},
             "/api/projects/proj-1/tickets/ticket-1/attempts": [{"id": "attempt-2", "attempt_num": 2, "status": "validated"}],
             "/api/projects/proj-1/attempts/attempt-2": {
@@ -853,7 +928,7 @@ def test_choose_winner_rejects_frontier_mismatch_locally_in_json_mode(capsys):
 
     payload = json.loads(capsys.readouterr().err)
     assert payload["error"]["message"] == (
-        "Expected frontier frontier-expected, but project.accepted_frontier_id is now frontier-live."
+        "Expected frontier frontier-expected, but project.shipped_frontier is now frontier-live."
     )
     assert "frontier changed" in payload["error"]["detail"]
     assert "Inspect the latest attempts" in payload["error"]["hint"]
@@ -868,7 +943,11 @@ def test_choose_winner_rejects_frontier_mismatch_locally_in_json_mode(capsys):
 def test_accept_winner_requires_chosen_winner_before_posting(capsys):
     api = RouteStubAPI(
         get_map={
-            "/api/projects/proj-1": {"id": "proj-1", "accepted_frontier_id": "frontier-123"},
+            "/api/projects/proj-1": {
+                "id": "proj-1",
+                "accepted_frontier_id": "frontier-123",
+                "shipped_frontier": "frontier-123",
+            },
             "/api/projects/proj-1/tickets/ticket-1": {"id": "ticket-1"},
             "/api/projects/proj-1/tickets/ticket-1/attempts": [{"id": "attempt-2", "attempt_num": 2, "status": "validated"}],
             "/api/projects/proj-1/attempts/attempt-2": {
@@ -913,7 +992,11 @@ def test_accept_winner_requires_chosen_winner_before_posting(capsys):
 def test_accept_attempt_alias_requires_chosen_winner_before_posting(capsys):
     api = RouteStubAPI(
         get_map={
-            "/api/projects/proj-1": {"id": "proj-1", "accepted_frontier_id": "frontier-123"},
+            "/api/projects/proj-1": {
+                "id": "proj-1",
+                "accepted_frontier_id": "frontier-123",
+                "shipped_frontier": "frontier-123",
+            },
             "/api/projects/proj-1/tickets/ticket-1": {"id": "ticket-1"},
             "/api/projects/proj-1/tickets/ticket-1/attempts": [{"id": "attempt-2", "attempt_num": 2, "status": "validated"}],
             "/api/projects/proj-1/attempts/attempt-2": {
@@ -952,7 +1035,11 @@ def test_accept_attempt_alias_requires_chosen_winner_before_posting(capsys):
 def test_accept_winner_rejects_stale_attempt_locally_before_posting(capsys):
     api = RouteStubAPI(
         get_map={
-            "/api/projects/proj-1": {"id": "proj-1", "accepted_frontier_id": "frontier-123"},
+            "/api/projects/proj-1": {
+                "id": "proj-1",
+                "accepted_frontier_id": "frontier-123",
+                "shipped_frontier": "frontier-123",
+            },
             "/api/projects/proj-1/tickets/ticket-1": {"id": "ticket-1"},
             "/api/projects/proj-1/tickets/ticket-1/attempts": [{"id": "attempt-2", "attempt_num": 2, "status": "validated"}],
             "/api/projects/proj-1/attempts/attempt-2": {
@@ -998,7 +1085,11 @@ def test_accept_winner_rejects_stale_attempt_locally_before_posting(capsys):
 def test_accept_winner_rejects_stale_base_mismatch_signal_before_posting(capsys):
     api = RouteStubAPI(
         get_map={
-            "/api/projects/proj-1": {"id": "proj-1", "accepted_frontier_id": "frontier-123"},
+            "/api/projects/proj-1": {
+                "id": "proj-1",
+                "accepted_frontier_id": "frontier-123",
+                "shipped_frontier": "frontier-123",
+            },
             "/api/projects/proj-1/tickets/ticket-1": {"id": "ticket-1"},
             "/api/projects/proj-1/tickets/ticket-1/attempts": [{"id": "attempt-2", "attempt_num": 2, "status": "validated"}],
             "/api/projects/proj-1/attempts/attempt-2": {
@@ -1010,7 +1101,7 @@ def test_accept_winner_rejects_stale_base_mismatch_signal_before_posting(capsys)
                 "is_winner": True,
                 "integrated": False,
                 "stale": False,
-                "stale_reason": "attempt.base_hash differs from project.accepted_frontier_id.",
+                "stale_reason": "attempt.base_hash differs from project.shipped_frontier.",
                 "agenthub_commit_hash": "commit-222222222222",
                 "base_hash": "frontier-old",
                 "attempt_num": 2,
@@ -1070,7 +1161,7 @@ def test_accept_winner_rejects_stale_base_mismatch_signal_before_posting(capsys)
                 "is_winner": True,
                 "integrated": False,
                 "stale": False,
-                "stale_reason": "Cannot determine attempt staleness: project.accepted_frontier_id is not set.",
+                "stale_reason": "Cannot determine attempt staleness: project.shipped_frontier is not set.",
                 "agenthub_commit_hash": "commit-222222222222",
                 "base_hash": "frontier-123",
                 "attempt_num": 2,
@@ -1084,7 +1175,11 @@ def test_accept_winner_rejects_indeterminate_staleness_locally_before_posting(
 ):
     api = RouteStubAPI(
         get_map={
-            "/api/projects/proj-1": {"id": "proj-1", "accepted_frontier_id": None},
+            "/api/projects/proj-1": {
+                "id": "proj-1",
+                "accepted_frontier_id": "frontier-123",
+                "shipped_frontier": None,
+            },
             "/api/projects/proj-1/tickets/ticket-1": {"id": "ticket-1"},
             "/api/projects/proj-1/tickets/ticket-1/attempts": [{"id": "attempt-2", "attempt_num": 2, "status": "validated"}],
             "/api/projects/proj-1/attempts/attempt-2": attempt_payload,
@@ -1116,7 +1211,11 @@ def test_accept_winner_rejects_indeterminate_staleness_locally_before_posting(
 def test_accept_winner_posts_to_accept_endpoint_and_reports_frontier_change(capsys):
     api = RouteStubAPI(
         get_map={
-            "/api/projects/proj-1": {"id": "proj-1", "accepted_frontier_id": "frontier-123"},
+            "/api/projects/proj-1": {
+                "id": "proj-1",
+                "accepted_frontier_id": "frontier-123",
+                "shipped_frontier": "frontier-123",
+            },
             "/api/projects/proj-1/tickets/ticket-1": {"id": "ticket-1"},
             "/api/projects/proj-1/tickets/ticket-1/attempts": [{"id": "attempt-2", "attempt_num": 2, "status": "validated"}],
             "/api/projects/proj-1/attempts/attempt-2": {
@@ -1144,7 +1243,12 @@ def test_accept_winner_posts_to_accept_endpoint_and_reports_frontier_change(caps
                 "integrated": True,
                 "agenthub_commit_hash": "commit-222222222222",
                 "accepted_frontier_id": "commit-222222222222",
-                "project": {"accepted_frontier_id": "commit-222222222222"},
+                "shipped_frontier": "frontier-123",
+                "base_hash": "frontier-123",
+                "project": {
+                    "accepted_frontier_id": "commit-222222222222",
+                    "shipped_frontier": "frontier-123",
+                },
             }
         },
     )
@@ -1165,13 +1269,121 @@ def test_accept_winner_posts_to_accept_endpoint_and_reports_frontier_change(caps
     payload = json.loads(capsys.readouterr().out)
     assert payload["frontier_changed"] is True
     assert payload["accepted_frontier_id"] == "commit-222222222222"
+    assert payload["shipped_frontier"] == "frontier-123"
+    assert payload["candidate_eligible"] is True
     assert "ta ship candidates proj-1" in payload["next_commands"]
+
+
+def test_accept_winner_allows_base_matching_shipped_frontier_when_accepted_frontier_differs(capsys):
+    api = RouteStubAPI(
+        get_map={
+            "/api/projects/proj-1": {
+                "id": "proj-1",
+                "accepted_frontier_id": "accepted-old",
+                "shipped_frontier": "shipped-live",
+            },
+            "/api/projects/proj-1/tickets/ticket-1": {"id": "ticket-1"},
+            "/api/projects/proj-1/tickets/ticket-1/attempts": [{"id": "attempt-2", "attempt_num": 2, "status": "validated"}],
+            "/api/projects/proj-1/attempts/attempt-2": {
+                "id": "attempt-2",
+                "attempt_id": "attempt-2",
+                "ticket_id": "ticket-1",
+                "status": "validated",
+                "validated": True,
+                "is_winner": True,
+                "integrated": False,
+                "stale": True,
+                "stale_reason": "attempt.base_hash differs from project.accepted_frontier_id.",
+                "agenthub_commit_hash": "commit-222222222222",
+                "base_hash": "shipped-live",
+                "attempt_num": 2,
+            },
+        },
+        post_map={
+            "/api/projects/proj-1/tickets/ticket-1/attempts/attempt-2/accept": {
+                "id": "attempt-2",
+                "status": "accepted",
+                "validated": True,
+                "is_winner": True,
+                "integrated": True,
+                "agenthub_commit_hash": "commit-222222222222",
+                "base_hash": "shipped-live",
+                "accepted_frontier_id": "accepted-old",
+                "shipped_frontier": "shipped-live",
+            }
+        },
+    )
+    args = SimpleNamespace(
+        project_id="proj-1",
+        ticket_id="ticket-1",
+        attempt_id="attempt-2",
+        expect_frontier="shipped-live",
+        json=True,
+        output="json",
+    )
+
+    ticket_cmd._cmd_accept_winner(args, api)
+
+    assert api.post_calls == [
+        ("/api/projects/proj-1/tickets/ticket-1/attempts/attempt-2/accept", {})
+    ]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["shipped_frontier"] == "shipped-live"
+    assert payload["candidate_eligible"] is True
+
+
+def test_accept_winner_rejects_stale_base_against_shipped_frontier(capsys):
+    api = RouteStubAPI(
+        get_map={
+            "/api/projects/proj-1": {
+                "id": "proj-1",
+                "accepted_frontier_id": "accepted-live",
+                "shipped_frontier": "shipped-live",
+            },
+            "/api/projects/proj-1/tickets/ticket-1": {"id": "ticket-1"},
+            "/api/projects/proj-1/tickets/ticket-1/attempts": [{"id": "attempt-2", "attempt_num": 2, "status": "validated"}],
+            "/api/projects/proj-1/attempts/attempt-2": {
+                "id": "attempt-2",
+                "attempt_id": "attempt-2",
+                "ticket_id": "ticket-1",
+                "status": "validated",
+                "validated": True,
+                "is_winner": True,
+                "integrated": False,
+                "stale": False,
+                "stale_reason": None,
+                "agenthub_commit_hash": "commit-222222222222",
+                "base_hash": "accepted-live",
+                "attempt_num": 2,
+            },
+        }
+    )
+    args = SimpleNamespace(
+        project_id="proj-1",
+        ticket_id="ticket-1",
+        attempt_id="attempt-2",
+        expect_frontier="shipped-live",
+        json=True,
+        output="json",
+    )
+
+    with pytest.raises(SystemExit):
+        ticket_cmd._cmd_accept_winner(args, api)
+
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["error"]["message"] == "Attempt attempt-2 is stale and cannot be accepted locally."
+    assert "shipped_frontier" in payload["error"]["detail"]
+    assert api.post_calls == []
 
 
 def test_accept_winner_reports_no_frontier_change_when_attempt_already_integrated(capsys):
     api = RouteStubAPI(
         get_map={
-            "/api/projects/proj-1": {"id": "proj-1", "accepted_frontier_id": "frontier-123"},
+            "/api/projects/proj-1": {
+                "id": "proj-1",
+                "accepted_frontier_id": "frontier-123",
+                "shipped_frontier": "frontier-123",
+            },
             "/api/projects/proj-1/tickets/ticket-1": {"id": "ticket-1"},
             "/api/projects/proj-1/tickets/ticket-1/attempts": [{"id": "attempt-2", "attempt_num": 2, "status": "accepted"}],
             "/api/projects/proj-1/attempts/attempt-2": {
@@ -1221,7 +1433,11 @@ def test_accept_winner_reports_no_frontier_change_when_attempt_already_integrate
 def test_accept_winner_reports_no_frontier_change_when_frontier_is_unchanged(capsys):
     api = RouteStubAPI(
         get_map={
-            "/api/projects/proj-1": {"id": "proj-1", "accepted_frontier_id": "commit-222222222222"},
+            "/api/projects/proj-1": {
+                "id": "proj-1",
+                "accepted_frontier_id": "commit-222222222222",
+                "shipped_frontier": "commit-222222222222",
+            },
             "/api/projects/proj-1/tickets/ticket-1": {"id": "ticket-1"},
             "/api/projects/proj-1/tickets/ticket-1/attempts": [{"id": "attempt-2", "attempt_num": 2, "status": "validated"}],
             "/api/projects/proj-1/attempts/attempt-2": {
