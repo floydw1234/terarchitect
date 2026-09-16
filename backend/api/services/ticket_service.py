@@ -143,6 +143,29 @@ def validate_ticket_base_leaf(project: Project | None, base_leaf_id) -> tuple[bo
     return False, (error or "base_leaf_id is invalid").replace("accepted_frontier_id", "base_leaf_id")
 
 
+def project_ticket_dispatch_ready(project: Project | None) -> tuple[bool, str | None]:
+    """Return whether ticket agent jobs can dispatch before the release-PR boundary.
+
+    Swarm/docker runs require ``shipped_frontier`` (AgentHub readiness), not ``github_url``.
+    Local runs require ``project_path``. Legacy non-swarm docker runs still require ``github_url``.
+    """
+    if not project:
+        return False, "Project not found"
+    execution_mode = getattr(project, "execution_mode", None) or "docker"
+    if execution_mode == "local":
+        if not (project.project_path or "").strip():
+            return False, "project has no project path"
+        return True, None
+    git_mode = (getattr(project, "git_mode", None) or "swarm").strip().lower()
+    if git_mode == "swarm":
+        if not _get_project_shipped_frontier(project):
+            return False, "project has no shipped_frontier for swarm dispatch"
+        return True, None
+    if not (project.github_url or "").strip():
+        return False, "project has no GitHub URL"
+    return True, None
+
+
 def ensure_ticket_base_leaf_id(
     ticket: Ticket | None,
     project: Project | None,
@@ -405,15 +428,10 @@ def _prepare_ticket_enqueue(ticket_id) -> tuple[Ticket | None, Project | None]:
     project = db.session.get(Project, ticket.project_id)
     if not project:
         return None, None
-    execution_mode = getattr(project, "execution_mode", None) or "docker"
-    if execution_mode == "local":
-        if not (project.project_path or "").strip():
-            current_app.logger.info("Skipping enqueue: ticket %s project has no project path", ticket_id)
-            return None, None
-    else:
-        if not (project.github_url or "").strip():
-            current_app.logger.info("Skipping enqueue: ticket %s project has no GitHub URL", ticket_id)
-            return None, None
+    ready, reason = project_ticket_dispatch_ready(project)
+    if not ready:
+        current_app.logger.info("Skipping enqueue: ticket %s — %s", ticket_id, reason)
+        return None, None
 
     # Dependency check: a dep is satisfied only when it has a winning integrated attempt.
     dep_ids = ticket.depends_on_ticket_ids or []

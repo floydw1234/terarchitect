@@ -116,9 +116,17 @@ class HttpAgentBackend:
             payload["agent_id"] = agent_id
         try:
             import requests
-            requests.post(url, json=payload, headers=self._headers, timeout=30)
-        except Exception:
-            pass
+            r = requests.post(url, json=payload, headers=self._headers, timeout=30)
+            if not r.ok:
+                detail = (r.text or "").strip()[:500]
+                raise RuntimeError(
+                    f"ticket /complete failed ({r.status_code})"
+                    + (f": {detail}" if detail else "")
+                )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"ticket /complete request failed: {exc}") from exc
 
     def retrieve_memory(
         self,

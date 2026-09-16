@@ -155,3 +155,60 @@ class TestTicketRunLogging(unittest.TestCase):
             base_hash="leaf_01HZX3BASE0123456789ABCDEFG",
             agent_id="agenthub-worker-7",
         )
+
+    def test_finalize_raises_when_swarm_publish_fails(self):
+        agent, backend = _make_agent()
+        ticket = MagicMock()
+        ticket.project_id = uuid.uuid4()
+        ticket.id = uuid.uuid4()
+        ticket.title = "Test ticket"
+
+        with patch("middle_agent.agent.git_backend.swarm_publish", return_value=None), \
+             patch("os.path.isdir", return_value=True):
+            with self.assertRaisesRegex(RuntimeError, "swarm_publish failed"):
+                agent._finalize(
+                    ticket,
+                    "sess-fail",
+                    project_path="/tmp/fakerepo",
+                    completion_summary="publish summary",
+                )
+
+        backend.complete.assert_not_called()
+
+    def test_finalize_raises_when_complete_fails(self):
+        agent, backend = _make_agent()
+        ticket = MagicMock()
+        ticket.project_id = uuid.uuid4()
+        ticket.id = uuid.uuid4()
+        ticket.title = "Test ticket"
+        backend.complete.side_effect = RuntimeError("ticket /complete failed (409): not in_progress")
+
+        with patch("middle_agent.agent.git_backend.swarm_publish", return_value="a" * 40), \
+             patch("os.path.isdir", return_value=True):
+            with self.assertRaisesRegex(RuntimeError, "ticket /complete failed"):
+                agent._finalize(
+                    ticket,
+                    "sess-fail-complete",
+                    project_path="/tmp/fakerepo",
+                    completion_summary="publish summary",
+                )
+
+
+class TestHttpAgentBackendComplete(unittest.TestCase):
+    def test_complete_raises_on_non_ok_response(self):
+        from middle_agent.backend import HttpAgentBackend
+
+        response = MagicMock()
+        response.ok = False
+        response.status_code = 409
+        response.text = '{"error":"Ticket is not in_progress"}'
+
+        with patch("requests.post", return_value=response):
+            backend = HttpAgentBackend("http://localhost:5010", auth_token="token")
+            with self.assertRaisesRegex(RuntimeError, "ticket /complete failed \\(409\\)"):
+                backend.complete(
+                    uuid.uuid4(),
+                    uuid.uuid4(),
+                    summary="done",
+                    agenthub_commit_hash="a" * 40,
+                )

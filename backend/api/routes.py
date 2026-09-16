@@ -1867,17 +1867,25 @@ def ticket_detail(project_id, ticket_id):
             _, error = _ensure_ticket_base_leaf_id(ticket, project, persist=True)
             if error:
                 return jsonify({"error": error}), 400
-            execution_mode = getattr(project, "execution_mode", None) or "docker"
-            if execution_mode == "local":
-                if not (project.project_path or "").strip():
-                    return jsonify({
-                        "error": "Project has execution mode Local; set Project path in project settings before moving a ticket to In Progress.",
-                    }), 400
-            else:
-                if not (project.github_url or "").strip():
-                    return jsonify({
-                        "error": "Project must have a GitHub URL set before moving a ticket to In Progress.",
-                    }), 400
+            from api.services.ticket_service import project_ticket_dispatch_ready as _project_ticket_dispatch_ready
+
+            dispatch_ready, dispatch_reason = _project_ticket_dispatch_ready(project)
+            if not dispatch_ready:
+                execution_mode = getattr(project, "execution_mode", None) or "docker"
+                git_mode = (getattr(project, "git_mode", None) or "swarm").strip().lower()
+                if execution_mode == "local":
+                    error = (
+                        "Project has execution mode Local; set Project path in project settings "
+                        "before moving a ticket to In Progress."
+                    )
+                elif git_mode == "swarm":
+                    error = (
+                        "Project is not ready for swarm dispatch: "
+                        f"{dispatch_reason or 'set shipped_frontier before moving a ticket to In Progress.'}"
+                    )
+                else:
+                    error = "Project must have a GitHub URL set before moving a ticket to In Progress."
+                return jsonify({"error": error}), 400
             graph = Graph.query.filter_by(project_id=project_id).first()
             if not graph or not graph.nodes or len(graph.nodes) == 0:
                 return jsonify({
