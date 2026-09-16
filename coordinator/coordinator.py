@@ -233,6 +233,19 @@ _COMPOSER_ENV_KEYS = (
 )
 
 
+def _apply_host_agenthub_url_remap(env: dict) -> None:
+    """Remap docker-internal AgentHub URLs for host-side subprocesses (spark dogfood parity)."""
+    raw = env.get("AGENTHUB_URL")
+    if not raw:
+        return
+    from cli._shipper import remap_agenthub_url_for_host
+
+    remapped, warning = remap_agenthub_url_for_host(raw)
+    env["AGENTHUB_URL"] = remapped
+    if warning:
+        print(warning, file=sys.stderr, flush=True)
+
+
 def _run_workspace_composer(base_url: str, job_data: dict) -> None:
     """Run the workspace composer on the host for a claimed workspace."""
     ws = job_data["workspace"]
@@ -292,6 +305,7 @@ def _run_shipper(base_url: str, run_data: dict) -> None:
         val = os.environ.get(key)
         if val:
             env[key] = val
+    _apply_host_agenthub_url_remap(env)
     env["SHIP_RUN_ID"] = str(run_id)
 
     repo_root = _repo_root()

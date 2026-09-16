@@ -960,7 +960,6 @@ def test_independent_ticket_dispatches_from_frontier_base(client, project):
 
     pid = project["id"]
     frontier = "f" * 40
-    client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
     client.post(f"/api/projects/{pid}/frontier", json={"hash": frontier, "source": "test"})
 
     with client.application.app_context():
@@ -984,6 +983,44 @@ def test_independent_ticket_dispatches_from_frontier_base(client, project):
     assert payload["base_leaf_id"] == project["accepted_frontier_id"]
     assert payload["base_selection"]["base_source"] == "ticket_base_leaf"
     assert payload["base_selection"]["blocked"] is False
+    assert payload.get("github_url") in (None, "")
+    assert payload.get("repo_url") in (None, "")
+
+
+def test_swarm_ticket_enqueue_skips_without_shipped_frontier(client):
+    """Swarm dispatch requires shipped_frontier, not github_url."""
+    from models.db import db, Project, Ticket, AgentJob
+    from api.services.ticket_service import enqueue_ticket_jobs, project_ticket_dispatch_ready
+
+    resp = client.post(
+        "/api/projects",
+        json={
+            "name": "no-frontier",
+            "git_mode": "swarm",
+            "accepted_frontier_id": "leaf_01HZX3NOFRONTIER0123456789AB",
+            "is_existing_repo": True,
+        },
+    )
+    assert resp.status_code == 201
+    pid = resp.get_json()["id"]
+
+    with client.application.app_context():
+        project = db.session.get(Project, pid)
+        ready, reason = project_ticket_dispatch_ready(project)
+        assert ready is False
+        assert "shipped_frontier" in (reason or "")
+
+        ticket = Ticket(
+            project_id=pid,
+            column_id="queued",
+            title="Blocked",
+            intent_status="ready",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        jobs = enqueue_ticket_jobs(ticket.id)
+        assert jobs == []
+        assert AgentJob.query.filter_by(ticket_id=ticket.id).count() == 0
 
 
 def test_single_dependency_ticket_dispatches_from_parent_attempt_base(client, project):

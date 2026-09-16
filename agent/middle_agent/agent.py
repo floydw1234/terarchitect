@@ -2854,6 +2854,11 @@ Judge the plan.
                 "swarm_publish",
                 f"Published to agenthub DAG: {commit_hash or 'failed'}",
             )
+            if not commit_hash:
+                raise RuntimeError(
+                    "swarm_publish failed: could not publish AgentHub attempt. "
+                    "Check BASE_LEAF_ID, git state, and AgentHub connectivity."
+                )
 
         self._backend.complete(
             ticket.id,

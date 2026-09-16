@@ -194,6 +194,27 @@ class TestDockerRuntimeContract(unittest.TestCase):
                 if secret_env_path and os.path.exists(secret_env_path):
                     os.unlink(secret_env_path)
 
+    def test_apply_host_agenthub_url_remap_for_coordinator_shipper(self):
+        from coordinator.coordinator import _apply_host_agenthub_url_remap
+
+        env = {"AGENTHUB_URL": "http://agenthub:8080"}
+        with patch("builtins.print") as print_mock:
+            _apply_host_agenthub_url_remap(env)
+
+        self.assertEqual(env["AGENTHUB_URL"], "http://127.0.0.1:8088")
+        printed = " ".join(str(call.args[0]) for call in print_mock.call_args_list)
+        self.assertIn("remapped AGENTHUB_URL", printed)
+
+    def test_apply_host_agenthub_url_remap_leaves_localhost_alone(self):
+        from coordinator.coordinator import _apply_host_agenthub_url_remap
+
+        env = {"AGENTHUB_URL": "http://127.0.0.1:8088"}
+        with patch("builtins.print") as print_mock:
+            _apply_host_agenthub_url_remap(env)
+
+        self.assertEqual(env["AGENTHUB_URL"], "http://127.0.0.1:8088")
+        print_mock.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

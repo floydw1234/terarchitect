@@ -3057,11 +3057,15 @@ def _dispatch_repair_ticket(ticket: Ticket, repair_policy: dict) -> dict:
     project = db.session.get(Project, ticket.project_id)
     if not project:
         return {"auto_dispatch": True, "dispatch_status": "skipped", "reason": "Project not found"}
-    execution_mode = getattr(project, "execution_mode", None) or "docker"
-    if execution_mode == "local" and not (project.project_path or "").strip():
-        return {"auto_dispatch": True, "dispatch_status": "skipped", "reason": "Project path is required"}
-    if execution_mode != "local" and not (project.github_url or "").strip():
-        return {"auto_dispatch": True, "dispatch_status": "skipped", "reason": "GitHub URL is required"}
+    from .ticket_service import project_ticket_dispatch_ready as _project_ticket_dispatch_ready
+
+    dispatch_ready, dispatch_reason = _project_ticket_dispatch_ready(project)
+    if not dispatch_ready:
+        return {
+            "auto_dispatch": True,
+            "dispatch_status": "skipped",
+            "reason": dispatch_reason or "Project is not ready for ticket dispatch",
+        }
 
     ticket.column_id = "queued"
     ticket.intent_status = "ready"
