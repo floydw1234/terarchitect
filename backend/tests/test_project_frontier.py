@@ -937,20 +937,26 @@ def test_ticket_complete_is_idempotent_for_matching_swarm_attempt_payload(client
 
 
 def test_ticket_rerun_from_current_frontier_uses_ticket_default_attempt_count_when_omitted(client):
-    from models.db import AgentJob, Ticket, db
+    from models.db import AgentJob, Project, Ticket, db
 
+    frontier_id = "leaf_01HZX3CURRENTFRONTIER01234567"
     create_project = client.post(
         "/api/projects",
         json={
             "name": "ticket-rerun-current-frontier",
             "git_mode": "swarm",
             "github_url": "https://github.com/example/repo",
-            "accepted_frontier_id": "leaf_01HZX3CURRENTFRONTIER01234567",
+            "accepted_frontier_id": frontier_id,
             "is_existing_repo": True,
         },
     )
     assert create_project.status_code == 201
     project_id = create_project.get_json()["id"]
+
+    with client.application.app_context():
+        proj = db.session.get(Project, project_id)
+        proj.shipped_frontier = frontier_id
+        db.session.commit()
 
     client.put(
         f"/api/projects/{project_id}/graph",
@@ -977,8 +983,8 @@ def test_ticket_rerun_from_current_frontier_uses_ticket_default_attempt_count_wh
 
     assert response.status_code == 202
     payload = response.get_json()
-    assert payload["base_leaf_id"] == "leaf_01HZX3CURRENTFRONTIER01234567"
-    assert payload["accepted_frontier_id"] == "leaf_01HZX3CURRENTFRONTIER01234567"
+    assert payload["base_leaf_id"] == frontier_id
+    assert payload["accepted_frontier_id"] == frontier_id
     assert payload["column_id"] == "in_progress"
     assert payload["intent_status"] == "active"
     assert payload["stale"] is False
@@ -990,7 +996,7 @@ def test_ticket_rerun_from_current_frontier_uses_ticket_default_attempt_count_wh
     with client.application.app_context():
         stored_ticket = db.session.get(Ticket, ticket_id)
         jobs = AgentJob.query.filter_by(ticket_id=ticket_id).order_by(AgentJob.created_at.asc()).all()
-        assert stored_ticket.base_leaf_id == "leaf_01HZX3CURRENTFRONTIER01234567"
+        assert stored_ticket.base_leaf_id == frontier_id
         assert stored_ticket.column_id == "in_progress"
         assert len(jobs) == 4
         assert all(job.status == "pending" for job in jobs)
@@ -1006,20 +1012,26 @@ def test_ticket_rerun_from_current_frontier_uses_ticket_default_attempt_count_wh
 
 
 def test_ticket_rerun_from_current_frontier_enqueues_explicit_parallel_jobs(client):
-    from models.db import AgentJob, Ticket, db
+    from models.db import AgentJob, Project, Ticket, db
 
+    frontier_id = "leaf_01HZX3PARALLELFRONTIER123456"
     create_project = client.post(
         "/api/projects",
         json={
             "name": "ticket-rerun-parallel-frontier",
             "git_mode": "swarm",
             "github_url": "https://github.com/example/repo",
-            "accepted_frontier_id": "leaf_01HZX3PARALLELFRONTIER123456",
+            "accepted_frontier_id": frontier_id,
             "is_existing_repo": True,
         },
     )
     assert create_project.status_code == 201
     project_id = create_project.get_json()["id"]
+
+    with client.application.app_context():
+        proj = db.session.get(Project, project_id)
+        proj.shipped_frontier = frontier_id
+        db.session.commit()
 
     with client.application.app_context():
         ticket = Ticket(
@@ -1041,7 +1053,7 @@ def test_ticket_rerun_from_current_frontier_enqueues_explicit_parallel_jobs(clie
 
     assert response.status_code == 202
     payload = response.get_json()
-    assert payload["base_leaf_id"] == "leaf_01HZX3PARALLELFRONTIER123456"
+    assert payload["base_leaf_id"] == frontier_id
     assert payload["default_attempt_count"] == 4
     assert payload["attempt_count"] == 2
     assert payload["job_count"] == 2
@@ -1113,15 +1125,16 @@ def test_ticket_rerun_from_current_frontier_validates_attempt_count(client):
 
 def test_enqueue_ticket_job_duplicate_guard_still_skips_existing_pending_job(client):
     from api.services.ticket_service import enqueue_ticket_job
-    from models.db import AgentJob, Ticket, db
+    from models.db import AgentJob, Project, Ticket, db
 
+    frontier_id = "leaf_01HZX3DUPLICATEGUARD1234567"
     create_project = client.post(
         "/api/projects",
         json={
             "name": "duplicate-guard-project",
             "git_mode": "swarm",
             "github_url": "https://github.com/example/repo",
-            "accepted_frontier_id": "leaf_01HZX3DUPLICATEGUARD1234567",
+            "accepted_frontier_id": frontier_id,
             "is_existing_repo": True,
         },
     )
@@ -1129,12 +1142,17 @@ def test_enqueue_ticket_job_duplicate_guard_still_skips_existing_pending_job(cli
     project_id = create_project.get_json()["id"]
 
     with client.application.app_context():
+        proj = db.session.get(Project, project_id)
+        proj.shipped_frontier = frontier_id
+        db.session.commit()
+
+    with client.application.app_context():
         ticket = Ticket(
             project_id=project_id,
             column_id="in_progress",
             title="Duplicate guard ticket",
             intent_status="active",
-            base_leaf_id="leaf_01HZX3DUPLICATEGUARD1234567",
+            base_leaf_id=frontier_id,
         )
         db.session.add(ticket)
         db.session.commit()
