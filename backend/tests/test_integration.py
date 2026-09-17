@@ -1073,10 +1073,11 @@ def test_single_dependency_ticket_dispatches_from_parent_attempt_base(client, pr
     resp = client.post("/api/worker/jobs/start", json={"project_id": pid})
     assert resp.status_code == 200
     payload = resp.get_json()
-    assert payload["base_hash"] == project["accepted_frontier_id"]
-    assert payload["base_leaf_id"] == project["accepted_frontier_id"]
-    assert payload["agenthub_root_hash"] == project["accepted_frontier_id"]
-    assert payload["base_selection"]["base_source"] == "ticket_base_leaf"
+    assert payload["base_hash"] == parent_hash
+    assert payload["base_leaf_id"] == parent_hash
+    assert payload["agenthub_root_hash"] == parent_hash
+    assert payload["base_selection"]["base_source"] == "accepted_dependency"
+    assert payload["base_selection"]["resolved_from_ticket_id"] == parent_id
     assert payload["base_selection"]["blocked"] is False
 
 
@@ -1129,10 +1130,10 @@ def test_shipped_dependency_ticket_dispatches_from_current_frontier(client, proj
     resp = client.post("/api/worker/jobs/start", json={"project_id": pid})
     assert resp.status_code == 200
     payload = resp.get_json()
-    assert payload["base_hash"] == project["accepted_frontier_id"]
-    assert payload["base_leaf_id"] == project["accepted_frontier_id"]
-    assert payload["agenthub_root_hash"] == project["accepted_frontier_id"]
-    assert payload["base_selection"]["base_source"] == "ticket_base_leaf"
+    assert payload["base_hash"] == frontier
+    assert payload["base_leaf_id"] == frontier
+    assert payload["agenthub_root_hash"] == frontier
+    assert payload["base_selection"]["base_source"] == "shipped_frontier"
     assert payload["base_selection"]["blocked"] is False
 
 
@@ -1401,6 +1402,86 @@ def test_worker_job_fail_keeps_ticket_in_progress_when_parallel_attempts_remain(
         assert stored_ticket is not None
         assert stored_ticket.column_id == "in_progress"
         assert stored_ticket.failed_count == 1
+
+
+def test_worker_job_claim_fails_multi_parent_dependency_job(client, project):
+    """Claim fails closed for stale pending jobs with multiple accepted unshipped deps."""
+    from models.db import db, Project, Ticket, TicketAttempt, AgentJob
+
+    pid = project["id"]
+    frontier = project["shipped_frontier"]
+
+    with client.application.app_context():
+        parent_a = Ticket(project_id=pid, column_id="done", title="Parent A", intent_status="active")
+        parent_b = Ticket(project_id=pid, column_id="done", title="Parent B", intent_status="active")
+        blocked_child = Ticket(
+            project_id=pid,
+            column_id="in_progress",
+            title="Blocked child",
+            intent_status="active",
+            depends_on_ticket_ids=[],
+            base_leaf_id=frontier,
+        )
+        valid_ticket = Ticket(
+            project_id=pid,
+            column_id="in_progress",
+            title="Valid independent",
+            intent_status="active",
+            base_leaf_id=frontier,
+        )
+        db.session.add_all([parent_a, parent_b, blocked_child, valid_ticket])
+        db.session.flush()
+        blocked_child.depends_on_ticket_ids = [str(parent_a.id), str(parent_b.id)]
+        db.session.add_all([
+            TicketAttempt(
+                project_id=pid,
+                ticket_id=parent_a.id,
+                agenthub_commit_hash="a" * 40,
+                base_hash=frontier,
+                attempt_num=1,
+                status="accepted",
+                summary="a",
+            ),
+            TicketAttempt(
+                project_id=pid,
+                ticket_id=parent_b.id,
+                agenthub_commit_hash="b" * 40,
+                base_hash=frontier,
+                attempt_num=1,
+                status="accepted",
+                summary="b",
+            ),
+        ])
+        blocked_job = AgentJob(
+            ticket_id=blocked_child.id,
+            project_id=pid,
+            kind="ticket",
+            status="pending",
+        )
+        valid_job = AgentJob(
+            ticket_id=valid_ticket.id,
+            project_id=pid,
+            kind="ticket",
+            status="pending",
+        )
+        db.session.add_all([blocked_job, valid_job])
+        db.session.commit()
+        blocked_job_id = str(blocked_job.id)
+        valid_job_id = str(valid_job.id)
+        blocked_ticket_id = str(blocked_child.id)
+
+    resp = client.post("/api/worker/jobs/start", json={"project_id": pid})
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["job_id"] == valid_job_id
+    assert payload["base_selection"]["base_source"] == "ticket_base_leaf"
+
+    with client.application.app_context():
+        failed_job = db.session.get(AgentJob, blocked_job_id)
+        blocked_ticket = db.session.get(Ticket, blocked_ticket_id)
+        assert failed_job.status == "failed"
+        assert blocked_ticket.column_id == "queued"
+        assert blocked_ticket.failed_count == 1
 
 
 def test_multi_dependency_ticket_stays_queued_in_mvp(client, project):
