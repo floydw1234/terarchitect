@@ -485,6 +485,123 @@ def test_coordinator_job_to_env_uses_base_hash_as_root_fallback():
     assert env["AGENTHUB_ROOT_HASH"] == "b" * 40
 
 
+def test_job_to_response_uses_accepted_dependency_base(app):
+    from api.services.job_service import job_to_response
+    from models.db import AgentJob, Project, Ticket, TicketAttempt, db
+
+    frontier = "f" * 40
+    parent_hash = "p" * 40
+    with app.app_context():
+        project = Project(
+            name="dep-base-project",
+            git_mode="swarm",
+            shipped_frontier=frontier,
+        )
+        db.session.add(project)
+        db.session.flush()
+        parent = Ticket(
+            project_id=project.id,
+            column_id="done",
+            title="Parent",
+            intent_status="active",
+        )
+        child = Ticket(
+            project_id=project.id,
+            column_id="in_progress",
+            title="Child",
+            intent_status="active",
+            depends_on_ticket_ids=[],
+            base_leaf_id=frontier,
+        )
+        db.session.add_all([parent, child])
+        db.session.flush()
+        child.depends_on_ticket_ids = [str(parent.id)]
+        db.session.add(TicketAttempt(
+            project_id=project.id,
+            ticket_id=parent.id,
+            agenthub_commit_hash=parent_hash,
+            base_hash=frontier,
+            attempt_num=1,
+            status="accepted",
+            summary="parent",
+        ))
+        job = AgentJob(
+            ticket_id=child.id,
+            project_id=project.id,
+            kind="ticket",
+            status="pending",
+        )
+        db.session.add(job)
+        db.session.commit()
+
+        payload = job_to_response(job)
+
+    assert payload["base_hash"] == parent_hash
+    assert payload["base_leaf_id"] == parent_hash
+    assert payload["agenthub_root_hash"] == parent_hash
+    assert payload["base_selection"]["base_source"] == "accepted_dependency"
+    assert payload["base_selection"]["blocked"] is False
+
+
+def test_job_to_response_blocks_multi_parent_dependencies(app):
+    from api.services.job_service import job_to_response
+    from models.db import AgentJob, Project, Ticket, TicketAttempt, db
+
+    frontier = "f" * 40
+    with app.app_context():
+        project = Project(
+            name="multi-parent-project",
+            git_mode="swarm",
+            shipped_frontier=frontier,
+        )
+        db.session.add(project)
+        db.session.flush()
+        parent_a = Ticket(project_id=project.id, column_id="done", title="A", intent_status="active")
+        parent_b = Ticket(project_id=project.id, column_id="done", title="B", intent_status="active")
+        child = Ticket(
+            project_id=project.id,
+            column_id="in_progress",
+            title="Child",
+            intent_status="active",
+            depends_on_ticket_ids=[],
+            base_leaf_id=frontier,
+        )
+        db.session.add_all([parent_a, parent_b, child])
+        db.session.flush()
+        child.depends_on_ticket_ids = [str(parent_a.id), str(parent_b.id)]
+        db.session.add_all([
+            TicketAttempt(
+                project_id=project.id,
+                ticket_id=parent_a.id,
+                agenthub_commit_hash="a" * 40,
+                base_hash=frontier,
+                attempt_num=1,
+                status="accepted",
+                summary="a",
+            ),
+            TicketAttempt(
+                project_id=project.id,
+                ticket_id=parent_b.id,
+                agenthub_commit_hash="b" * 40,
+                base_hash=frontier,
+                attempt_num=1,
+                status="accepted",
+                summary="b",
+            ),
+        ])
+        job = AgentJob(
+            ticket_id=child.id,
+            project_id=project.id,
+            kind="ticket",
+            status="pending",
+        )
+        db.session.add(job)
+        db.session.commit()
+
+        with pytest.raises(ValueError, match="Promote or ship prerequisite work first"):
+            job_to_response(job)
+
+
 def test_job_to_response_uses_ticket_base_leaf_for_swarm_jobs(app, tmp_path):
     from api.services.job_service import job_to_response
     from models.db import AgentJob, Project, Ticket, db

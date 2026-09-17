@@ -186,7 +186,14 @@ def ensure_ticket_base_leaf_id(
     if git_mode != "swarm":
         return current_value, None
 
-    resolved = current_value or _get_project_shipped_frontier(project)
+    dep_ids = ticket.depends_on_ticket_ids or []
+    if dep_ids:
+        base_context = _mvp_dependency_base_context(ticket, project)
+        if base_context.get("blocked") and not base_context.get("base_hash"):
+            return None, base_context.get("blocked_reason") or "MVP base selection is blocked"
+        resolved = base_context.get("base_hash") or current_value or _get_project_shipped_frontier(project)
+    else:
+        resolved = current_value or _get_project_shipped_frontier(project)
     if resolved is None:
         return (
             None,

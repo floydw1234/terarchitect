@@ -293,25 +293,45 @@ def job_to_response(job):
     base_leaf_id = None
     base_hash = None
     if ticket and project and git_mode == "swarm":
-        ticket_base_leaf_id = (getattr(ticket, "base_leaf_id", None) or "").strip() or None
-        # Deterministic base selection: use ticket's stored base if present,
-        # otherwise fall back to shipped_frontier (the canonical shipped state).
-        base_leaf_id = ticket_base_leaf_id or shipped_frontier
-        if base_leaf_id is None:
-            raise ValueError(
-                "Cannot dispatch swarm ticket job: ticket.base_leaf_id is not set "
-                "and project.shipped_frontier is not set."
-            )
-        base_hash = base_leaf_id
-        base_context = {
-            "base_hash": base_hash,
-            "base_leaf_id": base_leaf_id,
-            "accepted_frontier_id": accepted_frontier_id,
-            "shipped_frontier": shipped_frontier,
-            "base_source": "ticket_base_leaf" if ticket_base_leaf_id else "shipped_frontier",
-            "blocked": False,
-            "blocked_reason": None,
-        }
+        dep_ids = ticket.depends_on_ticket_ids or []
+        if dep_ids:
+            base_context = mvp_dependency_base_context(ticket, project)
+            if base_context.get("blocked") and not base_context.get("base_hash"):
+                raise ValueError(
+                    base_context.get("blocked_reason")
+                    or "Cannot dispatch swarm ticket job: MVP base selection is blocked."
+                )
+            base_hash = base_context.get("base_hash")
+            if base_hash is None:
+                raise ValueError(
+                    "Cannot dispatch swarm ticket job: no base hash available for dependency ticket."
+                )
+            base_leaf_id = base_hash
+            base_context = {
+                **base_context,
+                "base_leaf_id": base_leaf_id,
+                "accepted_frontier_id": accepted_frontier_id,
+                "shipped_frontier": shipped_frontier,
+            }
+        else:
+            ticket_base_leaf_id = (getattr(ticket, "base_leaf_id", None) or "").strip() or None
+            # Independent tickets: use stored base when present, else shipped_frontier.
+            base_leaf_id = ticket_base_leaf_id or shipped_frontier
+            if base_leaf_id is None:
+                raise ValueError(
+                    "Cannot dispatch swarm ticket job: ticket.base_leaf_id is not set "
+                    "and project.shipped_frontier is not set."
+                )
+            base_hash = base_leaf_id
+            base_context = {
+                "base_hash": base_hash,
+                "base_leaf_id": base_leaf_id,
+                "accepted_frontier_id": accepted_frontier_id,
+                "shipped_frontier": shipped_frontier,
+                "base_source": "ticket_base_leaf" if ticket_base_leaf_id else "shipped_frontier",
+                "blocked": False,
+                "blocked_reason": None,
+            }
         current_app.logger.info(
             "base_selection project=%s ticket=%s base_leaf=%s source=%s accepted_frontier=%s frontier=%s deps=%s",
             job.project_id, job.ticket_id,
