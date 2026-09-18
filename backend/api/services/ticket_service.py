@@ -6,9 +6,11 @@ from flask import current_app
 
 from models.db import db, Project, Ticket, AgentJob, TicketAttempt
 from .project_service import (
+    NOT_STARTED_TICKET_COLUMNS as _NOT_STARTED_TICKET_COLUMNS,
     compare_base_to_accepted_frontier as _compare_base_to_accepted_frontier,
     get_project_frontier_id as _get_project_frontier_id,
     get_project_shipped_frontier as _get_project_shipped_frontier,
+    independent_ticket_should_use_current_shipped_frontier as _independent_ticket_should_use_current_shipped_frontier,
     normalize_frontier_id as _normalize_frontier_id,
     validate_project_frontier_candidate as _validate_project_frontier_candidate,
 )
@@ -193,7 +195,11 @@ def ensure_ticket_base_leaf_id(
             return None, base_context.get("blocked_reason") or "MVP base selection is blocked"
         resolved = base_context.get("base_hash") or current_value or _get_project_shipped_frontier(project)
     else:
-        resolved = current_value or _get_project_shipped_frontier(project)
+        shipped = _get_project_shipped_frontier(project)
+        if _independent_ticket_should_use_current_shipped_frontier(ticket, project):
+            resolved = shipped
+        else:
+            resolved = current_value or shipped
     if resolved is None:
         return (
             None,
@@ -549,6 +555,32 @@ def enqueue_ticket_job(ticket_id):
 def enqueue_parallel_ticket_jobs(ticket_id, attempt_count: int) -> list[AgentJob]:
     """Enqueue an explicit competing-attempt batch for one ticket."""
     return enqueue_ticket_jobs(ticket_id, attempt_count=attempt_count)
+
+
+def refresh_queued_independent_ticket_bases(project: Project | None) -> int:
+    """Update not-yet-started independent tickets to the current shipped_frontier.
+
+    Covers queued/backlog tickets and in-progress tickets that were dispatched before
+    a ship advanced the frontier but have not recorded attempts yet.
+
+    Returns the number of tickets whose base_leaf_id was refreshed.
+    """
+    if project is None:
+        return 0
+    shipped = _get_project_shipped_frontier(project)
+    if not shipped:
+        return 0
+    refreshed = 0
+    tickets = Ticket.query.filter_by(project_id=project.id).all()
+    for ticket in tickets:
+        if not _independent_ticket_should_use_current_shipped_frontier(ticket, project):
+            continue
+        if (getattr(ticket, "base_leaf_id", None) or "") != shipped:
+            ticket.base_leaf_id = shipped
+            refreshed += 1
+    if refreshed:
+        db.session.flush()
+    return refreshed
 
 
 def dispatch_unblocked_queued(project_id):
