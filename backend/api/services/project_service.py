@@ -35,6 +35,50 @@ def get_project_shipped_frontier(project: Project) -> str | None:
     return normalize_frontier_id(getattr(project, "shipped_frontier", None))
 
 
+NOT_STARTED_TICKET_COLUMNS = frozenset({"backlog", "queued"})
+
+
+def independent_ticket_has_execution_attempts(ticket: Ticket | None) -> bool:
+    if ticket is None:
+        return False
+    return (
+        TicketAttempt.query.filter_by(ticket_id=ticket.id).count() > 0
+    )
+
+
+def independent_ticket_should_use_current_shipped_frontier(
+    ticket: Ticket | None,
+    project: Project | None = None,
+) -> bool:
+    """True when an independent ticket has not started execution and should rebase on ship.
+
+    Queued/backlog tickets keep a creation-time base_leaf_id that becomes stale after
+    shipped_frontier advances. Preserve explicit operator overrides where the ticket
+    base differs from both the current and accepted project frontiers.
+    """
+    if ticket is None:
+        return False
+    if ticket.depends_on_ticket_ids:
+        return False
+    column_id = getattr(ticket, "column_id", None) or ""
+    if column_id not in NOT_STARTED_TICKET_COLUMNS and not (
+        column_id == "in_progress" and not independent_ticket_has_execution_attempts(ticket)
+    ):
+        return False
+
+    shipped = get_project_shipped_frontier(project)
+    if not shipped:
+        return False
+
+    base = normalize_frontier_id(getattr(ticket, "base_leaf_id", None))
+    accepted = get_project_frontier_id(project)
+    if not base or base == shipped:
+        return True
+    if accepted and base == accepted:
+        return True
+    return False
+
+
 def normalize_project_source_type(value) -> str | None:
     if value is None:
         return None

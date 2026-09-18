@@ -10,6 +10,7 @@ from .attempt_service import (
 from .project_service import (
     get_project_frontier_id as _get_project_frontier_id,
     get_project_shipped_frontier as _get_project_shipped_frontier,
+    independent_ticket_should_use_current_shipped_frontier as _independent_ticket_should_use_current_shipped_frontier,
 )
 
 
@@ -315,8 +316,12 @@ def job_to_response(job):
             }
         else:
             ticket_base_leaf_id = (getattr(ticket, "base_leaf_id", None) or "").strip() or None
-            # Independent tickets: use stored base when present, else shipped_frontier.
-            base_leaf_id = ticket_base_leaf_id or shipped_frontier
+            if _independent_ticket_should_use_current_shipped_frontier(ticket, project):
+                base_leaf_id = shipped_frontier
+                base_source = "shipped_frontier"
+            else:
+                base_leaf_id = ticket_base_leaf_id or shipped_frontier
+                base_source = "ticket_base_leaf" if ticket_base_leaf_id else "shipped_frontier"
             if base_leaf_id is None:
                 raise ValueError(
                     "Cannot dispatch swarm ticket job: ticket.base_leaf_id is not set "
@@ -328,7 +333,7 @@ def job_to_response(job):
                 "base_leaf_id": base_leaf_id,
                 "accepted_frontier_id": accepted_frontier_id,
                 "shipped_frontier": shipped_frontier,
-                "base_source": "ticket_base_leaf" if ticket_base_leaf_id else "shipped_frontier",
+                "base_source": base_source,
                 "blocked": False,
                 "blocked_reason": None,
             }

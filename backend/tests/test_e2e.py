@@ -288,6 +288,98 @@ def test_e2e_ship_happy_path(client, project):
         assert statuses_by_commit["b" * 40] == "accepted"
 
 
+def test_e2e_second_ship_loop_from_advanced_frontier(client, project):
+    """After the first ship advances shipped_frontier, a second independent ticket can ship headlessly."""
+    pid = project["id"]
+    initial_frontier = project["accepted_frontier_id"]
+
+    from models.db import db, Project, TicketAttempt
+    with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        stored_project.shipped_frontier = initial_frontier
+        db.session.commit()
+
+    # First loop: ship ticket A from the initial frontier.
+    t_a = _create_ticket(client, pid, "Ticket A — first ship")
+    t_b = _create_ticket(client, pid, "Ticket B — second ship", column_id="queued")
+    assert t_b["base_leaf_id"] == initial_frontier
+    _move_to_in_progress(client, pid, t_a["id"])
+    resp_a = _complete_ticket(client, pid, t_a["id"], "a" * 40, base_hash=initial_frontier)
+    assert resp_a.status_code == 200, resp_a.get_json()
+    attempt_a = _attempts_by_commit(client, pid)["a" * 40]
+    _choose_winner(client, pid, t_a["id"], attempt_a["id"])
+    _accept_attempt(client, pid, t_a["id"], attempt_a["id"])
+
+    hp1 = client.post(f"/api/projects/{pid}/ship/happy-path", json={"ticket_id": t_a["id"]})
+    assert hp1.status_code == 202
+    run1_id = hp1.get_json()["ship_run_id"]
+    composed1 = client.post(f"/api/worker/ship-run/{run1_id}/composed", json={
+        "composed_commit_hash": "c" * 40,
+        "base_main_hash": initial_frontier,
+        "test_status": "passed",
+        "test_output": "All tests pass.",
+        "changed_files": ["src/a.py"],
+    })
+    assert composed1.status_code == 200
+
+    ship1 = client.post(f"/api/projects/{pid}/ship/happy-path", json={"ticket_id": t_a["id"]})
+    assert ship1.status_code == 200
+    assert ship1.get_json()["status"] == "shipped"
+    assert ship1.get_json()["shipped_commit_hash"] == "c" * 40
+
+    with client.application.app_context():
+        p = db.session.get(Project, pid)
+        assert p.shipped_frontier == "c" * 40
+
+    # Second loop: ticket B was queued before the ship and must rebase on the advanced frontier.
+    from api.services.ticket_service import dispatch_unblocked_queued
+    with client.application.app_context():
+        from models.db import Ticket
+        t_b_db = db.session.get(Ticket, t_b["id"])
+        assert t_b_db.base_leaf_id == "c" * 40, "root refresh should rebase queued ticket B"
+        assert t_b_db.column_id == "in_progress", "accept/dispatch should start ticket B after ticket A integrated"
+
+    _seed_validated_attempt(
+        client,
+        pid,
+        t_b["id"],
+        "d" * 40,
+        base_hash="c" * 40,
+        summary="Completed ticket B on advanced frontier",
+    )
+    attempt_b = _attempts_by_commit(client, pid)["d" * 40]
+    _choose_winner(client, pid, t_b["id"], attempt_b["id"])
+    accepted_b = _accept_attempt(client, pid, t_b["id"], attempt_b["id"])
+    assert accepted_b["status"] == "accepted"
+
+    hp2 = client.post(f"/api/projects/{pid}/ship/happy-path", json={"ticket_id": t_b["id"]})
+    assert hp2.status_code == 202
+    run2_id = hp2.get_json()["ship_run_id"]
+    composed2 = client.post(f"/api/worker/ship-run/{run2_id}/composed", json={
+        "composed_commit_hash": "e" * 40,
+        "base_main_hash": "c" * 40,
+        "test_status": "passed",
+        "test_output": "All tests pass.",
+        "changed_files": ["src/b.py"],
+    })
+    assert composed2.status_code == 200
+
+    ship2 = client.post(f"/api/projects/{pid}/ship/happy-path", json={"ticket_id": t_b["id"]})
+    assert ship2.status_code == 200
+    assert ship2.get_json()["status"] == "shipped"
+    assert ship2.get_json()["shipped_commit_hash"] == "e" * 40
+
+    with client.application.app_context():
+        p = db.session.get(Project, pid)
+        assert p.shipped_frontier == "e" * 40
+        statuses = {
+            a.agenthub_commit_hash: a.status
+            for a in TicketAttempt.query.filter_by(project_id=pid).all()
+        }
+        assert statuses["a" * 40] == "shipped"
+        assert statuses["d" * 40] == "shipped"
+
+
 def test_e2e_create_promotion_candidate_from_accepted_attempts(client, project):
     pid = project["id"]
     frontier = project["accepted_frontier_id"]

@@ -93,6 +93,7 @@ from .services.ticket_service import (
     enqueue_ticket_job as _enqueue_ticket_job,
     enqueue_parallel_ticket_jobs as _enqueue_parallel_ticket_jobs,
     parse_attempt_count as _parse_ticket_attempt_count,
+    refresh_queued_independent_ticket_bases as _refresh_queued_independent_ticket_bases,
     resolve_ticket_base_leaf_id as _resolve_ticket_base_leaf_id,
     ticket_default_attempt_count as _ticket_default_attempt_count,
     ticket_to_json as _ticket_to_json,
@@ -577,6 +578,14 @@ def _apply_root_refresh(project, new_hash: str, source: str = "ship_run") -> Non
         "Root refresh project=%s frontier=%s source=%s", project.id, new_hash[:12], source
     )
     try:
+        refreshed = _refresh_queued_independent_ticket_bases(project)
+        if refreshed:
+            db.session.commit()
+            current_app.logger.info(
+                "Root refresh rebased %s queued independent ticket(s) project=%s",
+                refreshed,
+                project.id,
+            )
         _dispatch_unblocked_queued(project.id)
     except Exception as exc:
         current_app.logger.warning("Root refresh dispatch failed: %s", exc)
