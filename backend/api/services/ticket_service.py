@@ -265,7 +265,7 @@ def compute_ticket_display_state(
         if s == "composed":
             return "composed"
         # accepted: may be stale
-        stale, _ = _attempt_stale_status(accepted_attempt, project)
+        stale, _ = _attempt_stale_status(accepted_attempt, project, ticket=ticket)
         if stale is True:
             return "stale"
         return "accepted"
@@ -387,7 +387,7 @@ def ticket_to_json(t: Ticket) -> dict:
 
     if latest:
         commit = latest.agenthub_commit_hash or ""
-        latest_stale, latest_stale_reason = _attempt_stale_status(latest, project)
+        latest_stale, latest_stale_reason = _attempt_stale_status(latest, project, ticket=t)
         out["latest_attempt"] = {
             "id": str(latest.id),
             "short_commit_hash": commit[:12] if commit else None,
@@ -409,7 +409,7 @@ def ticket_to_json(t: Ticket) -> dict:
     # can identify selectable leaves even when the latest attempt is failed/rejected.
     if accepted and accepted is not latest:
         acc_commit = accepted.agenthub_commit_hash or ""
-        acc_stale, acc_stale_reason = _attempt_stale_status(accepted, project)
+        acc_stale, acc_stale_reason = _attempt_stale_status(accepted, project, ticket=t)
         out["accepted_attempt"] = {
             "id": str(accepted.id),
             "short_commit_hash": acc_commit[:12] if acc_commit else None,

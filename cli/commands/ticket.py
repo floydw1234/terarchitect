@@ -1007,13 +1007,34 @@ def _cmd_evaluate_attempts(args, api: API) -> None:
 
 def _cmd_choose_winner(args, api: API) -> None:
     _apply_json_flag(args)
-    project, _ticket, attempt, attempts = _preflight_attempt(
+    project, ticket, attempt, attempts = _preflight_attempt(
         args,
         api,
         require_winner=False,
         forbid_integrated=True,
     )
     shipped_frontier = _get_shipped_frontier(project)
+    allowed_bases = _acceptance_allowed_base_hashes(
+        project,
+        ticket,
+        api,
+        project_id=args.project_id,
+        output=args.output,
+    )
+    stale_reason = _stale_acceptance_reason(attempt, project, allowed_bases=allowed_bases)
+    if stale_reason:
+        shipped_frontier = _get_shipped_frontier(project)
+        commands = _winner_flow_commands(args.project_id, args.ticket_id, args.attempt_id, frontier=shipped_frontier)
+        die(
+            _winner_flow_error(
+                409,
+                f"Attempt {args.attempt_id} is stale and cannot be chosen as the winner locally.",
+                detail=stale_reason,
+                hint="Inspect the current attempts, re-evaluate them, and rerun from the current frontier if this attempt is no longer aligned.",
+                next_commands=[commands["attempts"], commands["evaluate"], commands["rerun"]],
+            ),
+            output=args.output,
+        )
     integrated_sibling = _find_integrated_sibling_attempt(attempts, args.attempt_id)
     if integrated_sibling is not None:
         sibling_id = integrated_sibling.get("id") or integrated_sibling.get("attempt_id") or "unknown"
