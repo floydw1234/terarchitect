@@ -101,6 +101,7 @@ from .services.ticket_service import (
 )
 from .services.attempt_service import (
     SATISFIED_STATUSES as _SATISFIED_STATUSES,
+    acceptance_allowed_base_hashes as _acceptance_allowed_base_hashes,
     attempt_is_integrated as _attempt_is_integrated,
     attempt_is_validated as _attempt_is_validated,
     attempt_is_winner as _attempt_is_winner,
@@ -112,6 +113,7 @@ from .services.attempt_service import (
     get_latest_attempt as _get_latest_attempt,
     transition_attempt as _transition_attempt,
     validate_attempt as _validate_attempt,
+    validate_attempt_base_eligible as _validate_attempt_base_eligible,
 )
 from .services.attempt_inspection_service import (
     attempt_inspection_json as _attempt_inspection_json,
@@ -193,28 +195,6 @@ def _fail_job_with_ticket_recovery(job, *, reset_column_id: str = "queued") -> N
     if ticket.column_id == "in_progress" and not has_other_active_jobs:
         ticket.column_id = reset_column_id
     ticket.failed_count = (ticket.failed_count or 0) + 1
-
-
-def _acceptance_allowed_base_hashes(project, ticket: Ticket | None) -> set[str]:
-    """Return commit hashes that may legitimately serve as an attempt base for acceptance.
-
-    Uses ``shipped_frontier`` (not ``accepted_frontier_id``) to ensure that any
-    accepted attempt is automatically candidate-eligible. A dependent ticket can
-    still be valid when its attempt was based on an already integrated dependency
-    winner rather than the project's current shipped frontier.
-    """
-    allowed: set[str] = set()
-    frontier = _get_project_shipped_frontier(project)
-    if frontier:
-        allowed.add(frontier)
-    if ticket is None:
-        return allowed
-    for dep_id in ticket.depends_on_ticket_ids or []:
-        dep_attempt = _get_accepted_attempt(dep_id)
-        dep_hash = (getattr(dep_attempt, "agenthub_commit_hash", None) or "").strip()
-        if dep_hash:
-            allowed.add(dep_hash)
-    return allowed
 
 
 def _evidence_gate_response(project, target_type: str, target_id) -> tuple[dict | None, int | None]:
@@ -2244,7 +2224,7 @@ def ticket_complete(project_id, ticket_id):
 @api_bp.route("/projects/<uuid:project_id>/tickets/<uuid:ticket_id>/attempts", methods=["GET"])
 def ticket_attempts_list(project_id, ticket_id):
     """List all attempts for a ticket, newest first."""
-    Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
+    ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
     attempts = (
         TicketAttempt.query
         .filter_by(project_id=project_id, ticket_id=ticket_id)
@@ -2254,8 +2234,16 @@ def ticket_attempts_list(project_id, ticket_id):
     include_output = request.args.get("include_test_output", "false").lower() == "true"
     project = db.session.get(Project, project_id)
     frontier = _get_project_frontier_id(project)
+    shipped = _get_project_shipped_frontier(project)
     return jsonify([
-        _attempt_to_json(a, include_test_output=include_output, accepted_frontier_id=frontier)
+        _attempt_to_json(
+            a,
+            include_test_output=include_output,
+            accepted_frontier_id=frontier,
+            shipped_frontier=shipped,
+            ticket=ticket,
+            project=project,
+        )
         for a in attempts
     ])
 
@@ -2343,6 +2331,7 @@ def ticket_attempt_choose_winner(project_id, ticket_id, attempt_id):
     from datetime import datetime, timezone
 
     project = _get_project_or_404(project_id)
+    ticket = Ticket.query.filter_by(project_id=project_id, id=ticket_id).first_or_404()
     attempt = TicketAttempt.query.filter_by(
         project_id=project_id, ticket_id=ticket_id, id=attempt_id
     ).first_or_404()
@@ -2355,6 +2344,12 @@ def ticket_attempt_choose_winner(project_id, ticket_id, attempt_id):
     try:
         if not _attempt_is_validated(attempt):
             raise ValueError("Attempt must be validated before it can be chosen as the winner.")
+        _validate_attempt_base_eligible(
+            attempt,
+            project,
+            ticket,
+            verb="chosen as the winner",
+        )
         existing_integrated = next(
             (
                 sibling for sibling in ticket_attempts
@@ -2396,8 +2391,15 @@ def ticket_attempt_choose_winner(project_id, ticket_id, attempt_id):
         return jsonify({
             "error": str(e),
             "accepted_frontier_id": _get_project_frontier_id(project),
+            "shipped_frontier": _get_project_shipped_frontier(project),
         }), 409
-    payload = _attempt_to_json(attempt, accepted_frontier_id=_get_project_frontier_id(project))
+    payload = _attempt_to_json(
+        attempt,
+        accepted_frontier_id=_get_project_frontier_id(project),
+        shipped_frontier=_get_project_shipped_frontier(project),
+        ticket=ticket,
+        project=project,
+    )
     payload["project"] = _project_to_json(project)
     return jsonify(payload)
 
@@ -2443,29 +2445,12 @@ def ticket_attempt_accept(project_id, ticket_id, attempt_id):
                 attempt.winner_chosen_at = attempt.integrated_at
             db.session.commit()
         else:
-            allowed_bases = _acceptance_allowed_base_hashes(project, ticket)
-            normalized_base = _normalize_frontier_id(getattr(attempt, "base_hash", None))
-            if normalized_base not in allowed_bases:
-                shipped_frontier = _get_project_shipped_frontier(project)
-                stale, stale_reason = _compare_base_to_shipped_frontier(
-                    getattr(attempt, "base_hash", None),
-                    shipped_frontier,
-                    subject_name="attempt",
-                    base_field_name="attempt.base_hash",
-                )
-                if stale is None:
-                    raise ValueError(stale_reason or "Cannot determine attempt staleness.")
-                if stale:
-                    if allowed_bases:
-                        allowed_preview = ", ".join(sorted(base[:12] for base in allowed_bases))
-                        raise ValueError(
-                            "Attempt is stale and cannot be accepted/integrated without an explicit override. "
-                            f"attempt.base_hash must match project.shipped_frontier or an integrated dependency winner "
-                            f"({allowed_preview})."
-                        )
-                    raise ValueError(
-                        f"Attempt is stale and cannot be accepted/integrated without an explicit override. {stale_reason}"
-                    )
+            _validate_attempt_base_eligible(
+                attempt,
+                project,
+                ticket,
+                verb="accepted/integrated",
+            )
 
             if attempt.status != "accepted":
                 _transition_attempt(attempt, "accepted")

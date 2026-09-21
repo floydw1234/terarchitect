@@ -1096,7 +1096,7 @@ def test_accept_attempt_does_not_fallback_to_local_git_head(client, project):
     read_local_tip.assert_not_called()
 
 
-def test_attempt_list_reports_stale_status_against_accepted_frontier(client, project):
+def test_attempt_list_reports_stale_status_against_shipped_frontier(client, project):
     pid = project["id"]
     from models.db import db, Ticket, TicketAttempt
 
@@ -1128,8 +1128,46 @@ def test_attempt_list_reports_stale_status_against_accepted_frontier(client, pro
     assert resp.status_code == 200
     payload = resp.get_json()[0]
     assert payload["stale"] is True
-    assert payload["accepted_frontier_id"] == project["accepted_frontier_id"]
-    assert "differs from project.accepted_frontier_id" in payload["stale_reason"]
+    assert payload["shipped_frontier"] == project["shipped_frontier"]
+    assert "differs from project.shipped_frontier" in payload["stale_reason"]
+
+
+def test_attempt_list_not_stale_when_base_matches_shipped_frontier_not_accepted(client, project):
+    pid = project["id"]
+    from models.db import db, Project, Ticket, TicketAttempt
+
+    with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        stored_project.shipped_frontier = "shipped-live-frontier-0123456789ab"
+        stored_project.accepted_frontier_id = "accepted-old-frontier-0123456789ab"
+        db.session.commit()
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Shipped-aligned attempt ticket",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="8" * 40,
+            base_hash="shipped-live-frontier-0123456789ab",
+            attempt_num=1,
+            status="validated",
+            summary="aligned with shipped frontier",
+        )
+        db.session.add(attempt)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+
+    resp = client.get(f"/api/projects/{pid}/tickets/{ticket_id}/attempts")
+
+    assert resp.status_code == 200
+    payload = resp.get_json()[0]
+    assert payload["stale"] is False
+    assert payload["stale_reason"] is None
 
 
 def test_accept_attempt_rejects_stale_attempt_and_does_not_advance_frontier(client, project):

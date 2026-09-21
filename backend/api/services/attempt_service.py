@@ -6,10 +6,12 @@ from typing import Optional
 import requests as _requests
 from flask import current_app
 
-from models.db import db, TicketAttempt
+from models.db import db, Ticket, TicketAttempt
 from .project_service import (
-    compare_base_to_accepted_frontier as _compare_base_to_accepted_frontier,
+    compare_base_to_shipped_frontier as _compare_base_to_shipped_frontier,
     get_project_frontier_id as _get_project_frontier_id,
+    get_project_shipped_frontier as _get_project_shipped_frontier,
+    normalize_frontier_id as _normalize_frontier_id,
 )
 
 # ---------------------------------------------------------------------------
@@ -195,13 +197,81 @@ def validate_attempt(attempt: TicketAttempt, agenthub_url: str = "") -> TicketAt
     return attempt
 
 
-def attempt_stale_status(attempt: TicketAttempt, project=None) -> tuple[Optional[bool], Optional[str]]:
-    accepted_frontier_id = _get_project_frontier_id(project) if project else None
-    return _compare_base_to_accepted_frontier(
-        getattr(attempt, "base_hash", None),
-        accepted_frontier_id,
-        subject_name="attempt",
-        base_field_name="attempt.base_hash",
+def acceptance_allowed_base_hashes(project, ticket: Ticket | None = None) -> set[str]:
+    """Return commit hashes that may legitimately serve as an attempt base.
+
+    Uses ``shipped_frontier`` (not ``accepted_frontier_id``) plus integrated
+    dependency winner commits — the same rules as accept/choose-winner preflight.
+    """
+    allowed: set[str] = set()
+    frontier = _get_project_shipped_frontier(project)
+    if frontier:
+        allowed.add(frontier)
+    if ticket is None:
+        return allowed
+    for dep_id in ticket.depends_on_ticket_ids or []:
+        dep_attempt = get_accepted_attempt(dep_id)
+        dep_hash = (getattr(dep_attempt, "agenthub_commit_hash", None) or "").strip()
+        if dep_hash:
+            allowed.add(dep_hash)
+    return allowed
+
+
+def attempt_stale_status(
+    attempt: TicketAttempt,
+    project=None,
+    *,
+    ticket: Ticket | None = None,
+) -> tuple[Optional[bool], Optional[str]]:
+    base_hash = _normalize_frontier_id(getattr(attempt, "base_hash", None))
+    if base_hash is None:
+        return None, "Cannot determine attempt staleness: attempt.base_hash is not set."
+
+    allowed = acceptance_allowed_base_hashes(project, ticket) if project else set()
+    if not allowed:
+        return None, "Cannot determine attempt staleness: project.shipped_frontier is not set."
+
+    if base_hash in allowed:
+        return False, None
+
+    shipped = _get_project_shipped_frontier(project)
+    if shipped and len(allowed) == 1:
+        return True, "attempt.base_hash differs from project.shipped_frontier."
+    if allowed:
+        preview = ", ".join(sorted(base[:12] for base in allowed))
+        return True, (
+            "attempt.base_hash must match project.shipped_frontier or an integrated dependency winner "
+            f"({preview})."
+        )
+    return True, "attempt.base_hash differs from project.shipped_frontier."
+
+
+def validate_attempt_base_eligible(
+    attempt: TicketAttempt,
+    project,
+    ticket: Ticket | None,
+    *,
+    verb: str,
+) -> None:
+    """Raise ValueError when attempt.base_hash would fail accept staleness rules."""
+    allowed_bases = acceptance_allowed_base_hashes(project, ticket)
+    normalized_base = _normalize_frontier_id(getattr(attempt, "base_hash", None))
+    if normalized_base in allowed_bases:
+        return
+    stale, stale_reason = attempt_stale_status(attempt, project, ticket=ticket)
+    if stale is None:
+        raise ValueError(stale_reason or "Cannot determine attempt staleness.")
+    if not stale:
+        return
+    if allowed_bases:
+        allowed_preview = ", ".join(sorted(base[:12] for base in allowed_bases))
+        raise ValueError(
+            f"Attempt is stale and cannot be {verb} without an explicit override. "
+            "attempt.base_hash must match project.shipped_frontier or an integrated dependency winner "
+            f"({allowed_preview})."
+        )
+    raise ValueError(
+        f"Attempt is stale and cannot be {verb} without an explicit override. {stale_reason}"
     )
 
 
@@ -211,20 +281,26 @@ def attempt_to_json(
     include_test_output: bool = False,
     accepted_frontier_id: Optional[str] = None,
     shipped_frontier: Optional[str] = None,
+    ticket: Ticket | None = None,
+    project=None,
 ) -> dict:
-    """Serialize a TicketAttempt for API responses.
-
-    Pass accepted_frontier_id to compare against the canonical DAG frontier.
-    `shipped_frontier` remains as a compatibility alias for older callers.
-    """
+    """Serialize a TicketAttempt for API responses."""
     commit = attempt.agenthub_commit_hash or ""
-    frontier_id = accepted_frontier_id or shipped_frontier
-    stale, stale_reason = _compare_base_to_accepted_frontier(
-        getattr(attempt, "base_hash", None),
-        frontier_id,
-        subject_name="attempt",
-        base_field_name="attempt.base_hash",
+    resolved_shipped = shipped_frontier or (
+        _get_project_shipped_frontier(project) if project else None
     )
+    resolved_accepted = accepted_frontier_id or (
+        _get_project_frontier_id(project) if project else None
+    )
+    if project is None and ticket is None and resolved_shipped:
+        stale, stale_reason = _compare_base_to_shipped_frontier(
+            getattr(attempt, "base_hash", None),
+            resolved_shipped,
+            subject_name="attempt",
+            base_field_name="attempt.base_hash",
+        )
+    else:
+        stale, stale_reason = attempt_stale_status(attempt, project, ticket=ticket)
     return {
         "id": str(attempt.id),
         "project_id": str(attempt.project_id),
@@ -250,7 +326,8 @@ def attempt_to_json(
         "summary": attempt.summary,
         "validation_error": attempt.validation_error,
         "test_status": attempt.test_status,
-        "accepted_frontier_id": frontier_id,
+        "accepted_frontier_id": resolved_accepted,
+        "shipped_frontier": resolved_shipped,
         "stale": stale,
         "stale_reason": stale_reason,
         **({"test_output": attempt.test_output} if include_test_output else {}),

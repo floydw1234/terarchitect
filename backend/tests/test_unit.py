@@ -263,7 +263,7 @@ def test_display_state_accepted():
     accepted.base_hash = "abc"
     t = _make_display_ticket()
     project = MagicMock()
-    project.accepted_frontier_id = "abc"
+    project.shipped_frontier = "abc"
     result = compute_ticket_display_state(t, accepted_attempt=accepted, project=project)
     assert result == "accepted"
 
@@ -275,7 +275,7 @@ def test_display_state_stale():
     accepted.base_hash = "old_base"
     t = _make_display_ticket()
     project = MagicMock()
-    project.accepted_frontier_id = "new_frontier"
+    project.shipped_frontier = "new_frontier"
     result = compute_ticket_display_state(t, accepted_attempt=accepted, project=project)
     assert result == "stale"
 
@@ -322,27 +322,27 @@ def test_ticket_stale_status_reports_missing_values_clearly():
     assert reason == "Cannot determine ticket staleness: ticket.base_leaf_id is not set and project.accepted_frontier_id is not set."
 
 
-def test_attempt_stale_status_true_when_base_differs_from_accepted_frontier():
+def test_attempt_stale_status_true_when_base_differs_from_shipped_frontier():
     from api.services.attempt_service import attempt_stale_status
 
     attempt = MagicMock()
     attempt.base_hash = "leaf_old"
     project = MagicMock()
-    project.accepted_frontier_id = "leaf_new"
+    project.shipped_frontier = "leaf_new"
 
     stale, reason = attempt_stale_status(attempt, project)
 
     assert stale is True
-    assert "differs from project.accepted_frontier_id" in reason
+    assert "differs from project.shipped_frontier" in reason
 
 
-def test_attempt_stale_status_false_when_base_matches_accepted_frontier():
+def test_attempt_stale_status_false_when_base_matches_shipped_frontier():
     from api.services.attempt_service import attempt_stale_status
 
     attempt = MagicMock()
     attempt.base_hash = "leaf_same"
     project = MagicMock()
-    project.accepted_frontier_id = "leaf_same"
+    project.shipped_frontier = "leaf_same"
 
     stale, reason = attempt_stale_status(attempt, project)
 
@@ -356,12 +356,37 @@ def test_attempt_stale_status_reports_missing_values_clearly():
     attempt = MagicMock()
     attempt.base_hash = None
     project = MagicMock()
-    project.accepted_frontier_id = None
+    project.shipped_frontier = "leaf_new"
 
     stale, reason = attempt_stale_status(attempt, project)
 
     assert stale is None
-    assert reason == "Cannot determine attempt staleness: attempt.base_hash is not set and project.accepted_frontier_id is not set."
+    assert reason == "Cannot determine attempt staleness: attempt.base_hash is not set."
+
+
+def test_attempt_stale_status_false_when_base_matches_dependency_winner():
+    from api.services.attempt_service import attempt_stale_status, get_accepted_attempt
+
+    attempt = MagicMock()
+    attempt.base_hash = "dep-commit-hash"
+    project = MagicMock()
+    project.shipped_frontier = "shipped-frontier"
+    ticket = MagicMock()
+    ticket.depends_on_ticket_ids = ["dep-ticket-id"]
+
+    dep_attempt = MagicMock()
+    dep_attempt.agenthub_commit_hash = "dep-commit-hash"
+
+    original_get_accepted = get_accepted_attempt
+    try:
+        import api.services.attempt_service as attempt_service
+        attempt_service.get_accepted_attempt = lambda ticket_id: dep_attempt if ticket_id == "dep-ticket-id" else None
+        stale, reason = attempt_stale_status(attempt, project, ticket=ticket)
+    finally:
+        attempt_service.get_accepted_attempt = original_get_accepted
+
+    assert stale is False
+    assert reason is None
 
 
 def test_display_state_shipped():

@@ -940,6 +940,54 @@ def test_choose_winner_rejects_frontier_mismatch_locally_in_json_mode(capsys):
     assert api.post_calls == []
 
 
+def test_choose_winner_rejects_stale_base_against_shipped_frontier_locally_in_json_mode(capsys):
+    api = RouteStubAPI(
+        get_map={
+            "/api/projects/proj-1": {
+                "id": "proj-1",
+                "accepted_frontier_id": "accepted-live",
+                "shipped_frontier": "shipped-live",
+            },
+            "/api/projects/proj-1/tickets/ticket-1": {"id": "ticket-1"},
+            "/api/projects/proj-1/tickets/ticket-1/attempts": [{"id": "attempt-2", "attempt_num": 2, "status": "validated"}],
+            "/api/projects/proj-1/attempts/attempt-2": {
+                "id": "attempt-2",
+                "attempt_id": "attempt-2",
+                "ticket_id": "ticket-1",
+                "status": "validated",
+                "validated": True,
+                "is_winner": False,
+                "integrated": False,
+                "stale": True,
+                "stale_reason": "attempt.base_hash differs from project.shipped_frontier.",
+                "agenthub_commit_hash": "commit-222222222222",
+                "base_hash": "accepted-live",
+                "attempt_num": 2,
+            },
+        }
+    )
+    args = SimpleNamespace(
+        project_id="proj-1",
+        ticket_id="ticket-1",
+        attempt_id="attempt-2",
+        reason=None,
+        dry_run=False,
+        expect_frontier=None,
+        json=True,
+        output="json",
+    )
+
+    with pytest.raises(SystemExit):
+        ticket_cmd._cmd_choose_winner(args, api)
+
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["error"]["message"] == (
+        "Attempt attempt-2 is stale and cannot be chosen as the winner locally."
+    )
+    assert "shipped_frontier" in payload["error"]["detail"]
+    assert api.post_calls == []
+
+
 def test_accept_winner_requires_chosen_winner_before_posting(capsys):
     api = RouteStubAPI(
         get_map={

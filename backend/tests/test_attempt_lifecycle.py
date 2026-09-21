@@ -90,7 +90,7 @@ def test_choose_winner_does_not_advance_frontiers(client, project):
             project_id=pid,
             ticket_id=ticket.id,
             agenthub_commit_hash="c" * 40,
-            base_hash=accepted_frontier,
+            base_hash=shipped_frontier,
             attempt_num=1,
             status="validated",
             validated_at=_now(),
@@ -110,6 +110,7 @@ def test_choose_winner_does_not_advance_frontiers(client, project):
     assert payload["is_winner"] is True
     assert payload["integrated"] is False
     assert payload["accepted_frontier_id"] == accepted_frontier
+    assert payload["shipped_frontier"] == shipped_frontier
 
     with client.application.app_context():
         stored_project = db.session.get(Project, pid)
@@ -118,6 +119,52 @@ def test_choose_winner_does_not_advance_frontiers(client, project):
         assert stored_project.shipped_frontier == shipped_frontier
         assert stored_attempt.is_winner is True
         assert stored_attempt.integrated_at is None
+
+
+def test_choose_winner_rejects_stale_base_against_shipped_frontier(client, project):
+    from models.db import Project, Ticket, TicketAttempt, db
+
+    pid = project["id"]
+    accepted_frontier = project["accepted_frontier_id"]
+    shipped_frontier = "s" * 40
+
+    with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        stored_project.shipped_frontier = shipped_frontier
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Stale winner ticket",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash="c" * 40,
+            base_hash=accepted_frontier,
+            attempt_num=1,
+            status="validated",
+            validated_at=_now(),
+            summary="stale validated attempt",
+        )
+        db.session.add(attempt)
+        db.session.commit()
+        ticket_id = str(ticket.id)
+        attempt_id = str(attempt.id)
+
+    choose = client.post(
+        f"/api/projects/{pid}/tickets/{ticket_id}/attempts/{attempt_id}/choose-winner"
+    )
+    assert choose.status_code == 409
+    payload = choose.get_json()
+    assert "stale" in payload["error"].lower()
+    assert payload["shipped_frontier"] == shipped_frontier
+
+    with client.application.app_context():
+        stored_attempt = db.session.get(TicketAttempt, attempt_id)
+        assert stored_attempt.is_winner is not True
 
 
 def test_dependencies_unblock_only_after_winner_is_integrated(client, project):

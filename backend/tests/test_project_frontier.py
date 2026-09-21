@@ -858,6 +858,12 @@ def test_ticket_complete_records_attempt_with_frontier_lineage_and_latest_attemp
     assert create_project.status_code == 201
     project_id = create_project.get_json()["id"]
 
+    from models.db import Project
+    with client.application.app_context():
+        stored_project = db.session.get(Project, project_id)
+        stored_project.shipped_frontier = frontier_id
+        db.session.commit()
+
     with client.application.app_context():
         ticket = Ticket(
             project_id=project_id,
