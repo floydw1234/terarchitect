@@ -4,7 +4,7 @@ Outreach to potential design partners. Public professional emails only. Max 3 ne
 
 ---
 
-## ⏸️ PAUSED — 2026-09-07 (refreshed 2026-09-14)
+## ⏸️ PAUSED — 2026-09-07 (refreshed 2026-09-21)
 
 **Outreach remains paused until William reopens it.**
 
@@ -12,7 +12,7 @@ Outreach to potential design partners. Public professional emails only. Max 3 ne
 - Do not send Gmail.
 - Do not retry Ronacher / Neubig / Yang.
 - Do not re-email Huntley / Zechner / Ball.
-- Week board 2026-09-14: no outreach tasks; functional dogfood/CLI slices only.
+- Week board 2026-09-21: no outreach tasks; functional dogfood/CLI slices only.
 
 ---
 
