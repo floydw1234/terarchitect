@@ -1,4 +1,5 @@
 import argparse
+import json
 from unittest.mock import patch
 
 from cli._api import APIError
@@ -244,3 +245,45 @@ def test_ship_happy_path_cli_posts_expected_endpoint(capsys):
     assert "Ship happy path" in stdout
     assert "ticket-1" in stdout
     assert "aaaaaaaaaaaa" in stdout
+
+
+def test_ship_parser_registers_create_candidate_subcommand():
+    parser = _ship_parser()
+    args = parser.parse_args(
+        ["ship", "create-candidate", "proj", "--attempt", "attempt-1", "--ticket", "ticket-1"]
+    )
+    assert args.ship_cmd == "create-candidate"
+    assert args.project_id == "proj"
+    assert args.attempt_id == "attempt-1"
+    assert args.ticket_id == "ticket-1"
+
+
+def test_create_candidate_posts_selected_attempt_ids(capsys):
+    posts: list[tuple[str, dict]] = []
+
+    class FakeAPI:
+        def post(self, path, body=None):
+            posts.append((path, body or {}))
+            assert path == "/api/projects/proj/ship/candidates"
+            assert body == {"selected_attempt_ids": ["attempt-1"]}
+            return {
+                "id": "cand-1",
+                "status": "valid",
+                "selected_attempt_ids": ["attempt-1"],
+            }
+
+    args = argparse.Namespace(
+        ship_cmd="create-candidate",
+        project_id="proj",
+        attempt_id="attempt-1",
+        ticket_id="ticket-1",
+        json=True,
+        output="json",
+    )
+    ship._dispatch(args, FakeAPI())
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["candidate_id"] == "cand-1"
+    assert "ta ship dry-compose proj cand-1" in payload["next_commands"]
+    assert "ta ship compose-candidate proj cand-1" in payload["next_commands"]
+    assert len(posts) == 1

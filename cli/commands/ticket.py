@@ -10,6 +10,11 @@ from agenthub_preflight import AgenthubPreflightError, prepare_local_job
 from cli._api import API, APIError
 from cli._config import load_config_file
 from cli._output import die, print_json, print_receipt, print_table, short_id
+from cli._ship_candidate import (
+    attempt_candidate_eligible,
+    build_promotion_next_commands,
+    find_candidate_id_for_attempt,
+)
 from cli.commands.attempt import _normalize_attempt_files_payload
 
 _POLL_INTERVAL = 5   # seconds between status checks for --wait
@@ -1165,12 +1170,18 @@ def _cmd_accept_winner(args, api: API) -> None:
         or _get_shipped_frontier(project)
     )
     merged_attempt = {**attempt, **response}
-    base_hash = _normalize_frontier_id(merged_attempt.get("base_hash"))
-    candidate_eligible = bool(
-        _attempt_is_integrated_like(merged_attempt)
-        and shipped_frontier
-        and base_hash == shipped_frontier
+    if not merged_attempt.get("shipped_frontier"):
+        merged_attempt["shipped_frontier"] = shipped_frontier
+    candidate_eligible = attempt_candidate_eligible(
+        merged_attempt,
+        shipped_frontier=shipped_frontier,
     )
+    candidate_id = None
+    if candidate_eligible:
+        try:
+            candidate_id = find_candidate_id_for_attempt(api, args.project_id, args.attempt_id)
+        except APIError:
+            candidate_id = None
     frontier_changed = (not was_already_integrated) and accepted_frontier_id != previous_frontier_id
     payload = {
         **response,
@@ -1181,10 +1192,14 @@ def _cmd_accept_winner(args, api: API) -> None:
         "accepted_frontier_id": accepted_frontier_id,
         "shipped_frontier": shipped_frontier,
         "candidate_eligible": candidate_eligible,
-        "next_commands": [
-            f"ta attempt show {args.project_id} {args.attempt_id}",
-            f"ta ship candidates {args.project_id}",
-        ],
+        "candidate_id": candidate_id,
+        "next_commands": build_promotion_next_commands(
+            args.project_id,
+            args.attempt_id,
+            ticket_id=args.ticket_id,
+            candidate_id=candidate_id,
+            candidate_eligible=candidate_eligible,
+        ),
         "previous_frontier_id": previous_frontier_id,
     }
     if args.output == "json":
