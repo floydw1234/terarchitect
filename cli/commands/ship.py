@@ -2,6 +2,11 @@
 
 from cli._api import API, APIError
 from cli._output import die, print_json, print_receipt, print_table, short_id
+from cli._ship_candidate import (
+    create_candidate_from_attempt,
+    create_candidate_next_commands,
+    find_candidate_id_for_attempt,
+)
 from cli._shipper import run_local_shipper
 
 
@@ -16,6 +21,15 @@ def register(subparsers) -> None:
     ca = sub.add_parser("candidates", help="List promotion candidates and their latest ShipRun state")
     ca.add_argument("project_id")
     ca.add_argument("--json", action="store_true", help="Print JSON for this command")
+
+    ccreate = sub.add_parser(
+        "create-candidate",
+        help="Create or reuse a promotion candidate from an accepted attempt",
+    )
+    ccreate.add_argument("project_id")
+    ccreate.add_argument("--attempt", dest="attempt_id", required=True, help="Accepted attempt ID")
+    ccreate.add_argument("--ticket", dest="ticket_id", default=None, help="Ticket ID (for receipts)")
+    ccreate.add_argument("--json", action="store_true", help="Print JSON for this command")
 
     cd = sub.add_parser("candidate", help="Show promotion candidate detail")
     cd.add_argument("project_id")
@@ -105,6 +119,8 @@ def _dispatch(args, api: API) -> None:
     cmd = args.ship_cmd
     if cmd == "candidates":
         _cmd_candidates(args, api)
+    elif cmd == "create-candidate":
+        _cmd_create_candidate(args, api)
     elif cmd == "candidate":
         _cmd_candidate(args, api)
     elif cmd == "compose-candidate":
@@ -147,6 +163,40 @@ def _ship_run_line(run: dict) -> str:
 
 def _fetch_candidate_detail(api: API, project_id: str, candidate_id: str) -> dict:
     return api.get(f"/api/projects/{project_id}/ship/candidates/{candidate_id}")
+
+
+def _cmd_create_candidate(args, api: API) -> None:
+    try:
+        candidate = create_candidate_from_attempt(api, args.project_id, args.attempt_id)
+    except APIError as e:
+        die(e, output=args.output)
+    candidate_id = str(candidate.get("id") or "")
+    payload = {
+        **candidate,
+        "project_id": args.project_id,
+        "attempt_id": args.attempt_id,
+        "candidate_id": candidate_id or None,
+        "next_commands": create_candidate_next_commands(args.project_id, candidate_id)
+        if candidate_id
+        else [],
+    }
+    if args.ticket_id:
+        payload["ticket_id"] = args.ticket_id
+    if _want_json(args):
+        print_json(payload)
+        return
+    fields = [
+        ("Attempt", short_id(args.attempt_id, 12)),
+        ("Candidate", short_id(candidate_id, 12) if candidate_id else "unknown"),
+        ("Status", candidate.get("status") or "unknown"),
+    ]
+    if args.ticket_id:
+        fields.insert(0, ("Ticket", short_id(args.ticket_id, 12)))
+    print_receipt(
+        "Promotion candidate ready",
+        fields=fields,
+        next_commands=payload["next_commands"],
+    )
 
 
 def _cmd_candidates(args, api: API) -> None:

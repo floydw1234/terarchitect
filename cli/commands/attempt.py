@@ -4,6 +4,11 @@ import urllib.parse
 
 from cli._api import API, APIError
 from cli._output import die, print_json, print_table, short_id
+from cli._ship_candidate import (
+    attempt_candidate_eligible,
+    build_promotion_next_commands,
+    find_candidate_id_for_attempt,
+)
 
 
 def register(subparsers) -> None:
@@ -124,7 +129,7 @@ def _render_attempt_row(attempt: dict) -> dict[str, str]:
     }
 
 
-def _print_attempt_summary(attempt: dict, project_id: str) -> None:
+def _print_attempt_summary(attempt: dict, project_id: str, *, next_commands: list[str] | None = None) -> None:
     print(f"Attempt {short_id(attempt.get('id', ''))}")
     print(f"  Ticket:      {attempt.get('ticket_id') or 'unknown'}")
     print(f"  Status:      {attempt.get('status') or 'unknown'}")
@@ -147,18 +152,45 @@ def _print_attempt_summary(attempt: dict, project_id: str) -> None:
         print(f"  Validation:  {attempt.get('validation_error')}")
     print("")
     print("Next:")
-    print(f"  ta attempt files {project_id} {attempt.get('id')}")
-    print(f"  ta attempt diff {project_id} {attempt.get('id')}")
-    ticket_id = attempt.get("ticket_id")
-    if ticket_id:
-        print(f"  ta ticket attempts {project_id} {ticket_id}")
-        print(f"  ta ticket evaluate-attempts {project_id} {ticket_id} --attempt {attempt.get('id')}")
-        if attempt.get("is_winner"):
-            print(f"  ta ticket accept-winner {project_id} {ticket_id} {attempt.get('id')}")
-        if attempt.get("status") not in {"rejected", "shipped", "superseded", "failed"}:
-            print(f"  ta ticket reject-attempt {project_id} {ticket_id} {attempt.get('id')} --reason \"needs revision\"")
-        if attempt.get("status") in {"accepted", "composed", "release_pr_open"}:
-            print(f"  ta ship candidates {project_id}")
+    commands = next_commands
+    if commands is None:
+        commands = [
+            f"ta attempt files {project_id} {attempt.get('id')}",
+            f"ta attempt diff {project_id} {attempt.get('id')}",
+        ]
+        ticket_id = attempt.get("ticket_id")
+        if ticket_id:
+            commands.extend([
+                f"ta ticket attempts {project_id} {ticket_id}",
+                f"ta ticket evaluate-attempts {project_id} {ticket_id} --attempt {attempt.get('id')}",
+            ])
+            if attempt.get("is_winner"):
+                commands.append(
+                    f"ta ticket accept-winner {project_id} {ticket_id} {attempt.get('id')}"
+                )
+            if attempt.get("status") not in {"rejected", "shipped", "superseded", "failed"}:
+                commands.append(
+                    f"ta ticket reject-attempt {project_id} {ticket_id} {attempt.get('id')} "
+                    '--reason "needs revision"'
+                )
+        candidate_eligible = attempt_candidate_eligible(attempt)
+        if candidate_eligible:
+            commands = build_promotion_next_commands(
+                project_id,
+                str(attempt.get("id") or ""),
+                ticket_id=attempt.get("ticket_id"),
+                candidate_id=attempt.get("_promotion_candidate_id"),
+                candidate_eligible=True,
+            )
+            commands = [
+                f"ta attempt files {project_id} {attempt.get('id')}",
+                f"ta attempt diff {project_id} {attempt.get('id')}",
+                *commands,
+            ]
+        elif attempt.get("status") in {"accepted", "composed", "release_pr_open"}:
+            commands.append(f"ta ship candidates {project_id}")
+    for command in commands:
+        print(f"  {command}")
 
 
 def _cmd_list(args, api: API) -> None:
@@ -215,9 +247,31 @@ def _cmd_show(args, api: API) -> None:
                 output=args.output,
             )
         die(e, output=args.output)
+
+    candidate_eligible = attempt_candidate_eligible(attempt)
+    candidate_id = None
+    if candidate_eligible:
+        try:
+            candidate_id = find_candidate_id_for_attempt(api, args.project_id, args.attempt_id)
+        except APIError:
+            candidate_id = None
+
     if args.output == "json":
-        print_json(attempt)
+        payload = dict(attempt)
+        if candidate_eligible:
+            payload["candidate_eligible"] = True
+            payload["candidate_id"] = candidate_id
+            payload["next_commands"] = build_promotion_next_commands(
+                args.project_id,
+                args.attempt_id,
+                ticket_id=attempt.get("ticket_id"),
+                candidate_id=candidate_id,
+                candidate_eligible=True,
+            )
+        print_json(payload)
         return
+    if candidate_id:
+        attempt = {**attempt, "_promotion_candidate_id": candidate_id}
     _print_attempt_summary(attempt, args.project_id)
 
 

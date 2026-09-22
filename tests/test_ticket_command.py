@@ -38,6 +38,8 @@ class RouteStubAPI:
     def get(self, path):
         self.get_calls.append(path)
         if path not in self.get_map:
+            if path.endswith("/ship/candidates"):
+                return []
             raise AssertionError(f"Unexpected GET {path}")
         value = self.get_map[path]
         return value() if callable(value) else value
@@ -1319,6 +1321,7 @@ def test_accept_winner_posts_to_accept_endpoint_and_reports_frontier_change(caps
     assert payload["accepted_frontier_id"] == "commit-222222222222"
     assert payload["shipped_frontier"] == "frontier-123"
     assert payload["candidate_eligible"] is True
+    assert "ta ship create-candidate proj-1 --attempt attempt-2 --ticket ticket-1" in payload["next_commands"]
     assert "ta ship candidates proj-1" in payload["next_commands"]
 
 
@@ -1529,3 +1532,54 @@ def test_accept_winner_reports_no_frontier_change_when_frontier_is_unchanged(cap
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["frontier_changed"] is False
+
+
+def test_accept_winner_candidate_eligible_surfaces_compose_when_candidate_exists(capsys):
+    api = RouteStubAPI(
+        get_map={
+            "/api/projects/proj-1": {
+                "id": "proj-1",
+                "accepted_frontier_id": "frontier-123",
+                "shipped_frontier": "frontier-123",
+            },
+            "/api/projects/proj-1/tickets/ticket-1": {"id": "ticket-1"},
+            "/api/projects/proj-1/tickets/ticket-1/attempts": [{"id": "attempt-2", "attempt_num": 2, "status": "validated"}],
+            "/api/projects/proj-1/attempts/attempt-2": {
+                "id": "attempt-2",
+                "ticket_id": "ticket-1",
+                "status": "validated",
+                "validated": True,
+                "is_winner": True,
+                "integrated": False,
+                "base_hash": "frontier-123",
+            },
+            "/api/projects/proj-1/ship/candidates": [
+                {"id": "cand-9", "selected_attempt_ids": ["attempt-2"]},
+            ],
+        },
+        post_map={
+            "/api/projects/proj-1/tickets/ticket-1/attempts/attempt-2/accept": {
+                "id": "attempt-2",
+                "status": "accepted",
+                "integrated": True,
+                "base_hash": "frontier-123",
+                "shipped_frontier": "frontier-123",
+            }
+        },
+    )
+    args = SimpleNamespace(
+        project_id="proj-1",
+        ticket_id="ticket-1",
+        attempt_id="attempt-2",
+        expect_frontier="frontier-123",
+        json=True,
+        output="json",
+    )
+
+    ticket_cmd._cmd_accept_winner(args, api)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["candidate_eligible"] is True
+    assert payload["candidate_id"] == "cand-9"
+    assert "ta ship dry-compose proj-1 cand-9" in payload["next_commands"]
+    assert "ta ship compose-candidate proj-1 cand-9" in payload["next_commands"]

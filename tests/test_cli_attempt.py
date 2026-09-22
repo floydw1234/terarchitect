@@ -1,4 +1,5 @@
 import argparse
+import json
 
 import pytest
 
@@ -321,6 +322,8 @@ def test_ticket_accept_attempt_is_legacy_alias_for_accept_winner(capsys):
                     "base_hash": "frontier-123",
                     "attempt_num": 1,
                 }
+            if path == "/api/projects/proj/ship/candidates":
+                return []
             raise AssertionError(f"Unexpected GET path: {path}")
 
     api = WinnerAliasAPI()
@@ -336,15 +339,15 @@ def test_ticket_accept_attempt_is_legacy_alias_for_accept_winner(capsys):
 
     ticket._dispatch(args, api)
 
-    assert api.calls[-1] == (
+    assert (
         "POST",
         "/api/projects/proj/tickets/ticket-1/attempts/attempt-1/accept",
         {},
-    )
+    ) in api.calls
     stdout = capsys.readouterr().out
     assert "Legacy alias:" in stdout
     assert "choose-winner" in stdout
-    assert "ta ship candidates proj" in stdout
+    assert "ta ship create-candidate proj --attempt attempt-1 --ticket ticket-1" in stdout
 
 
 def test_attempt_show_guides_agents_through_evaluate_flow_without_choose_winner(capsys):
@@ -380,3 +383,37 @@ def test_attempt_show_guides_agents_through_evaluate_flow_without_choose_winner(
     assert "ta ticket evaluate-attempts proj ticket-1 --attempt attempt-1" in stdout
     assert "ta ticket choose-winner proj ticket-1 attempt-1" not in stdout
     assert "ta ticket accept-attempt proj ticket-1 attempt-1" not in stdout
+
+
+def test_attempt_show_candidate_eligible_surfaces_create_and_compose_commands(capsys):
+    class CandidateEligibleAPI(FakeAPI):
+        def get(self, path):
+            if path == "/api/projects/proj/attempts/attempt-1":
+                return {
+                    "id": "attempt-1",
+                    "ticket_id": "ticket-1",
+                    "status": "accepted",
+                    "integrated": True,
+                    "base_hash": "frontier-123",
+                    "shipped_frontier": "frontier-123",
+                }
+            if path == "/api/projects/proj/ship/candidates":
+                return [{"id": "cand-2", "selected_attempt_ids": ["attempt-1"]}]
+            raise AssertionError(f"Unexpected GET path: {path}")
+
+    args = argparse.Namespace(
+        attempt_cmd="show",
+        project_id="proj",
+        attempt_id="attempt-1",
+        json=True,
+        output="json",
+    )
+
+    attempt._dispatch(args, CandidateEligibleAPI())
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["candidate_eligible"] is True
+    assert payload["candidate_id"] == "cand-2"
+    assert "ta ship create-candidate proj --attempt attempt-1 --ticket ticket-1" in payload["next_commands"]
+    assert "ta ship dry-compose proj cand-2" in payload["next_commands"]
+    assert "ta ship compose-candidate proj cand-2" in payload["next_commands"]
