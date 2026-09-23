@@ -26,6 +26,13 @@ import pytest
 
 # Root of the terarchitect repo (two levels up from this file)
 REPO_ROOT = Path(__file__).parent.parent.parent
+_BACKEND_DIR = REPO_ROOT / "backend"
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
+
+# In-process Flask fixtures for host-path CLI tests (shared with backend/tests).
+from backend.tests.conftest import app, client  # noqa: E402, F401
+
 DEFAULT_TEST_URL = "http://localhost:5011"
 COMPOSE_PROJECT = "terarchitect-test"
 COMPOSE_FILES = [
@@ -67,7 +74,11 @@ def api_url(request):
 @pytest.fixture(scope="session", autouse=True)
 def compose_services(request, api_url):
     """Start backend + postgres via docker compose (skipped if --no-compose / --api-url)."""
-    skip = request.config.getoption("--no-compose") or request.config.getoption("--api-url")
+    skip = (
+        request.config.getoption("--no-compose")
+        or request.config.getoption("--api-url")
+        or os.environ.get("TERARCHITECT_CLI_DOGFOOD_LOCAL") == "1"
+    )
     if skip:
         yield
         return
