@@ -40,6 +40,8 @@ from tests.integration.conftest import (
     _ah_get,
 )
 from agent.middle_agent.git_backend import _ticket_channel
+from agenthub_preflight import AgenthubPreflightError, prepare_local_job
+from coordinator.coordinator import job_to_env
 
 pytestmark = pytest.mark.swarm_real
 
@@ -107,6 +109,79 @@ def _run_agent(env: dict) -> subprocess.CompletedProcess:
         text=True,
         timeout=AGENT_TIMEOUT,
     )
+
+
+def _claim_worker_job(api: API, project_id: str) -> dict:
+    """Claim the next pending ticket job (coordinator claim path)."""
+    job = api.post("/api/worker/jobs/start", {"project_id": project_id})
+    assert job.get("job_id"), f"Expected claimed job payload, got: {job!r}"
+    assert job.get("ticket_id")
+    return job
+
+
+def _coordinator_forward_env(
+    api_url: str,
+    stub_llm_url: str,
+    ah_url: str,
+    ah_api_key: str,
+    ah_agent_id: str,
+    ah_bin_dir: str,
+) -> dict:
+    existing_path = os.environ.get("PATH", "")
+    return {
+        **os.environ,
+        "TERARCHITECT_API_URL": api_url,
+        "TERARCHITECT_MODE": "swarm",
+        "AGENTHUB_URL": ah_url,
+        "AGENTHUB_API_KEY": ah_api_key,
+        "AGENTHUB_AGENT_ID": ah_agent_id,
+        "AGENTHUB_BRANCH": "swarm",
+        "DIRECTOR_PROVIDER": "openai",
+        "DIRECTOR_LLM_URL": f"{stub_llm_url}/v1/chat/completions",
+        "DIRECTOR_MODEL": "stub-model",
+        "DIRECTOR_API_KEY": "stub-key",
+        "WORKER_MODE": "stub",
+        "WORKER_API_KEY": "stub",
+        "GIT_USER_NAME": "Test Agent",
+        "GIT_USER_EMAIL": "agent@test.example.com",
+        "PATH": f"{ah_bin_dir}:{STUBS_DIR}:{existing_path}",
+        "GH_TOKEN": "stub-gh-token",
+        "GITHUB_TOKEN": "stub-gh-token",
+        "MIDDLE_AGENT_DEBUG": "1",
+    }
+
+
+def _env_from_claimed_job(job: dict, coordinator_env: dict) -> dict:
+    """Build agent_runner env the same way the coordinator does for local swarm jobs."""
+    prepared = prepare_local_job(job, env=coordinator_env)
+    env = job_to_env(prepared)
+    for key, value in coordinator_env.items():
+        if value is not None and str(value).strip():
+            env[key] = str(value).strip()
+    return env
+
+
+def _run_claimed_job(job: dict, coordinator_env: dict) -> subprocess.CompletedProcess:
+    env = _env_from_claimed_job(job, coordinator_env)
+    return _run_agent(env)
+
+
+def _parse_terarchitect_event(content: str) -> dict | None:
+    try:
+        parsed = json.loads(content or "")
+    except json.JSONDecodeError:
+        return None
+    if parsed.get("terarchitect_event") != 1:
+        return None
+    return parsed
+
+
+def _find_attempt_published_event(posts: list) -> dict | None:
+    for post in posts:
+        event = _parse_terarchitect_event(post.get("content") or "")
+        if event and event.get("type") == "attempt_published":
+            return event
+    return None
 
 
 def _unique_agent_id(prefix: str = "ta") -> str:
@@ -548,6 +623,122 @@ class TestRealSwarmMode:
                 api.delete(
                     f"/api/projects/{project_id}",
                     {"confirm_name": "real-swarm-peer-test"},
+                )
+            except APIError:
+                pass
+
+    def test_worker_job_claim_finalize_publishes_validated_attempt(
+        self,
+        api: API,
+        stub_llm: str,
+        agenthub_real: dict,
+        tmp_path: Path,
+    ):
+        """
+        MH6 integration tier: enqueue → POST /worker/jobs/start → coordinator-style
+        agent_runner (stub worker) → swarm_publish receipt → validated TicketAttempt
+        → ticket /complete.
+        """
+        ah_url = agenthub_real["url"]
+        admin_key = agenthub_real["admin_key"]
+        ah_bin_dir = agenthub_real["ah_bin_dir"]
+
+        agent_id = _unique_agent_id("mh6-claim")
+        api_key = _register_agent(ah_url, admin_key, agent_id)
+
+        work_dir, origin_dir = make_local_git_repo(tmp_path)
+        seed_hash = _seed_agenthub_dag(origin_dir, ah_url, admin_key, ah_bin_dir, tmp_path)
+
+        project = api.post("/api/projects", {
+            "name": "mh6-claim-finalize-tier",
+            "description": "MH6: worker claim → publish → finalize",
+            "execution_mode": "local",
+            "project_path": str(work_dir),
+            "git_mode": "swarm",
+            "is_existing_repo": True,
+            "accepted_frontier_id": seed_hash,
+        })
+        project_id = project["id"]
+
+        try:
+            api.post(
+                f"/api/projects/{project_id}/frontier",
+                {"hash": seed_hash, "source": "manual"},
+            )
+
+            graph = json.loads(
+                (Path(__file__).parent.parent / "fixtures" / "graph.json").read_text()
+            )
+            api.put(f"/api/projects/{project_id}/graph", graph)
+
+            ticket = api.post(f"/api/projects/{project_id}/tickets", {
+                "title": "MH6 claim finalize tier",
+                "description": "Prove coordinator claim path through finalize",
+                "column_id": "backlog",
+                "priority": "medium",
+                "status": "todo",
+                "default_attempt_count": 1,
+            })
+            ticket_id = ticket["id"]
+
+            start = api.post(f"/api/projects/{project_id}/start", {})
+            assert start.get("dispatched", 0) >= 1, start
+
+            job = _claim_worker_job(api, project_id)
+            assert job["ticket_id"] == ticket_id
+            assert job["execution_mode"] == "local"
+            assert job["base_leaf_id"] == seed_hash
+            assert job["base_hash"] == seed_hash
+
+            coordinator_env = _coordinator_forward_env(
+                api.base_url, stub_llm, ah_url, api_key, agent_id, ah_bin_dir,
+            )
+            try:
+                prepare_local_job(job, env=coordinator_env)
+            except AgenthubPreflightError as exc:
+                pytest.fail(f"AgentHub preflight failed for claimed job: {exc}")
+
+            result = _run_claimed_job(job, coordinator_env)
+            assert result.returncode == 0, (
+                f"agent_runner failed (exit {result.returncode})\n"
+                f"stdout:\n{(result.stdout or '')[-3000:]}\n"
+                f"stderr:\n{(result.stderr or '')[-3000:]}"
+            )
+
+            api.post(f"/api/worker/jobs/{job['job_id']}/complete", {})
+
+            final_ticket = api.get(f"/api/projects/{project_id}/tickets/{ticket_id}")
+            assert final_ticket.get("column_id") == "done"
+            assert final_ticket.get("status") == "completed"
+
+            attempts = api.get(f"/api/projects/{project_id}/tickets/{ticket_id}/attempts")
+            assert len(attempts) == 1, attempts
+            attempt = attempts[0]
+            assert attempt["status"] == "validated"
+            assert attempt["validated"] is True
+            assert attempt["base_hash"] == seed_hash
+            commit_hash = attempt["agenthub_commit_hash"]
+            assert commit_hash and len(commit_hash) >= 40
+
+            receipt = _ah_get(ah_url, api_key, f"/api/git/receipts/{commit_hash}")
+            assert receipt.get("exists") is True, receipt
+            assert receipt.get("bundle_fetchable", True) is True, receipt
+
+            channel = _ticket_channel(ticket_id)
+            posts = _ah_get(ah_url, api_key, f"/api/channels/{channel}/posts")
+            publish_event = _find_attempt_published_event(posts)
+            assert publish_event is not None, (
+                f"Expected attempt_published terarchitect_event in channel {channel}, posts={posts}"
+            )
+            metadata = publish_event.get("metadata") or {}
+            assert metadata.get("commit_hash") == commit_hash
+            assert metadata.get("base_leaf_id") == seed_hash
+
+        finally:
+            try:
+                api.delete(
+                    f"/api/projects/{project_id}",
+                    {"confirm_name": "mh6-claim-finalize-tier"},
                 )
             except APIError:
                 pass
