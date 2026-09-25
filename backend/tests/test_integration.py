@@ -423,8 +423,41 @@ def test_compose_auto_includes_unshipped_dependency(client, project):
 
     candidate = _post_candidate(client, pid, [child_attempt_id])
     assert set(candidate["selected_attempt_ids"]) == {parent_attempt_id, child_attempt_id}
+    assert candidate["selected_leaf_hashes"] == [child_hash]
     _, compose = _compose_ids(client, pid, [child_attempt_id])
     assert compose.status_code in (200, 201)
+    run_id = compose.get_json()["id"]
+
+    claim_resp = client.post("/api/worker/ship-run/next", json={})
+    assert claim_resp.status_code == 200
+    claim_data = claim_resp.get_json()
+    assert claim_data["run"]["id"] == run_id
+    assert claim_data["commit_hashes"] == [child_hash]
+
+    composed_resp = client.post(f"/api/worker/ship-run/{run_id}/composed", json={
+        "composed_commit_hash": "m" * 40,
+        "base_main_hash": frontier,
+        "test_status": "passed",
+        "test_output": "dependency pair composed",
+        "changed_files": ["src/child.py"],
+    })
+    assert composed_resp.status_code == 200
+    assert composed_resp.get_json()["status"] == "ready_to_ship"
+
+    ship_resp = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
+    assert ship_resp.status_code == 200, ship_resp.get_json()
+    ship_data = ship_resp.get_json()
+    assert ship_data["status"] == "shipped"
+    assert ship_data["shipped_commit_hash"] == "m" * 40
+
+    with client.application.app_context():
+        from models.db import Project
+        proj = db.session.get(Project, pid)
+        assert proj.shipped_frontier == "m" * 40
+        parent_row = db.session.get(TicketAttempt, parent_attempt_id)
+        child_row = db.session.get(TicketAttempt, child_attempt_id)
+        assert parent_row.status == "shipped"
+        assert child_row.status == "shipped"
 
 
 def test_dry_compose_reports_blockers_and_commit_hashes(client, project):
