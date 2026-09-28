@@ -501,9 +501,11 @@ def job_to_env(job: dict, for_docker: bool = False) -> dict:
     When for_docker=True, only job vars + explicit coordinator-forwarded agent vars are included."""
     env = {} if for_docker else dict(os.environ)
     if for_docker:
-        host_path = os.environ.get("PATH") or ""
-        container_defaults = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        env["PATH"] = f"{host_path}:{container_defaults}" if host_path else container_defaults
+        # Worker containers must keep the agent image PATH (incl. /root/.opencode/bin).
+        # Do not replace it with the coordinator host PATH.
+        image_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.opencode/bin"
+        extra_path = (os.environ.get("AGENT_PATH_EXTRA") or "").strip()
+        env["PATH"] = f"{image_path}:{extra_path}" if extra_path else image_path
     env["TICKET_ID"] = str(job.get("ticket_id", ""))
     env["PROJECT_ID"] = str(job.get("project_id", ""))
     env["REPO_URL"] = str(job.get("repo_url", ""))

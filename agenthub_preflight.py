@@ -30,6 +30,15 @@ def read_git_head(path: str | None) -> str | None:
     return result.stdout.strip() or None
 
 
+def resolve_agenthub_url(env: Mapping[str, str] | None = None) -> str:
+    """Host CLI prefers TERARCHITECT_AGENTHUB_URL; containers use AGENTHUB_URL."""
+    run_env = env or os.environ
+    return (
+        (run_env.get("TERARCHITECT_AGENTHUB_URL") or "").strip()
+        or (run_env.get("AGENTHUB_URL") or "").strip()
+    ).rstrip("/")
+
+
 def _agenthub_headers(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
@@ -82,11 +91,12 @@ def prepare_local_job(job: Mapping[str, Any], *, env: Mapping[str, str] | None =
             "or rerun the ticket from the current frontier."
         )
 
-    agenthub_url = (run_env.get("AGENTHUB_URL") or "").strip()
+    agenthub_url = resolve_agenthub_url(run_env)
     agenthub_api_key = (run_env.get("AGENTHUB_API_KEY") or "").strip()
     if not agenthub_url or not agenthub_api_key:
         raise AgenthubPreflightError(
-            "Local swarm run requires AGENTHUB_URL and AGENTHUB_API_KEY so the base lineage can be verified."
+            "Local swarm run requires TERARCHITECT_AGENTHUB_URL (host) or AGENTHUB_URL and "
+            "AGENTHUB_API_KEY so the base lineage can be verified."
         )
 
     try:

@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlparse
 _lock = threading.Lock()
 _posts: dict[str, list] = {}  # channel -> [post, ...]
 _post_id = 0
+_known_commits: set[str] = set()
 
 
 def _next_id() -> int:
@@ -50,12 +51,36 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
-        if path == "/health":
+        if path in ("/health", "/api/health"):
             self._send(200, {"ok": True})
 
         elif path == "/api/git/leaves":
             # Return empty list → agents skip bundle fetch and work from origin clone
             self._send(200, [])
+
+        elif path.startswith("/api/git/receipts/"):
+            commit_hash = path.split("/")[-1]
+            with _lock:
+                exists = commit_hash in _known_commits or len(commit_hash) >= 7
+            self._send(
+                200,
+                {
+                    "hash": commit_hash,
+                    "exists": exists,
+                    "bundle_fetchable": exists,
+                },
+            )
+
+        elif path.startswith("/api/git/fetch/"):
+            commit_hash = path.split("/")[-1]
+            with _lock:
+                _known_commits.add(commit_hash)
+            body = b"# stub git bundle\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         elif path.startswith("/api/channels/") and path.endswith("/posts"):
             # GET /api/channels/{channel}/posts
@@ -80,7 +105,13 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
-        if path.startswith("/api/channels/") and path.endswith("/posts"):
+        if path == "/api/git/push":
+            length = int(self.headers.get("Content-Length", 0))
+            if length:
+                self.rfile.read(length)
+            self._send(200, {"ok": True})
+
+        elif path.startswith("/api/channels/") and path.endswith("/posts"):
             parts = path.split("/")
             channel = parts[3] if len(parts) >= 5 else "general"
             body = self._read_json()

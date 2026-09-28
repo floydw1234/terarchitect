@@ -17,6 +17,7 @@ _HOST_AGENTHUB_PORT = 8088
 SHIPPER_ENV_KEYS = (
     "TERARCHITECT_API_URL",
     "TERARCHITECT_WORKER_API_KEY",
+    "TERARCHITECT_AGENTHUB_URL",
     "AGENTHUB_URL",
     "AGENTHUB_API_KEY",
     "MERGE_TEST_COMMAND",
@@ -85,24 +86,27 @@ def _runtime_pythonpath(existing: Optional[str] = None) -> str:
     return os.pathsep.join(ordered)
 
 
-def run_local_shipper(api_url: str, ship_run_id: str) -> int:
+def run_local_shipper(api_url: str, ship_run_id: str, *, capture_stdout: bool = False) -> int:
     """Run ``python -m agent.shipper`` once for a pre-queued ShipRun.
 
     Coordinator normally claims via ``/api/worker/ship-run/next`` and sets
     ``SHIP_RUN_ID``; the shipper accepts a queued run when fetched by id.
     """
     env: dict[str, str] = {}
+    host_agenthub = (os.environ.get("TERARCHITECT_AGENTHUB_URL") or "").strip()
     for key in SHIPPER_ENV_KEYS:
         val = os.environ.get(key)
         if not val:
             continue
-        if key == "AGENTHUB_URL":
-            remapped, warning = remap_agenthub_url_for_host(val)
-            env[key] = remapped
-            if warning:
-                print(warning, file=sys.stderr)
-        else:
-            env[key] = val
+        if key in {"AGENTHUB_URL", "TERARCHITECT_AGENTHUB_URL"}:
+            continue
+        env[key] = val
+    ah_raw = host_agenthub or (os.environ.get("AGENTHUB_URL") or "").strip()
+    if ah_raw:
+        remapped, warning = remap_agenthub_url_for_host(ah_raw)
+        env["AGENTHUB_URL"] = remapped
+        if warning:
+            print(warning, file=sys.stderr)
     env["TERARCHITECT_API_URL"] = api_url.rstrip("/")
     env["SHIP_RUN_ID"] = str(ship_run_id)
 
@@ -114,5 +118,9 @@ def run_local_shipper(api_url: str, ship_run_id: str) -> int:
         [sys.executable, "-m", "agent.shipper"],
         env=full_env,
         cwd=str(repo_root),
+        stdout=subprocess.PIPE if capture_stdout else None,
+        stderr=None,
     )
+    if capture_stdout and result.stdout:
+        print(result.stdout.decode(errors="replace"), file=sys.stderr)
     return int(result.returncode)

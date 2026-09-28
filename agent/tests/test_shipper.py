@@ -90,6 +90,7 @@ def test_run_once_reports_ephemeral_runtime_when_shipping_without_project_path(t
             "name": "Demo",
             "project_path": "",
             "github_url": "https://github.com/example/demo",
+            "ship_target": "github",
         },
         "commit_hashes": ["a" * 40],
         "membership": {},

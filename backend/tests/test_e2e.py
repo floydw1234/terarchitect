@@ -473,7 +473,10 @@ def test_e2e_dependency_ship_loop_from_parent_attempt_base(client, project):
     child_hash = "b" * 40
     composed_hash = "m" * 40
 
-    client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
+    client.put(
+        f"/api/projects/{pid}",
+        json={"github_url": "https://github.com/owner/repo", "ship_target": "github"},
+    )
 
     from models.db import db, Project, Ticket
     with client.application.app_context():
@@ -651,7 +654,7 @@ def test_e2e_ship_release_pr_merge_advances_frontier(client, project):
 
     update_resp = client.put(
         f"/api/projects/{pid}",
-        json={"github_url": "https://github.com/owner/repo"},
+        json={"github_url": "https://github.com/owner/repo", "ship_target": "github"},
     )
     assert update_resp.status_code == 200
 
@@ -672,10 +675,16 @@ def test_e2e_ship_release_pr_merge_advances_frontier(client, project):
     )
 
     with patch("subprocess.run", side_effect=[verify_ok, merge_ok, tip_ok]):
-        ship_resp = client.post(
-            f"/api/projects/{pid}/ship/runs/{run_id}/ship",
-            json={"merge_method": "merge"},
-        )
+        with patch("api.routes._ensure_commit_in_agenthub") as ensure_mock:
+            ensure_mock.return_value = {
+                "hash": merged_main_sha,
+                "exists": True,
+                "bundle_fetchable": True,
+            }
+            ship_resp = client.post(
+                f"/api/projects/{pid}/ship/runs/{run_id}/ship",
+                json={"merge_method": "merge"},
+            )
 
     assert ship_resp.status_code == 200, ship_resp.get_json()
     ship_data = ship_resp.get_json()

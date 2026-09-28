@@ -311,6 +311,59 @@ def test_project_doctor_reports_github_first_project_without_local_path(client):
     assert "No pending or running jobs." in payload["execution_readiness"]["observations"]
 
 
+def test_project_doctor_latest_attempt_not_stale_when_commit_is_shipped_frontier(client, project):
+    """After AgentHub-only ship, the winner tip may differ from attempt.base_hash but matches shipped_frontier."""
+    pid = project["id"]
+    shipped = "s" * 40
+    base = project.get("shipped_frontier") or project["accepted_frontier_id"]
+
+    from models.db import db, Project, Ticket, TicketAttempt
+
+    with client.application.app_context():
+        proj = db.session.get(Project, pid)
+        proj.execution_mode = "local"
+        proj.project_path = "/tmp/terarchitect-doctor-test"
+        proj.shipped_frontier = shipped
+        proj.accepted_frontier_id = shipped
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Shipped winner",
+            intent_status="active",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket.id,
+            agenthub_commit_hash=shipped,
+            base_hash=base,
+            attempt_num=1,
+            status="shipped",
+            summary="Winner shipped in AgentHub mode",
+        )
+        db.session.add(attempt)
+        db.session.commit()
+
+    with patch.dict(
+        os.environ,
+        {
+            "AGENTHUB_URL": "http://agenthub:8080",
+            "AGENTHUB_API_KEY": "test-key",
+            "MEMORY_EMBEDDING_MODEL": "text-embedding-3-small",
+            "OPENAI_API_KEY": "sk-test",
+        },
+        clear=False,
+    ):
+        doctor = client.get(f"/api/projects/{pid}/doctor")
+
+    assert doctor.status_code == 200
+    payload = doctor.get_json()
+    assert payload["latest_attempt"]["stale"] is False
+    assert payload["execution_readiness"]["ready"] is True
+    assert not any("stale" in issue.lower() for issue in payload["execution_readiness"]["issues"])
+
+
 def test_create_github_project_agenthub_failure_does_not_persist_project(client):
     from api.routes import _AgenthubImportError
     from models.db import Project

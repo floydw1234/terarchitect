@@ -207,7 +207,7 @@ def test_ship_pr_already_merged(client, project, accepted_attempt_pair):
     # Patch project github_url and gh pr view to return MERGED
     update_resp = client.put(
         f"/api/projects/{pid}",
-        json={"github_url": "https://github.com/owner/repo"},
+        json={"github_url": "https://github.com/owner/repo", "ship_target": "github"},
     )
     assert update_resp.status_code == 200
 
@@ -242,7 +242,7 @@ def test_ship_rejects_release_pr_branch_mismatch(client, project, accepted_attem
 
     update_resp = client.put(
         f"/api/projects/{pid}",
-        json={"github_url": "https://github.com/owner/repo"},
+        json={"github_url": "https://github.com/owner/repo", "ship_target": "github"},
     )
     assert update_resp.status_code == 200
 
@@ -283,7 +283,7 @@ def test_ship_rejects_release_pr_head_mismatch(client, project, accepted_attempt
 
     update_resp = client.put(
         f"/api/projects/{pid}",
-        json={"github_url": "https://github.com/owner/repo"},
+        json={"github_url": "https://github.com/owner/repo", "ship_target": "github"},
     )
     assert update_resp.status_code == 200
 
