@@ -1373,7 +1373,8 @@ def _run_local(args, api: API) -> None:
                 "git_mode": project.get("git_mode") or "swarm",
                 "project_path": project.get("project_path"),
                 "base_leaf_id": ticket.get("base_leaf_id"),
-            }
+            },
+            env=os.environ,
         )
     except AgenthubPreflightError as e:
         die(str(e), output=args.output)

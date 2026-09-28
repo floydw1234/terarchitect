@@ -1,0 +1,18 @@
+# Optional override: mount a host git checkout into the backend container so
+# `ta project import-agenthub-root` can read the repo from inside Docker.
+#
+# Usage:
+#   export TERARCHITECT_HOST_REPO=/absolute/path/to/your/checkout
+#   docker compose -f docker-compose.yml -f docker-compose.local-import.example.yml up -d backend
+#
+# Host CLI should still use TERARCHITECT_API_URL=http://127.0.0.1:5010 and
+# TERARCHITECT_AGENTHUB_URL=http://127.0.0.1:8088 — not the in-compose service URLs.
+
+services:
+  backend:
+    volumes:
+      - ${TERARCHITECT_HOST_REPO:?set TERARCHITECT_HOST_REPO to an absolute host repo path}:/host-repo:ro
+    environment:
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: "safe.directory"
+      GIT_CONFIG_VALUE_0: "/host-repo"

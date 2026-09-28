@@ -82,10 +82,24 @@ docker compose build agent coordinator
 docker compose up -d coordinator
 ```
 
-Compose defaults:
-- `TERARCHITECT_API_URL=http://backend:5010`
-- `AGENTHUB_URL=http://agenthub:8080` (inside the Compose network only — do **not** point this at `127.0.0.1` in `.env` or backend/coordinator containers will talk to themselves)
-- Host CLI / local shipper: `TERARCHITECT_AGENTHUB_URL=http://127.0.0.1:8088` (Compose publishes AgentHub as `8088:8080`)
+Compose defaults (fixed in `docker-compose.yml`, not overridden from `.env`):
+- Coordinator/backend use **`TERARCHITECT_API_URL=http://backend:5010`** and **`AGENTHUB_URL=http://agenthub:8080`** on the internal network.
+
+Host operator shell (for `ta`, local shipper, `ta ticket run --run-local`):
+- **`TERARCHITECT_API_URL=http://127.0.0.1:5010`** — API on the published host port.
+- **`TERARCHITECT_AGENTHUB_URL=http://127.0.0.1:8088`** — AgentHub (`8088:8080` publish).
+
+Do **not** put host `TERARCHITECT_API_URL` or `AGENTHUB_URL` in `.env` if Compose loads that file for coordinator/backend: older compose files forwarded `${TERARCHITECT_API_URL}` into the coordinator container and broke job claims (`127.0.0.1` inside the container is not the backend service). Current compose pins in-network URLs; keep host values in your shell profile or a host-only env file that Compose does not read.
+
+Optional **`docker-compose.local-import.example.yml`**: bind-mount a host git checkout into the backend container so `ta project import-agenthub-root` can read the repo from inside Docker. Set `TERARCHITECT_HOST_REPO` to the absolute host path, then:
+
+```bash
+export TERARCHITECT_HOST_REPO=/absolute/path/to/checkout
+docker compose -f docker-compose.yml -f docker-compose.local-import.example.yml up -d backend
+```
+
+Point the project’s `project_path` at `/host-repo` (container path). The override sets `safe.directory` for that mount so git commands succeed when the directory is owned by your host user.
+
 - `DOCKER_NETWORK=terarchitect_default`
 - `/var/run/docker.sock` mounted into the coordinator so it can start sibling worker containers
 
@@ -316,4 +330,6 @@ Spark is **headless** (no screen or desktop). Do **not** use the browser, open `
 
 Use `--output json` / `--json` when scripting. No UI required for verification on spark.
 
-**AgentHub URL on spark:** Host-side `ta ship … --sync` must reach AgentHub at `http://127.0.0.1:8088`. Set **`TERARCHITECT_AGENTHUB_URL=http://127.0.0.1:8088`** in operator `.env` (host CLI). Leave **`AGENTHUB_URL=http://agenthub:8080`** to Compose defaults for backend/coordinator/worker containers, or omit `AGENTHUB_URL` from `.env` so Compose injects the service URL. The CLI shipper prefers `TERARCHITECT_AGENTHUB_URL`, then remaps docker-internal `AGENTHUB_URL` hostnames when needed.
+**AgentHub URL on spark:** Host-side `ta ship … --sync` and `ta ticket run --run-local` must reach AgentHub at `http://127.0.0.1:8088`. Set **`TERARCHITECT_AGENTHUB_URL=http://127.0.0.1:8088`** in the host shell (not in a `.env` file that Compose passes into containers). The CLI shipper and local ticket runner prefer `TERARCHITECT_AGENTHUB_URL`, then fall back to `AGENTHUB_URL` with docker-hostname remapping when needed.
+
+**AgentHub-only ship frontier shape:** With a single accepted attempt, `ship_target=agenthub` sets `shipped_frontier` to that attempt’s **tip commit** (the worker’s published leaf). That commit’s git parent is usually the worker’s step commit on top of the old frontier, not the old frontier hash itself. That is expected; the next ticket bases from the new tip via `shipped_frontier` / AgentHub materialization.

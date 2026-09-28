@@ -51,7 +51,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
-        if path == "/health":
+        if path in ("/health", "/api/health"):
             self._send(200, {"ok": True})
 
         elif path == "/api/git/leaves":

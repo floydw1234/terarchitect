@@ -1,5 +1,36 @@
 import json
+import os
 from unittest.mock import MagicMock, patch
+
+
+def test_ship_doctor_agenthub_health_uses_api_health_path(client, project):
+    pid = project["id"]
+    seen_urls: list[str] = []
+
+    class _Resp:
+        def read(self):
+            return b'{"ok":true}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def _fake_urlopen(url, timeout=0):
+        seen_urls.append(url)
+        if url.endswith("/api/health"):
+            return _Resp()
+        raise OSError("404")
+
+    with patch.dict(os.environ, {"AGENTHUB_URL": "http://agenthub:8080"}, clear=False):
+        with patch("backend.api.routes.urllib_request.urlopen", side_effect=_fake_urlopen):
+            response = client.get(f"/api/projects/{pid}/ship/doctor")
+
+    assert response.status_code == 200
+    checks = {item["name"]: item for item in response.get_json()["checks"]}
+    assert checks["agenthub"]["status"] == "pass"
+    assert any(url.endswith("/api/health") for url in seen_urls)
 
 
 def test_ship_doctor_reports_partial_checks_and_next_commands(client, project):

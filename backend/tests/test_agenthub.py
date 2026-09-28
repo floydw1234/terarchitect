@@ -811,6 +811,32 @@ def test_prepare_local_job_refuses_shipped_frontier_fallback():
         )
 
 
+def test_prepare_local_job_prefers_terarchitect_agenthub_url():
+    from agenthub_preflight import prepare_local_job
+
+    ok = MagicMock()
+    ok.status_code = 200
+    ok.raise_for_status.return_value = None
+    ok.json = lambda: {"exists": True, "bundle_fetchable": True}
+
+    with patch("agenthub_preflight.requests.get", return_value=ok) as get_mock:
+        prepared = prepare_local_job(
+            {
+                "execution_mode": "local",
+                "git_mode": "swarm",
+                "base_leaf_id": "leaf_01HZX3BASE0123456789ABCDEFG",
+            },
+            env={
+                "TERARCHITECT_AGENTHUB_URL": "http://127.0.0.1:8088",
+                "AGENTHUB_URL": "http://agenthub:8080",
+                "AGENTHUB_API_KEY": "secret",
+            },
+        )
+
+    assert prepared["base_leaf_id"] == "leaf_01HZX3BASE0123456789ABCDEFG"
+    assert get_mock.call_args[0][0].startswith("http://127.0.0.1:8088/")
+
+
 def test_prepare_local_job_raises_when_agenthub_base_is_unfetchable():
     from agenthub_preflight import AgenthubPreflightError, prepare_local_job
 

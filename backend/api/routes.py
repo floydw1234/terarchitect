@@ -336,16 +336,30 @@ def _ship_doctor_report(project) -> dict:
             next_commands=[f"ta ship doctor {project_id}"],
         ))
     else:
-        try:
-            with urllib_request.urlopen(f"{agenthub_url}/health", timeout=5) as resp:
-                body = (resp.read() or b"").decode("utf-8", errors="ignore")
-            checks.append(_ship_doctor_check("agenthub", "pass", "AgentHub health check succeeded.", detail=body[:200] or None))
-        except (urllib_error.URLError, ValueError) as exc:
+        health_ok = False
+        health_detail = ""
+        health_error = None
+        for health_path in ("/api/health", "/health"):
+            try:
+                with urllib_request.urlopen(f"{agenthub_url}{health_path}", timeout=5) as resp:
+                    health_detail = (resp.read() or b"").decode("utf-8", errors="ignore")
+                health_ok = True
+                break
+            except (urllib_error.URLError, ValueError) as exc:
+                health_error = exc
+        if health_ok:
+            checks.append(_ship_doctor_check(
+                "agenthub",
+                "pass",
+                "AgentHub health check succeeded.",
+                detail=health_detail[:200] or None,
+            ))
+        else:
             checks.append(_ship_doctor_check(
                 "agenthub",
                 "warn",
                 "AgentHub health check could not be completed.",
-                detail=str(exc),
+                detail=str(health_error) if health_error else "unknown error",
                 next_commands=[f"ta ship doctor {project_id}"],
             ))
 

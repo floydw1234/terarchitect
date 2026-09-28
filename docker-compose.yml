@@ -16,7 +16,8 @@ services:
       dockerfile: Dockerfile.coordinator
     container_name: terarchitect-coordinator
     environment:
-      TERARCHITECT_API_URL: ${TERARCHITECT_API_URL:-http://backend:5010}
+      # Fixed in-compose URL — do not pass host TERARCHITECT_API_URL from .env (breaks job claims).
+      TERARCHITECT_API_URL: http://backend:5010
       PYTHONPATH: /app:/app/agent
       PROJECT_ID: ${PROJECT_ID:-}
       PROJECT_IDS: ${PROJECT_IDS:-}
@@ -34,7 +35,7 @@ services:
       MAX_CONCURRENT_AGENTS: ${MAX_CONCURRENT_AGENTS:-1}
       POLL_INTERVAL_SEC: ${POLL_INTERVAL_SEC:-10}
       DOCKER_NETWORK: ${DOCKER_NETWORK:-terarchitect_default}
-      AGENTHUB_URL: ${AGENTHUB_URL:-http://agenthub:8080}
+      AGENTHUB_URL: http://agenthub:8080
       AGENTHUB_API_KEY: ${AGENTHUB_API_KEY:-}
       AGENTHUB_AUTH_DISABLED: ${AGENTHUB_AUTH_DISABLED:-0}
       AGENTHUB_API_KEY_PATH: ${AGENTHUB_API_KEY_PATH:-}
@@ -98,7 +99,7 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
       MEMORY_SAVE_DIR: /tmp/terarchitect
-      AGENTHUB_URL: ${AGENTHUB_URL:-http://agenthub:8080}
+      AGENTHUB_URL: http://agenthub:8080
       AGENTHUB_API_KEY: ${AGENTHUB_API_KEY:-}
       AGENTHUB_AUTH_DISABLED: ${AGENTHUB_AUTH_DISABLED:-0}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}

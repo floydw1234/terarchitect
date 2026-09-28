@@ -253,13 +253,28 @@ def project_doctor_report(project: Project) -> dict:
         .first()
     )
     latest_attempt_payload = None
+    shipped_frontier = get_project_shipped_frontier(project)
     if latest_attempt:
-        stale, stale_reason = compare_base_to_accepted_frontier(
-            getattr(latest_attempt, "base_hash", None),
-            frontier_id,
-            subject_name="attempt",
-            base_field_name="attempt.base_hash",
-        )
+        attempt_status = (latest_attempt.status or "").strip().lower()
+        attempt_commit = normalize_frontier_id(getattr(latest_attempt, "agenthub_commit_hash", None))
+        if attempt_status in {"shipped", "composed", "release_pr_open"}:
+            stale, stale_reason = False, None
+        elif attempt_commit and shipped_frontier and attempt_commit == shipped_frontier:
+            stale, stale_reason = False, None
+        else:
+            stale, stale_reason = compare_base_to_shipped_frontier(
+                getattr(latest_attempt, "base_hash", None),
+                shipped_frontier,
+                subject_name="attempt",
+                base_field_name="attempt.base_hash",
+            )
+            if stale is None:
+                stale, stale_reason = compare_base_to_accepted_frontier(
+                    getattr(latest_attempt, "base_hash", None),
+                    frontier_id,
+                    subject_name="attempt",
+                    base_field_name="attempt.base_hash",
+                )
         ticket = Ticket.query.filter_by(id=latest_attempt.ticket_id).first()
         latest_attempt_payload = {
             "id": str(latest_attempt.id),
