@@ -215,11 +215,16 @@ def test_ticket_run_local_passes_explicit_base_and_agenthub_env(monkeypatch):
     args = SimpleNamespace(project_id="proj-1", ticket_id="ticket-1", output="human")
     monkeypatch.setenv("AGENTHUB_URL", "http://agenthub:8088")
     monkeypatch.setenv("AGENTHUB_API_KEY", "secret")
-    monkeypatch.setattr(ticket_cmd, "prepare_local_job", lambda job: {
-        **job,
-        "base_hash": "leaf_01HZX3BASE0123456789ABCDEFG",
-        "agenthub_root_hash": "leaf_01HZX3BASE0123456789ABCDEFG",
-    })
+    def fake_prepare_local_job(job, env=None):
+        assert env is not None
+        assert env.get("AGENTHUB_URL") == "http://agenthub:8088"
+        return {
+            **job,
+            "base_hash": "leaf_01HZX3BASE0123456789ABCDEFG",
+            "agenthub_root_hash": "leaf_01HZX3BASE0123456789ABCDEFG",
+        }
+
+    monkeypatch.setattr(ticket_cmd, "prepare_local_job", fake_prepare_local_job)
     monkeypatch.setattr(ticket_cmd.subprocess, "run", fake_run)
 
     with patch.object(ticket_cmd.sys, "exit", side_effect=SystemExit(0)):
