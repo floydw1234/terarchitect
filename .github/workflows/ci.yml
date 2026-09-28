@@ -5,6 +5,10 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   python-smoke:
     name: Python smoke/unit checks
@@ -26,16 +30,7 @@ jobs:
       - name: Run Python unit checks
         env:
           PYTHONPATH: backend:agent
-        run: |
-          # All in-process unit/API tests. Skip compose-backed integration
-          # suites and live HippoRAG/embedding tests (need docker/postgres/LLMs).
-          python -m pytest -q \
-            tests \
-            backend/tests \
-            agent/tests \
-            coordinator/tests \
-            --ignore=tests/integration \
-            --ignore=backend/tests/test_memory_hipporag.py
+        run: ./scripts/ci-python.sh
 
   agenthub-go:
     name: AgentHub Go tests

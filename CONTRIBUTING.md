@@ -27,8 +27,13 @@ docker compose up -d
 
 Useful local checks:
 
+Coding agents should read [AGENTS.md](AGENTS.md) for the full CI parity checklist before opening a PR.
+
 ```bash
-# Python focused smoke/unit checks
+# Full Python unit suite (same as CI python-smoke job)
+make ci-python
+
+# Python focused smoke/unit checks (subset)
 make pytest ARGS='\
   tests/test_cli_output.py \
   tests/test_cli_api_errors.py \

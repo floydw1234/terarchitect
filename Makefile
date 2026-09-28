@@ -1,4 +1,4 @@
-.PHONY: setup-venv python pip pytest test-smoke test-full test-swarm test-real test-swarm-docker test-clean help
+.PHONY: setup-venv python pip pytest ci-python test-smoke test-full test-swarm test-real test-swarm-docker test-clean help
 
 COMPOSE      = docker compose -f docker-compose.yml -f docker-compose.test.yml --project-name terarchitect-test
 COMPOSE_SWARM = $(COMPOSE) --profile swarm
@@ -23,6 +23,10 @@ pip: setup-venv
 ## Run pytest from Terarchitect's repo-local venv: make pytest ARGS='backend/tests/test_unit.py -q'
 pytest: setup-venv
 	$(PYTEST) $(ARGS)
+
+## Run the same Python unit checks as CI (.github/workflows/ci.yml python-smoke job)
+ci-python: setup-venv
+	./scripts/ci-python.sh
 
 # ---------------------------------------------------------------------------
 # Test targets
