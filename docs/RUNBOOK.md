@@ -14,7 +14,7 @@ This runbook describes how to run the Terarchitect app, coordinator, and agent i
 
 **Execution mode (per project):** In the project’s execution settings in the UI you can choose **Docker** (default and normal GitHub-first path: coordinator runs agent in a container, materializes the workspace from AgentHub at runtime, no host repo mount) or **Local** (legacy/debug path: coordinator runs the agent on the host at a configured project path).
 
-## GitHub-first onboarding + AgentHub DAG runtime
+## Onboarding (GitHub or local import) + AgentHub DAG runtime
 
 Treat the AgentHub DAG as the runtime source of truth.
 
@@ -28,7 +28,8 @@ Canonical lifecycle:
 6. The worker uses `REPO_URL`, `AGENTHUB_URL`, and `BASE_LEAF_ID`/`BASE_HASH` to materialize the requested base leaf into the workspace.
 7. The worker runs Director + worker backend, then publishes a child leaf/attempt to AgentHub.
 8. Terarchitect stores that result as a `TicketAttempt`.
-9. Candidate validation does not change the frontier by itself. Only the winner that is explicitly accepted/integrated advances the project's accepted frontier, and future tickets should base from that frontier.
+9. Candidate validation does not change the frontier by itself. Only the winner that is explicitly accepted/integrated advances the project's accepted frontier.
+10. **Base selection for dispatch:** new jobs base on **`shipped_frontier`**, or on **one accepted-unshipped parent ticket's attempt base** when the ticket depends on that parent.
 
 Operational rule: a host repo path is **not** the runtime source of truth for normal GitHub-first execution. Local paths exist only for legacy import, local-mode debugging, or recovery workflows.
 
@@ -144,7 +145,7 @@ See comments in `coordinator/terarchitect-coordinator.service` for details.
 
 - **TERARCHITECT_API_URL** — App base URL. Compose coordinator default: `http://backend:5010`. Host coordinator on the same machine as the app: use `http://host.docker.internal:5010` so the coordinator passes a container-reachable URL into each worker (on Linux the coordinator adds `--add-host=host.docker.internal:host-gateway` when the URL contains `host.docker.internal`).
 - **PROJECT_ID** or **PROJECT_IDS** — Optional. Comma-separated UUIDs to restrict which projects this coordinator serves. If unset, the coordinator fetches all project IDs from `GET /api/worker/projects` at startup (or claims from any project if the fetch fails).
-- **GITHUB_TOKEN** — Passed to the container for GitHub clone access and for Ship Room release/export PR creation when using GitHub as the export boundary.
+- **GITHUB_TOKEN** — Only needed for GitHub import/clone or when `ship_target=github` (release/export PR path). Not required for AgentHub-default shipping.
 - **AGENT_IMAGE** — Default `terarchitect-agent`. Override if you use a different tag.
 - **MAX_CONCURRENT_AGENTS** — Default 1. Global worker cap across all tickets and all same-ticket competing attempts. Same-ticket fan-out may consume multiple slots inside this cap; unrelated graph-conflicting tickets still remain blocked.
 - **POLL_INTERVAL_SEC** — Default 10.
@@ -291,19 +292,20 @@ General execution drift back to local-path workflow:
 
 ## Operator flow
 
-Terarchitect can be operated by humans or by agents. Humans drive the workflow through the UI or CLI; agents and coordinators drive it through the CLI or API.
+**Default:** agents (or automation) run the promotion loop via CLI/API. Humans set direction (projects, tickets, protected areas — see [`plans/ROADMAP.md`](../plans/ROADMAP.md)) and may override or revert any step until full autonomy lands.
 
-Keep operators on one path for swarm projects:
+Agent-run spine (optional human override at each step):
 
-1. agent completes work
-2. human accepts the `TicketAttempt`
-3. review a stable promotion candidate
-4. create and inspect the `ShipRun`
-5. ship/merge at the final boundary
+1. Agent completes work → validated `TicketAttempt`(s).
+2. Evaluate / choose winner → `ta ticket choose-winner …`
+3. Accept / integrate winner → `ta ticket accept-winner …`
+4. Create promotion candidate → `ta ship create-candidate …`
+5. Compose and inspect `ShipRun` → `ta ship compose-candidate …`, `ta ship run …`
+6. Ship (AgentHub default) → `ta ship ship-run …` or `ta ship ship-candidate …`
 
-Agents and coordinators are the primary users of the system. The UI remains a review/ship boundary for humans, and the long-term CLI/API contract is candidate review plus `ShipRun` execution.
+One command for the full decomposed path: **`ta ship operator-loop <project_id> <ticket_id> <attempt_id>`**.
 
-The operator path is `ta ship candidates`, `ta ship candidate`, `ta ship compose-candidate`, `ta ship run`, `ta ship ship-run`, and `ta ship ship-candidate`.
+Other ship CLI: `ta ship candidates`, `ta ship candidate`, `ta ship compose-candidate`, `ta ship compose-run`, `ta ship run`, `ta ship ship-run`, `ta ship ship-candidate`, `ta ship feedback`. Project ship mode: **`ta project set-ship-target <project_id> agenthub|github`**.
 
 ---
 
@@ -317,16 +319,25 @@ Spark is **headless** (no screen or desktop). Do **not** use the browser, open `
 
 **MVP spine to verify (CLI-first):**
 
-1. After worker attempts complete: `ta ticket choose-winner <project_id> <ticket_id> <attempt_id>`
-2. Integrate the winner: `ta ticket accept-winner <project_id> <ticket_id> <attempt_id>`
+Preferred one command:
+
+```bash
+ta ship operator-loop <project_id> <ticket_id> <attempt_id>
+```
+
+Stepwise equivalent:
+
+1. After worker attempts complete: `ta ticket choose-winner …` then `ta ticket accept-winner …`
+2. `ta ship create-candidate <project_id> …` (when not folded into operator-loop)
 3. Ship Room — stepwise (no coordinator container required when using `--sync` / `compose-run`):
    - `ta ship candidates <project_id>`
    - `ta ship compose-candidate <project_id> <candidate_id> --sync` (queues then runs `python -m agent.shipper` locally)
    - Or, if a run is already queued: `ta ship compose-run <project_id> <run_id>`
    - `ta ship run <project_id> <run_id>` (inspect)
    - `ta ship ship-run <project_id> <run_id>` or `ta ship ship-candidate <project_id> <candidate_id>`
-4. Or one-shot from an accepted attempt: `ta ship happy-path <project_id> --ticket <ticket_id> --sync` (compose locally, then ship when ready)
-5. Confirm `shipped_frontier` advanced (API or `ta ship candidates --json`).
+4. Confirm `shipped_frontier` advanced (API or `ta ship candidates --json`).
+
+Legacy API shortcut `ta ship happy-path` still exists; prefer **`ta ship operator-loop`** for dogfood.
 
 Use `--output json` / `--json` when scripting. No UI required for verification on spark.
 

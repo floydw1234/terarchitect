@@ -6,10 +6,7 @@ This file is **explicitly theoretical** and **out of MVP scope**.
 
 Do not use it to guide current implementation.
 
-Use instead:
-
-1. `agenthub_mvp_plan.md`
-2. `agenthub_mvp_execution_checklist.md`
+Use instead: [`ROADMAP.md`](ROADMAP.md).
 
 ## The Idea
 

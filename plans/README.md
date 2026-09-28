@@ -1,86 +1,22 @@
 # Terarchitect Plans
 
-This folder now has one *authoritative* implementation path and several *reference/theoretical* notes.
+## Index
 
-## Canonical Reading Order for Codex
+| Document | Purpose |
+|----------|---------|
+| **[`ROADMAP.md`](ROADMAP.md)** | **Authoritative** for product direction, current spine on `main`, gaps, out-of-scope, and PR status log. |
+| **[`week-board.md`](week-board.md)** | **Only execution tracker** — weekday cloud-agent slots. |
+| **[`../docs/RUNBOOK.md`](../docs/RUNBOOK.md)** | **Authoritative ops** — deploy, coordinator, CLI dogfood on spark. |
 
-Read these first, in order:
+### Reference (not execution checklists)
 
-1. `agenthub_mvp_plan.md` — **authoritative product scope** for the working AgentHub-native MVP.
-2. `agenthub_mvp_execution_checklist.md` — **authoritative implementation order** with exact files, endpoints, tests, and verification commands.
+- [`UI_plan.md`](UI_plan.md) — MVP UI surfaces and rules.
+- [`ticket_redefinition.md`](ticket_redefinition.md) — Intent-object framing.
+- [`no_main_idea.md`](no_main_idea.md) — Composite/no-main exploration (out of scope).
+- [`outreach.md`](outreach.md) — Design-partner outreach log.
+- [`archive/`](archive/) — Superseded MVP/masterplan/conversion notes (pre–#41 GitHub release-PR default).
 
-If a reference document conflicts with either of the two files above, the MVP docs win.
+### Also see
 
-## Plan Status Map
-
-### Authoritative
-
-- `agenthub_mvp_plan.md`
-  - The actual target scope.
-  - Defines what *is* and *is not* part of the MVP.
-- `agenthub_mvp_execution_checklist.md`
-  - The actual execution sequence.
-  - Use this when implementing.
-
-### Reference / Product framing
-
-- `MASTERPLAN.md`
-  - High-level product thesis and simplified product framing.
-  - Not an execution checklist.
-- `UI_plan.md`
-  - UI framing for the MVP surfaces and near-future UI direction.
-  - Reference only unless explicitly linked from the MVP checklist.
-- `ticket_redefinition.md`
-  - Conceptual note on tickets becoming intent objects over time.
-  - Not required for MVP implementation.
-
-### Theoretical / Archived
-
-- `AGENTHUB-CONVERSION.md`
-  - Strategic theory note describing the AgentHub-native shift.
-  - Useful for understanding the thesis, but not the source of truth for execution.
-- `agent_hub_conversion_plan.md`
-  - Archived oversized migration roadmap.
-  - Treat as historical/theoretical context only.
-- `archive/dag_native_promotion_checklist.md`
-  - DAG-native promotion / ShipRun shipping is implemented.
-  - Historical checklist only; do not use as a live implementation guide.
-- `no_main_idea.md`
-  - Explicit future exploration for lab/no-main ideas.
-  - Out of MVP scope.
-
-## Working Rule
-
-For implementation work, stay on this spine:
-
-`Ticket -> TicketAttempt -> accepted attempt -> ShipRun -> Ship Room -> one release PR -> shipped_frontier`
-
-Do not expand scope into Composite Workspace, no-main runtime, heavy verification systems, graph side quests, or multi-repo architecture unless the authoritative MVP docs are updated first.
-
-## Operator Path
-
-Terarchitect can be operated by humans or by agents. Humans drive the same workflow through the UI or CLI; agents and coordinators drive it through the CLI or API.
-
-Use one operator path for swarm projects:
-
-1. agent completes work and publishes a `TicketAttempt`
-2. human accepts the attempt
-3. review or create a promotion candidate
-4. inspect the resulting `ShipRun`
-5. ship/merge at the final promotion boundary
-
-Agents and coordinators are the primary users of this system. The UI and human actions remain review/ship boundaries, and the CLI should mirror the candidate/`ShipRun` API: `ta ship candidates`, `ta ship candidate`, `ta ship compose-candidate`, `ta ship run`, `ta ship ship-run`, `ta ship ship-candidate`, and `ta ship feedback`.
-
-Ticket-level PR review is not part of swarm mode. The review and ship boundary lives at the promotion-candidate/`ShipRun` level.
-
-On the authorized headless dogfood host (**spark**, checkout `/home/william/Documents/codingProj/terarchitect`), verify this spine with `ta` + APIs only — see `../docs/RUNBOOK.md` → Headless CLI dogfood.
-
-## Related Operational Docs
-
-- `../docs/PHASE1_WORKER_API.md` — worker/coordinator contract
-- `../docs/RUNBOOK.md` — operational runbook
-
-## Operator Files
-
-- `week-board.md` — weekday cloud-agent slot board
-- `outreach.md` — design-partner outreach log
+- [`../docs/PHASE1_WORKER_API.md`](../docs/PHASE1_WORKER_API.md) — Worker/coordinator API.
+- [`../AGENTS.md`](../AGENTS.md) — CI parity for coding agents.

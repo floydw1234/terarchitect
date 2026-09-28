@@ -8,9 +8,9 @@ Terarchitect is an AI-native SDLC orchestrator for coding agents:
 
 - import a GitHub repo into an AgentHub DAG
 - run isolated agent attempts against tickets
-- inspect and accept attempts at a human boundary
+- inspect attempts; choose/accept/ship via CLI (agents run the loop; full autonomy is roadmap direction)
 - compose accepted work through Ship Room
-- export verified shipped work back to GitHub
+- ship to AgentHub by default; export to GitHub when `ship_target=github`
 
 This is alpha software. The first public audience is agent-tool builders, devtool hackers, and small teams experimenting with coding agents — not unattended production automation.
 
@@ -38,7 +38,7 @@ Use a **fresh sanitized public root** unless the existing private history is del
 
 Description:
 
-> AI-native SDLC orchestrator for coding agents: tickets, AgentHub DAG attempts, human review, Ship Room, and GitHub export.
+> AI-native SDLC orchestrator for coding agents: tickets, AgentHub DAG attempts, Ship Room, AgentHub-default ship, optional GitHub export.
 
 Topics:
 
@@ -63,7 +63,7 @@ Topics:
 - AgentHub-backed DAG runtime for code attempts and project frontiers.
 - Ticket execution through coordinator-managed agent containers.
 - Worker support for Codex, OpenCode, and Claude Code modes.
-- Human acceptance boundary for attempts.
+- Choose/accept/ship CLI spine (`ta ship operator-loop` and decomposed commands).
 - Ship Room flow for promotion candidate review and release composition.
 - GitHub-first import/export path.
 - React operator UI, Flask API, Postgres, and Docker Compose deployment.

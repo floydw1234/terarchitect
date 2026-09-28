@@ -6,7 +6,7 @@
 
 The work described here (DAG-native promotion, ShipRun-based shipping, wave deprecation) is implemented. This file is kept only as historical context.
 
-If this file conflicts with `agenthub_mvp_plan.md` or `agenthub_mvp_execution_checklist.md`, those documents win.
+If this file conflicts with [`ROADMAP.md`](../ROADMAP.md), ROADMAP wins.
 
 ---
 

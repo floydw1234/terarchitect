@@ -4,10 +4,7 @@
 
 This is a **reference concept note**, not required to execute the MVP.
 
-Use the MVP docs first:
-
-1. `agenthub_mvp_plan.md`
-2. `agenthub_mvp_execution_checklist.md`
+Use [`ROADMAP.md`](ROADMAP.md) for current direction and spine.
 
 ## Core Idea
 

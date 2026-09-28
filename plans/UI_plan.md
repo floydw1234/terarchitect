@@ -4,8 +4,7 @@
 
 This is a **reference UI note**.
 
-For implementation order, use `agenthub_mvp_execution_checklist.md`.
-For product scope, use `agenthub_mvp_plan.md`.
+For direction, spine, and gaps, use [`ROADMAP.md`](ROADMAP.md).
 
 ## MVP UI Goal
 
@@ -33,7 +32,7 @@ Purpose:
 - show commit hash and base hash
 - show summary
 - show test status/output
-- allow accept/reject decisions
+- show auto-accept result; allow manual override or revert
 - make it obvious that an accepted attempt is *not yet shipped*
 
 ### 3. Ship Room
@@ -44,7 +43,7 @@ Purpose:
 - show accepted counts
 - show current/latest `ShipRun`
 - show compose failures and ready-to-ship state
-- show release PR link when present
+- show release PR link when present (github ship target only)
 - expose compose, feedback, and ship actions
 
 ## UI Rules for MVP

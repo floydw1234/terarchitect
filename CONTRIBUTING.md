@@ -10,7 +10,7 @@ Good first contributions tend to be:
 - fresh-clone quickstart improvements
 - test coverage for Ship Room, AgentHub, coordinator, and CLI behavior
 - small UI affordances that make failures easier to understand
-- worker/runtime hardening that preserves the human review boundary
+- worker/runtime hardening that preserves inspectable attempts and revertible shipping
 
 Please keep changes focused. Terarchitect is an orchestration system; broad refactors are easy to start and annoying to safely finish.
 
@@ -70,9 +70,9 @@ A good PR includes:
 
 Terarchitect can run coding agents against real repositories. Please preserve these design principles:
 
-- agents produce inspectable attempts
-- humans accept or reject attempts
-- shipping is a separate promotion boundary
+- agents produce inspectable attempts; choose/accept/ship steps should stay explicit and scriptable today
+- **Direction (not yet implemented):** routine promotion runs agent-side with merge-on-green and easy revert; humans gate only **protected path globs** per project
+- shipping is a separate promotion boundary (`ShipRun`, `ship_target`)
 - secrets stay in environment variables or secret stores, never in committed config
 - worker logs should avoid printing token values
 
