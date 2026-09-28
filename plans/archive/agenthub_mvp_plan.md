@@ -1,3 +1,9 @@
+# Historical — superseded by ROADMAP.md on 2026-09-28
+
+Describes the pre-#41 GitHub release-PR default. Do not use for current planning.
+
+---
+
 # AgentHub-Native MVP Plan
 
 ## Purpose

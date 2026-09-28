@@ -28,7 +28,7 @@ The backend uses **only** these env vars. Director/Worker/OpenCode URLs and keys
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL (default: `postgresql://terarchitect:terarchitect@localhost:5433/terarchitect`, port 5433 to avoid conflict with other Postgres on 5432) |
-| `github_agent_token` / `GITHUB_TOKEN` / `GH_TOKEN` | GitHub PAT for UI actions, cloning private repos, and Ship Room release/export PRs. At least one required for GitHub-backed execution readiness. |
+| `github_agent_token` / `GITHUB_TOKEN` / `GH_TOKEN` | GitHub PAT for UI actions, cloning private repos, and Ship Room release/export PRs when `ship_target=github`. Required for GitHub import/clone or GitHub shipping; not required for AgentHub-default execution. |
 | `GIT_USER_NAME`, `GIT_USER_EMAIL` | Git identity for agent commits (optional). |
 | `TERARCHITECT_WORKER_API_KEY` | Optional. When set, worker API endpoints require Bearer token auth. |
 | `MEMORY_SAVE_DIR` | Directory for HippoRAG project memory (default: `/tmp/terarchitect`). |

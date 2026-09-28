@@ -1,3 +1,9 @@
+# Historical — superseded by ROADMAP.md on 2026-09-28
+
+Describes the pre-#41 GitHub release-PR default. Do not use for current planning.
+
+---
+
 # AgentHub MVP Execution Checklist
 
 **Objective:** implement the smallest credible AgentHub-native release path in Terarchitect without dragging the whole repo into another grand unified theory.

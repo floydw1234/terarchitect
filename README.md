@@ -2,16 +2,15 @@
 
 Terarchitect is an agent-first, CLI-first SDLC orchestrator: model your system as a graph, define intents, and let a **Director → Worker** agent pair publish implementation attempts to an AgentHub DAG.
 
-- **Dual-use: humans or agents.** Humans can operate the UI or CLI; agents and coordinators can drive the same loop via CLI or API.
-- **Primary users are agents and coordinators**: the system is built around automated execution and DAG-native promotion/shipping.
-- **UI and human actions stay at the review/ship boundary**: workers produce validated candidates, operators choose winners, and only accepted/integrated attempts become shippable through promotion-candidate review and `ShipRun` execution.
-- **Operator contract**: agent completes work, validation creates a candidate, a human may choose a winner, only explicit acceptance/integration advances the frontier, then operators review a stable promotion candidate, create a `ShipRun`, inspect it, and ship/merge at the final boundary.
+- **Humans set direction** (projects, tickets, protected areas). **Agents run the loop** — attempt, validate, choose, accept, compose, ship — and ship by default into **AgentHub** (`shipped_frontier` advances on the winning commit). **GitHub publishing is opt-in** per project (`ta project set-ship-target … github`).
+- **Today:** promotion steps are explicit **CLI/API commands** an agent or operator runs; full autonomous merge-on-green is **direction, not yet implemented** ([`plans/ROADMAP.md`](plans/ROADMAP.md)).
+- **Dual-use:** the same commands work from the UI, CLI (`ta`), or coordinator-driven automation.
 - **One container per job**: reproducible, isolated runs.
 - **Coordinator-friendly**: run the coordinator on the same machine as the app, or on a completely separate machine.
 
-If you’ve ever wanted architecture-aware agent swarms with a clear human shipping boundary, this is it.
+If you’ve ever wanted architecture-aware agent swarms with AgentHub-native shipping and optional GitHub export, this is it.
 
-> **Alpha status:** Terarchitect is working, dogfooded alpha software. The core loop — GitHub import, AgentHub DAG attempts, human acceptance, Ship Room composition, and GitHub export — is real, but APIs, deployment defaults, and UX details may change quickly.
+> **Alpha status:** Terarchitect is working, dogfooded alpha software. The core loop — import (GitHub or local), AgentHub DAG attempts, choose/accept, ShipRun composition, and **AgentHub-default ship** — is real. GitHub release PRs are opt-in. APIs, deployment defaults, and UX details may change quickly.
 
 <p align="center">
   <img src="pictures/project_view.png" alt="Terarchitect UI (project view)" width="960" />
@@ -148,11 +147,11 @@ Full reference: [`docs/workflow-definition.md`](docs/workflow-definition.md)
 | **Coordinator** | Claims jobs from the API and starts one agent container per job. | **Docker Compose** (`coordinator`) or **host process** |
 | **Agent image** | Director + Worker (OpenCode, Claude Code, or Codex). Materializes the selected AgentHub base leaf, implements the ticket, publishes an AgentHub attempt, exits. | **Docker container** started by the coordinator |
 
-High-level flow: **GitHub URL/ref import → AgentHub DAG project → accepted frontier selects `base_leaf_id` → UI enqueue → coordinator claims → agent container materializes the base leaf → AgentHub attempt created → validated candidate → operator-chosen winner → accepted/integrated `TicketAttempt` → promotion candidate review → `ShipRun` compose/ship → shipped frontier advance**.
+High-level flow: **import → AgentHub DAG project → base from `shipped_frontier` or accepted-unshipped parent → enqueue → coordinator claims → agent materializes base → AgentHub attempt → choose/accept winner → promotion candidate → `ShipRun` compose/ship → `shipped_frontier` advances** (AgentHub ship target by default).
 
-The UI is an operator surface, not the primary execution surface. Agents and coordinators do the work; humans review validated candidates, choose winners, integrate accepted work, and ship at the promotion boundary. The operator workflow is promotion-candidate review followed by `ShipRun` compose/ship.
+Agents and coordinators execute work; promotion is **`ta ship operator-loop`** or the decomposed ship/ticket commands ([`docs/RUNBOOK.md`](docs/RUNBOOK.md)). The UI mirrors the same APIs.
 
-Attempt inspection is already first-class: normal worker completions create `TicketAttempt` rows that can be listed, inspected, diffed, accepted, or rejected. Explicit competing attempts are a narrower opt-in rerun flow for one ticket from the same current frontier; they still materialize as ordinary `TicketAttempt`s rather than a separate review object. The real lifecycle is candidate validation -> winner choice -> accepted/integrated frontier advance -> promotion candidate -> `ShipRun`. See `docs/COMPETING_ATTEMPTS.md`.
+Attempt inspection is first-class. Explicit competing attempts rerun one ticket from the current frontier; a **lead agent or operator** chooses and accepts the winner ([`docs/COMPETING_ATTEMPTS.md`](docs/COMPETING_ATTEMPTS.md)).
 
 ---
 
@@ -194,7 +193,9 @@ PROJECT_ID=<your-project-uuid> \
 make python ARGS='-m coordinator'
 ```
 
-GitHub token (`GITHUB_TOKEN` / `GH_TOKEN` / `github_agent_token`) is **not** required for local/AgentHub execution. Set one only for GitHub-backed import/clone and Ship Room export PRs. Optional `TERARCHITECT_WORKER_API_KEY` protects worker API endpoints when the backend has the same key set.
+GitHub token (`GITHUB_TOKEN` / `GH_TOKEN` / `github_agent_token`) is **only needed for GitHub import/clone or `ship_target=github`**. Not required for AgentHub-default execution/shipping. Optional `TERARCHITECT_WORKER_API_KEY` protects worker API endpoints when the backend has the same key set.
+
+**Host shell URLs** (for `ta` on the same machine as Compose): `TERARCHITECT_API_URL=http://127.0.0.1:5010`, `TERARCHITECT_AGENTHUB_URL=http://127.0.0.1:8088`. See [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 
 Always use the repo-local `.venv` (`make python`, `make pip`, `make pytest`, or `.venv/bin/python`) for host-run Python. Do not install Terarchitect requirements into a shared/Hermes virtualenv.
 
@@ -248,11 +249,11 @@ Normal execution is **GitHub-first** and **DAG-first**:
    - publishes a child attempt/leaf back to AgentHub
    - exits
 7. Terarchitect records the attempt as a `TicketAttempt`.
-8. Validation makes each attempt a reviewable candidate. Operators may choose a winner and deliberately leave it unintegrated.
-9. Only explicit acceptance/integration advances the project's **accepted frontier**, which becomes the source of truth for later tickets and shipping.
-10. The Ship Room flow is: review a stable promotion candidate built from accepted/integrated attempts whose dependency closure is valid, create a `ShipRun` from that candidate set, then advance the shipped frontier when shipped.
+8. Validation makes each attempt a reviewable candidate; choose and accept steps integrate the winner into the accepted frontier.
+9. **Base selection:** dispatch uses **`shipped_frontier`**, or **one accepted-unshipped parent's attempt base** for dependent tickets.
+10. Ship Room: `create-candidate` → compose `ShipRun` → **ship** (default **`ship_target=agenthub`** moves `shipped_frontier` to the winning AgentHub commit; **`github`** opt-in opens a release PR path).
 
-If one ticket needs deliberate alternatives, explicit competing attempts rerun that same ticket from the current accepted frontier and create multiple sibling `TicketAttempt`s for later comparison. The product default is `3` attempts per ticket, with rerun overrides available when you want fewer or more. That does not change the promotion model: operators inspect the sibling candidates, choose one winner, optionally leave it unintegrated, and only unblock downstream work after explicit acceptance/integration. See `docs/COMPETING_ATTEMPTS.md`.
+Competing attempts: default `3` reruns per ticket; lead agent or operator chooses and accepts one winner before dependents unblock. See `docs/COMPETING_ATTEMPTS.md`.
 
 Local project paths still exist only as a **legacy import/debug path**:
 
@@ -262,7 +263,7 @@ Local project paths still exist only as a **legacy import/debug path**:
 
 For normal Docker/GitHub-first runs, the worker runtime source of truth is the **AgentHub DAG**, not a persistent local branch checkout.
 
-Ticket-level PR review is not part of the swarm-mode MVP path. The human review point is attempt acceptance, and the shipping object is a candidate-backed `ShipRun`.
+Ticket-level PR review is not part of swarm mode. The shipping object is a candidate-backed `ShipRun`. Protected-path human gates are **direction only** ([`plans/ROADMAP.md`](plans/ROADMAP.md)).
 
 No mixing with your project’s Dockerfile. The agent image is built once and reused.
 
@@ -291,14 +292,15 @@ No mixing with your project’s Dockerfile. The agent image is built once and re
 - `docs/PHASE1_WORKER_API.md`: worker API contract and behavior
 - `docs/workflow-definition.md`: per-project custom worker workflows
 - `docs/COMPETING_ATTEMPTS.md`: inspectable attempts vs explicit competing reruns
-- `plans/`: product and architecture planning notes
+- `plans/ROADMAP.md`: direction, spine, gaps, and status log
+- `plans/`: week board and reference planning notes
 
 ---
 
 ## Highlights
 
 - **Ship Room**: review accepted/integrated AgentHub attempts as future promotion candidates, compose them into a `ShipRun`, and advance the shipped frontier.
-- **Promotion-boundary review**: validate candidates first, choose a winner, integrate it when ready, then inspect one `ShipRun` created from a stable candidate set before the final ship/merge step.
+- **Promotion boundary**: choose/accept, `create-candidate`, compose a `ShipRun`, ship (AgentHub default or GitHub opt-in).
 - **Cancelable runs**: worker-facing cancel flag + polling endpoint so you can stop a run cleanly.
 - **Per-project execution mode**: run jobs in Docker (clone in container) or Local (run at a configured host path).
 - **Env-only config**: each service (backend, coordinator) reads process environment or Compose interpolation; no shared settings store. See `docs/RUNBOOK.md` and `backend/README.md`.
@@ -336,9 +338,16 @@ This keeps source code, AgentHub DAG state, logs, and credentials isolated while
 
 ---
 
-## TODO / Roadmap
+## Roadmap
 
-- **Raise `MAX_CONCURRENT_AGENTS`**: DinD is now the default (each agent container runs its own isolated `dockerd` via `--privileged`), so `docker compose` collisions no longer occur. Increase `MAX_CONCURRENT_AGENTS` to run multiple tickets in parallel. Monitor host resource usage (RAM, CPU) and tune accordingly.
+Product direction, current spine, gaps, and PR history: **[`plans/ROADMAP.md`](plans/ROADMAP.md)**. Execution slots: [`plans/week-board.md`](plans/week-board.md).
+
+### Ship targets
+
+| `ship_target` | Behavior |
+|---------------|----------|
+| **`agenthub`** (default) | Ship advances `shipped_frontier` to the composed AgentHub commit; no GitHub PR. |
+| **`github`** | Opt-in via `ta project set-ship-target <project_id> github`; release PR + merge path; merged tips can be imported into AgentHub. |
 
 ---
 

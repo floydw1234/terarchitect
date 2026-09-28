@@ -150,7 +150,7 @@ python -m coordinator
 
 **Optional env**
 - **TERARCHITECT_WORKER_API_KEY** — Bearer token for worker API (claim, complete, fail).
-- **GITHUB_TOKEN** — Passed to the container for GitHub clone access and for Ship Room release/export PR creation when GitHub is used as the export boundary.
+- **GITHUB_TOKEN** — Only needed for GitHub import/clone or when `ship_target=github` (release/export PR path). Not required for AgentHub-default shipping.
 - **AGENT_IMAGE** — Docker image to run (default `terarchitect-agent`).
 - **MAX_CONCURRENT_AGENTS** — Global max containers at once (default 1). Same-ticket competing attempts may consume multiple slots inside this cap; unrelated graph-conflicting tickets still remain blocked.
 - **POLL_INTERVAL_SEC** — Seconds between claim attempts when no capacity or no job (default 10).

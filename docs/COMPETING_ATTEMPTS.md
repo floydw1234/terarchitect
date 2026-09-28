@@ -10,7 +10,7 @@ Terarchitect already has first-class **inspectable attempts**:
 
 Those routes expose ordinary `TicketAttempt` rows after agent work finishes.
 
-Explicit competing attempts are a narrower operator tool: rerun one ticket from the same current frontier, fan out several fresh jobs, validate each result as a candidate, choose one winner, and only unblock downstream work after one winner is explicitly accepted into the frontier.
+Explicit competing attempts are a narrower tool: rerun one ticket from the same current frontier, fan out several fresh jobs, validate each result as a candidate; a **lead agent or operator** chooses one winner and accepts it before downstream work unblocks.
 
 ## Lifecycle
 
@@ -19,7 +19,7 @@ The intended lifecycle is:
 1. Dispatch `N` attempts for one ticket from the same current accepted frontier.
 2. Each worker completion creates a normal `TicketAttempt`.
 3. Each attempt is validated as a **candidate**.
-4. Operators inspect the candidate set and choose a **winner**.
+4. Lead agent or operator inspects the candidate set and chooses a **winner**.
 5. The chosen winner may remain **unintegrated** for a while.
 6. Downstream dependencies stay blocked until one winner is explicitly **accepted/integrated** into `project.accepted_frontier_id`.
 7. Ship Room exports that accepted work through a promotion candidate and then a `ShipRun`.
@@ -75,7 +75,7 @@ When the rerun endpoint succeeds, Terarchitect:
 4. Enqueues one or more `AgentJob` rows for the same ticket.
 5. Allows each completion to land as a normal `TicketAttempt`.
 6. Exposes those sibling attempts through the standard attempt list/detail/files/diff surfaces.
-7. Waits for an operator to choose a winner and accept/integrate it before the frontier changes.
+7. Waits for a lead agent or operator to choose a winner and accept/integrate it before the frontier changes.
 
 This is intentionally not a new review object. Competing runs still land as ordinary `TicketAttempt` records. The extra structure is lifecycle meaning, not a parallel table.
 
