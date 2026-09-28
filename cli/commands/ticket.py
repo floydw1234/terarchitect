@@ -905,32 +905,42 @@ def _cmd_accept_attempt(args, api: API) -> None:
     _cmd_accept_winner(args, api)
 
 
-def _cmd_evaluate_attempts(args, api: API) -> None:
-    _apply_json_flag(args)
-    project = _get_project(api, args.project_id, output=args.output)
-    _get_ticket(api, args.project_id, args.ticket_id, output=args.output)
-    ticket_attempts = _get_ticket_attempts(api, args.project_id, args.ticket_id, output=args.output)
-    selected = _filter_attempts(ticket_attempts, list(args.attempt_ids or []), args.latest)
+def build_evaluate_attempts_payload(
+    api: API,
+    *,
+    project_id: str,
+    ticket_id: str,
+    attempt_ids: list[str] | None = None,
+    latest: int | None = None,
+    include_diff: bool = False,
+    include_files: bool = False,
+    max_diff_bytes: int | None = 65536,
+    output: str = "json",
+) -> dict:
+    project = _get_project(api, project_id, output=output)
+    _get_ticket(api, project_id, ticket_id, output=output)
+    ticket_attempts = _get_ticket_attempts(api, project_id, ticket_id, output=output)
+    selected = _filter_attempts(ticket_attempts, list(attempt_ids or []), latest)
     frontier = _get_shipped_frontier(project)
 
     evaluated: list[dict] = []
     for item in selected:
         attempt_id = item.get("id") or item.get("attempt_id")
-        detail = _get_project_attempt_detail(api, args.project_id, attempt_id, output=args.output)
+        detail = _get_project_attempt_detail(api, project_id, attempt_id, output=output)
         payload = _evaluate_attempt_payload(
             detail,
             sibling_attempts=ticket_attempts,
-            project_id=args.project_id,
-            ticket_id=args.ticket_id,
+            project_id=project_id,
+            ticket_id=ticket_id,
             frontier=frontier,
-            include_diff=bool(args.include_diff),
-            include_files=bool(args.include_files),
-            max_diff_bytes=getattr(args, "max_diff_bytes", None),
+            include_diff=include_diff,
+            include_files=include_files,
+            max_diff_bytes=max_diff_bytes,
         )
-        if args.include_files:
-            payload.update(_render_evaluation_files(api, args.project_id, attempt_id))
-        if args.include_diff:
-            payload.update(_render_evaluation_diff(api, args.project_id, attempt_id, max_diff_bytes=getattr(args, "max_diff_bytes", None)))
+        if include_files:
+            payload.update(_render_evaluation_files(api, project_id, attempt_id))
+        if include_diff:
+            payload.update(_render_evaluation_diff(api, project_id, attempt_id, max_diff_bytes=max_diff_bytes))
         evaluated.append(payload)
 
     evaluated.sort(
@@ -942,14 +952,14 @@ def _cmd_evaluate_attempts(args, api: API) -> None:
         reverse=True,
     )
     best = evaluated[0] if evaluated else None
-    requested_artifacts = bool(args.include_diff or args.include_files)
-    files_unavailable = bool(args.include_files and any(item.get("files_error") for item in evaluated))
-    diff_unavailable = bool(args.include_diff and any(item.get("diff_error") for item in evaluated))
+    requested_artifacts = bool(include_diff or include_files)
+    files_unavailable = bool(include_files and any(item.get("files_error") for item in evaluated))
+    diff_unavailable = bool(include_diff and any(item.get("diff_error") for item in evaluated))
     artifacts_unavailable = files_unavailable or diff_unavailable
     review_complete = requested_artifacts and not artifacts_unavailable
     next_commands = [
-        f"ta ticket attempts {args.project_id} {args.ticket_id}",
-        f"ta ticket evaluate-attempts {args.project_id} {args.ticket_id} --include-diff --include-files",
+        f"ta ticket attempts {project_id} {ticket_id}",
+        f"ta ticket evaluate-attempts {project_id} {ticket_id} --include-diff --include-files",
     ]
     recommendation = {
         "attempt_id": best.get("attempt_id") if best else None,
@@ -958,23 +968,43 @@ def _cmd_evaluate_attempts(args, api: API) -> None:
         "risks": list(best["recommendation"]["risks"]) if best else [],
         "review_complete": review_complete,
         "next_command": (
-            f"ta ticket choose-winner {args.project_id} {args.ticket_id} {best.get('attempt_id')}"
+            f"ta ticket choose-winner {project_id} {ticket_id} {best.get('attempt_id')}"
             if best and best["action_commands"].get("choose_winner") and not artifacts_unavailable
             else None
         ),
     }
     if recommendation["next_command"]:
         next_commands.append(recommendation["next_command"])
-    payload = {
-        "project_id": args.project_id,
-        "ticket_id": args.ticket_id,
+    return {
+        "project_id": project_id,
+        "ticket_id": ticket_id,
         "attempt_count": len(evaluated),
         "review_complete": review_complete,
         "frontier_id": frontier,
+        "shipped_frontier": frontier,
         "attempts": evaluated,
         "recommendation": recommendation,
         "next_commands": next_commands,
     }
+
+
+def _cmd_evaluate_attempts(args, api: API) -> None:
+    _apply_json_flag(args)
+    payload = build_evaluate_attempts_payload(
+        api,
+        project_id=args.project_id,
+        ticket_id=args.ticket_id,
+        attempt_ids=list(args.attempt_ids or []),
+        latest=args.latest,
+        include_diff=bool(args.include_diff),
+        include_files=bool(args.include_files),
+        max_diff_bytes=getattr(args, "max_diff_bytes", None),
+        output=args.output,
+    )
+    evaluated = payload["attempts"]
+    best = evaluated[0] if evaluated else None
+    review_complete = payload["review_complete"]
+    next_commands = payload["next_commands"]
     if args.output == "json":
         print_json(payload)
         return

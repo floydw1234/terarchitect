@@ -41,13 +41,15 @@ def test_remap_agenthub_url_for_host_leaves_localhost_alone(url):
 def test_run_local_shipper_invokes_agent_shipper_with_env(capsys):
     captured: dict = {}
 
-    def fake_run(cmd, env, cwd):
+    def fake_run(cmd, env, cwd, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = env
         captured["cwd"] = cwd
+        captured["kwargs"] = kwargs
 
         class Result:
             returncode = 0
+            stdout = b"[shipper] ok\n"
 
         return Result()
 
@@ -76,11 +78,12 @@ def test_run_local_shipper_invokes_agent_shipper_with_env(capsys):
 def test_run_local_shipper_leaves_localhost_agenthub_url(capsys):
     captured: dict = {}
 
-    def fake_run(cmd, env, cwd):
+    def fake_run(cmd, env, cwd, **kwargs):
         captured["env"] = env
 
         class Result:
             returncode = 0
+            stdout = b""
 
         return Result()
 

@@ -1,5 +1,7 @@
 """ship subcommand: inspect promotion candidates, compose ShipRuns, and ship."""
 
+import argparse
+
 from cli._api import API, APIError
 from cli._output import die, print_json, print_receipt, print_table, short_id
 from cli._ship_candidate import (
@@ -7,6 +9,7 @@ from cli._ship_candidate import (
     create_candidate_next_commands,
     find_candidate_id_for_attempt,
 )
+from cli._operator_loop import run_operator_ship_loop
 from cli._shipper import run_local_shipper
 
 
@@ -81,6 +84,37 @@ def register(subparsers) -> None:
                     help="Merge method (default: merge)")
     sr.add_argument("--json", action="store_true", help="Print JSON for this command")
 
+    ol = sub.add_parser(
+        "operator-loop",
+        help=(
+            "Run the decomposed operator ship spine for one validated attempt "
+            "(evaluate-attempts → choose-winner → accept-winner → create-candidate "
+            "→ compose-candidate --sync → ship-run)"
+        ),
+    )
+    ol.add_argument("project_id")
+    ol.add_argument("ticket_id")
+    ol.add_argument("attempt_id")
+    ol.add_argument("--method", default="merge", choices=["merge", "squash", "rebase"],
+                    help="Merge method when shipping (default: merge)")
+    ol.add_argument(
+        "--expect-frontier",
+        dest="expect_frontier",
+        default=None,
+        help="Fail unless project.shipped_frontier matches this hash before the loop starts",
+    )
+    ol.add_argument(
+        "--sync",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run the local shipper after compose-candidate (default: true)",
+    )
+    ol.add_argument("--include-diff", action="store_true",
+                    help="Include diff payloads in the evaluate-attempts step")
+    ol.add_argument("--include-files", action="store_true",
+                    help="Include changed-file metadata in the evaluate-attempts step")
+    ol.add_argument("--json", action="store_true", help="Print JSON for this command")
+
     sc = sub.add_parser("ship-candidate", help="Ship the ready ShipRun for a promotion candidate")
     sc.add_argument("project_id")
     sc.add_argument("candidate_id")
@@ -137,6 +171,8 @@ def _dispatch(args, api: API) -> None:
         _cmd_run(args, api)
     elif cmd == "ship-run":
         _cmd_ship_run(args, api)
+    elif cmd == "operator-loop":
+        _cmd_operator_loop(args, api)
     elif cmd == "ship-candidate":
         _cmd_ship_candidate(args, api)
     elif cmd == "doctor":
@@ -355,7 +391,7 @@ def _run_status_needs_local_compose(status: str | None) -> bool:
 
 def _sync_compose_ship_run(api: API, project_id: str, run_id: str, *, output: str = "human") -> dict:
     """Run agent.shipper locally and return the refreshed ShipRun detail."""
-    rc = run_local_shipper(api.base_url, run_id)
+    rc = run_local_shipper(api.base_url, run_id, capture_stdout=output == "json")
     try:
         run = api.get(f"/api/projects/{project_id}/ship/runs/{run_id}")
     except APIError as e:
@@ -525,7 +561,17 @@ def _cmd_timeline(args, api: API) -> None:
         print(f"{prefix}  {message}")
 
 
+def _project_shipped_frontier(api: API, project_id: str) -> str | None:
+    try:
+        project = api.get(f"/api/projects/{project_id}")
+    except APIError:
+        return None
+    value = (project.get("shipped_frontier") or "").strip()
+    return value or None
+
+
 def _cmd_ship_run(args, api: API) -> None:
+    shipped_frontier_before = _project_shipped_frontier(api, args.project_id)
     try:
         run = api.post(
             f"/api/projects/{args.project_id}/ship/runs/{args.run_id}/ship",
@@ -533,14 +579,77 @@ def _cmd_ship_run(args, api: API) -> None:
         )
     except APIError as e:
         die(e, output=args.output)
+    shipped_frontier_after = _project_shipped_frontier(api, args.project_id) or run.get("shipped_commit_hash")
+    payload = {
+        **run,
+        "project_id": args.project_id,
+        "ship_run_id": run.get("id") or args.run_id,
+        "shipped_frontier_before": shipped_frontier_before,
+        "shipped_frontier_after": shipped_frontier_after,
+        "shipped_frontier": shipped_frontier_after,
+        "next_commands": [
+            f"ta project show {args.project_id}",
+            f"ta ship run {args.project_id} {args.run_id}",
+            f"ta ship candidates {args.project_id}",
+        ],
+    }
     if _want_json(args):
-        print_json(run)
+        print_json(payload)
         return
     print(f"Shipped ShipRun {short_id(run['id'])}.")
-    if run.get("shipped_commit_hash"):
-        print(f"  New frontier: {run['shipped_commit_hash'][:12]}")
+    if shipped_frontier_before:
+        print(f"  Frontier before: {shipped_frontier_before[:12]}")
+    if shipped_frontier_after:
+        print(f"  Frontier after:  {shipped_frontier_after[:12]}")
     if run.get("release_pr_url"):
-        print(f"  PR:           {run['release_pr_url']}")
+        print(f"  PR:              {run['release_pr_url']}")
+    print("")
+    print("Next:")
+    for command in payload["next_commands"]:
+        print(f"  {command}")
+
+
+def _cmd_operator_loop(args, api: API) -> None:
+    try:
+        receipt = run_operator_ship_loop(
+            api,
+            project_id=args.project_id,
+            ticket_id=args.ticket_id,
+            attempt_id=args.attempt_id,
+            merge_method=args.method,
+            sync_compose=getattr(args, "sync", True),
+            expect_frontier=getattr(args, "expect_frontier", None),
+            include_diff=bool(getattr(args, "include_diff", False)),
+            include_files=bool(getattr(args, "include_files", False)),
+        )
+    except APIError as e:
+        die(e, output=args.output)
+    if _want_json(args):
+        print_json(receipt)
+        return
+    print_receipt(
+        "Operator ship loop complete",
+        fields=[
+            ("Ticket", short_id(args.ticket_id, 12)),
+            ("Attempt", short_id(args.attempt_id, 12)),
+            ("Candidate", short_id(receipt.get("candidate_id", ""), 12)),
+            ("ShipRun", short_id(receipt.get("ship_run_id", ""), 12)),
+            ("Status", receipt.get("status") or "unknown"),
+            (
+                "Shipped frontier (before)",
+                (receipt.get("shipped_frontier_before") or "unset")[:12]
+                if receipt.get("shipped_frontier_before")
+                else "unset",
+            ),
+            (
+                "Shipped frontier (after)",
+                (receipt.get("shipped_frontier_after") or "unset")[:12]
+                if receipt.get("shipped_frontier_after")
+                else "unset",
+            ),
+        ],
+        next_commands=receipt.get("next_commands") or [],
+    )
 
 
 def _cmd_ship_candidate(args, api: API) -> None:

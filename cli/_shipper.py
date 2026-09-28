@@ -85,7 +85,7 @@ def _runtime_pythonpath(existing: Optional[str] = None) -> str:
     return os.pathsep.join(ordered)
 
 
-def run_local_shipper(api_url: str, ship_run_id: str) -> int:
+def run_local_shipper(api_url: str, ship_run_id: str, *, capture_stdout: bool = False) -> int:
     """Run ``python -m agent.shipper`` once for a pre-queued ShipRun.
 
     Coordinator normally claims via ``/api/worker/ship-run/next`` and sets
@@ -114,5 +114,9 @@ def run_local_shipper(api_url: str, ship_run_id: str) -> int:
         [sys.executable, "-m", "agent.shipper"],
         env=full_env,
         cwd=str(repo_root),
+        stdout=subprocess.PIPE if capture_stdout else None,
+        stderr=None,
     )
+    if capture_stdout and result.stdout:
+        print(result.stdout.decode(errors="replace"), file=sys.stderr)
     return int(result.returncode)

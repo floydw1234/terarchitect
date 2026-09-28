@@ -14,6 +14,138 @@ def _ship_parser():
     return parser
 
 
+def test_ship_parser_registers_operator_loop_subcommand():
+    parser = _ship_parser()
+    args = parser.parse_args(
+        [
+            "ship",
+            "operator-loop",
+            "proj",
+            "ticket-1",
+            "attempt-1",
+            "--expect-frontier",
+            "a" * 40,
+            "--no-sync",
+        ]
+    )
+    assert args.ship_cmd == "operator-loop"
+    assert args.project_id == "proj"
+    assert args.ticket_id == "ticket-1"
+    assert args.attempt_id == "attempt-1"
+    assert args.expect_frontier == "a" * 40
+    assert args.sync is False
+
+
+def test_ship_run_json_includes_shipped_frontier_before_and_after(capsys):
+    frontier_before = "a" * 40
+    frontier_after = "b" * 40
+    posts: list[str] = []
+
+    class FakeAPI:
+        def get(self, path):
+            if path == "/api/projects/proj":
+                if len(posts) == 0:
+                    return {"id": "proj", "shipped_frontier": frontier_before}
+                return {"id": "proj", "shipped_frontier": frontier_after}
+            raise AssertionError(path)
+
+        def post(self, path, body=None):
+            posts.append(path)
+            assert path == "/api/projects/proj/ship/runs/run-1/ship"
+            return {
+                "id": "run-1",
+                "status": "shipped",
+                "shipped_commit_hash": frontier_after,
+            }
+
+    args = argparse.Namespace(
+        ship_cmd="ship-run",
+        project_id="proj",
+        run_id="run-1",
+        method="merge",
+        json=True,
+        output="json",
+    )
+    ship._dispatch(args, FakeAPI())
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["shipped_frontier_before"] == frontier_before
+    assert payload["shipped_frontier_after"] == frontier_after
+    assert payload["shipped_frontier"] == frontier_after
+    assert payload["next_commands"]
+
+
+def test_operator_loop_runs_decomposed_spine(capsys):
+    frontier_before = "a" * 40
+    frontier_after = "c" * 40
+    posts: list[tuple[str, dict | None]] = []
+    project_reads = {"count": 0}
+
+    class FakeAPI:
+        base_url = "http://localhost:5010"
+
+        def get(self, path):
+            if path == "/api/projects/proj":
+                project_reads["count"] += 1
+                if project_reads["count"] == 1:
+                    return {"id": "proj", "shipped_frontier": frontier_before}
+                return {"id": "proj", "shipped_frontier": frontier_after}
+            if path == "/api/projects/proj/tickets/ticket-1":
+                return {"id": "ticket-1", "depends_on_ticket_ids": []}
+            if path == "/api/projects/proj/tickets/ticket-1/attempts":
+                return [{"id": "attempt-1", "attempt_id": "attempt-1", "status": "validated", "validated": True}]
+            if path == "/api/projects/proj/attempts/attempt-1":
+                return {
+                    "id": "attempt-1",
+                    "ticket_id": "ticket-1",
+                    "status": "validated",
+                    "validated": True,
+                    "stale": False,
+                    "base_hash": frontier_before,
+                    "agenthub_commit_hash": "d" * 40,
+                }
+            if path == "/api/projects/proj/ship/candidates":
+                return []
+            raise AssertionError(path)
+
+        def post(self, path, body=None):
+            posts.append((path, body))
+            if path.endswith("/choose-winner"):
+                return {"status": "validated", "is_winner": True, "shipped_frontier": frontier_before}
+            if path.endswith("/accept"):
+                return {"status": "accepted", "shipped_frontier": frontier_before}
+            if path == "/api/projects/proj/ship/candidates":
+                return {"id": "cand-1", "status": "valid", "selected_attempt_ids": ["attempt-1"]}
+            if path.endswith("/compose"):
+                return {"id": "run-1", "status": "ready_to_ship", "promotion_candidate_id": "cand-1"}
+            if path.endswith("/ship"):
+                return {"id": "run-1", "status": "shipped", "shipped_commit_hash": frontier_after}
+            raise AssertionError(path)
+
+    with patch("cli.commands.ship.run_local_shipper", return_value=0):
+        args = argparse.Namespace(
+            ship_cmd="operator-loop",
+            project_id="proj",
+            ticket_id="ticket-1",
+            attempt_id="attempt-1",
+            method="merge",
+            expect_frontier=None,
+            sync=False,
+            include_diff=False,
+            include_files=False,
+            json=True,
+            output="json",
+        )
+        ship._dispatch(args, FakeAPI())
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["shipped_frontier_before"] == frontier_before
+    assert payload["shipped_frontier_after"] == frontier_after
+    assert payload["candidate_id"] == "cand-1"
+    assert payload["ship_run_id"] == "run-1"
+    assert "evaluate-attempts" in payload["sequence"]
+    assert payload["next_commands"]
+
+
 def test_ship_parser_registers_doctor_and_happy_path_subcommands():
     parser = _ship_parser()
 
@@ -48,6 +180,10 @@ def test_ship_run_cli_preserves_api_error_context():
     )
 
     class FailingAPI:
+        def get(self, path):
+            assert path == "/api/projects/proj"
+            return {"id": "proj", "shipped_frontier": "a" * 40}
+
         def post(self, path, body=None):
             raise error
 
@@ -130,7 +266,10 @@ def test_compose_candidate_sync_runs_local_shipper(capsys):
                 "promotion_candidate_id": "cand-1",
             }
 
-    with patch("cli.commands.ship.run_local_shipper", side_effect=lambda url, run_id: calls.append(("shipper", run_id)) or 0):
+    with patch(
+        "cli.commands.ship.run_local_shipper",
+        side_effect=lambda url, run_id, **kwargs: calls.append(("shipper", run_id)) or 0,
+    ):
         args = argparse.Namespace(
             ship_cmd="compose-candidate",
             project_id="proj",
@@ -168,7 +307,7 @@ def test_compose_run_sync_for_queued_run(capsys):
         )
         ship._dispatch(args, FakeAPI())
 
-    shipper.assert_called_once_with("http://localhost:5010", "run-1")
+    shipper.assert_called_once_with("http://localhost:5010", "run-1", capture_stdout=False)
     assert "ready_to_ship" in capsys.readouterr().out
 
 
@@ -211,7 +350,7 @@ def test_happy_path_sync_compose_then_retries_ship(capsys):
         )
         ship._dispatch(args, FakeAPI())
 
-    shipper.assert_called_once_with("http://localhost:5010", "run-1")
+    shipper.assert_called_once_with("http://localhost:5010", "run-1", capture_stdout=False)
     assert len(posts) == 2
     stdout = capsys.readouterr().out
     assert "shipped" in stdout.lower()
