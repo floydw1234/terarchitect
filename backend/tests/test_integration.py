@@ -912,7 +912,7 @@ def test_ship_updates_frontier_after_merge(client, project, accepted_ticket_and_
     from models.db import db, ShipRun, Project
     update_resp = client.put(
         f"/api/projects/{pid}",
-        json={"github_url": "https://github.com/owner/repo"},
+        json={"github_url": "https://github.com/owner/repo", "ship_target": "github"},
     )
     assert update_resp.status_code == 200
     with client.application.app_context():
@@ -1062,7 +1062,10 @@ def test_single_dependency_ticket_dispatches_from_parent_attempt_base(client, pr
     pid = project["id"]
     frontier = "f" * 40
     parent_hash = "a" * 40
-    client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
+    client.put(
+        f"/api/projects/{pid}",
+        json={"github_url": "https://github.com/owner/repo", "ship_target": "github"},
+    )
 
     with client.application.app_context():
         from models.db import Project
@@ -1120,7 +1123,10 @@ def test_shipped_dependency_ticket_dispatches_from_current_frontier(client, proj
     pid = project["id"]
     frontier = "f" * 40
     shipped_hash = "s" * 40
-    client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
+    client.put(
+        f"/api/projects/{pid}",
+        json={"github_url": "https://github.com/owner/repo", "ship_target": "github"},
+    )
 
     with client.application.app_context():
         proj = db.session.get(Project, pid)
@@ -1521,7 +1527,10 @@ def test_multi_dependency_ticket_stays_queued_in_mvp(client, project):
     from api.services.job_service import mvp_dependency_base_context
 
     pid = project["id"]
-    client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
+    client.put(
+        f"/api/projects/{pid}",
+        json={"github_url": "https://github.com/owner/repo", "ship_target": "github"},
+    )
 
     with client.application.app_context():
         parent_a = Ticket(project_id=pid, column_id="done", title="Parent A", intent_status="active")
@@ -1589,7 +1598,10 @@ def test_ship_advances_frontier_then_new_job_uses_new_frontier(client, project, 
     old_frontier = project["accepted_frontier_id"]
 
     # Set up project for shipping: github_url is required for the shipping flow
-    client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
+    client.put(
+        f"/api/projects/{pid}",
+        json={"github_url": "https://github.com/owner/repo", "ship_target": "github"},
+    )
 
     # Set initial shipped_frontier to the old value
     with client.application.app_context():
@@ -1671,7 +1683,10 @@ def test_ship_advances_frontier_queued_ticket_rebases_to_new_frontier(client, pr
         db.session.add(existing_ticket)
         db.session.commit()
 
-    client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
+    client.put(
+        f"/api/projects/{pid}",
+        json={"github_url": "https://github.com/owner/repo", "ship_target": "github"},
+    )
     with client.application.app_context():
         proj = db.session.get(Project, pid)
         proj.shipped_frontier = old_frontier
@@ -1733,7 +1748,10 @@ def test_ship_advances_frontier_in_progress_ticket_base_preserved(client, projec
         db.session.add(AgentJob(project_id=pid, ticket_id=existing_ticket.id, status="pending"))
         db.session.commit()
 
-    client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
+    client.put(
+        f"/api/projects/{pid}",
+        json={"github_url": "https://github.com/owner/repo", "ship_target": "github"},
+    )
     with client.application.app_context():
         proj = db.session.get(Project, pid)
         proj.shipped_frontier = old_frontier

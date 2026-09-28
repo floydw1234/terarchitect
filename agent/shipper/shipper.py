@@ -236,7 +236,15 @@ def _clone_repo(github_url: str, repo_path: str) -> None:
         raise ComposeError(f"Failed to clone ephemeral repo from GitHub: {detail[:1000]}")
 
 
-def _prepare_runtime_repo(project_path: str, github_url: str, tmp_dir: str) -> tuple[str, dict]:
+def _prepare_runtime_repo(
+    project_path: str,
+    github_url: str,
+    tmp_dir: str,
+    *,
+    allow_ephemeral_agenthub: bool = False,
+    shipped_frontier: str | None = None,
+    seed_commits: list[str] | None = None,
+) -> tuple[str, dict]:
     requested_project_path = project_path or None
     if project_path and os.path.isdir(project_path):
         return project_path, {
@@ -244,6 +252,21 @@ def _prepare_runtime_repo(project_path: str, github_url: str, tmp_dir: str) -> t
             "repo_source": "project_path",
             "cache_source": "project_path",
             "ephemeral_repo": False,
+        }
+    if allow_ephemeral_agenthub and shipped_frontier:
+        repo_path = os.path.join(tmp_dir, "repo")
+        os.makedirs(repo_path, exist_ok=True)
+        init_r = subprocess.run(["git", "init", "-b", "main"], cwd=repo_path, capture_output=True, text=True)
+        if init_r.returncode != 0:
+            raise ComposeError(f"Could not init ephemeral AgentHub repo: {(init_r.stderr or init_r.stdout)[:300]}")
+        for commit in [shipped_frontier, *(seed_commits or [])]:
+            if commit and not _ensure_commit(commit, repo_path, tmp_dir):
+                raise ComposeError(f"Could not fetch commit {commit[:12]} from AgentHub for composition.")
+        return repo_path, {
+            "requested_project_path": requested_project_path,
+            "repo_source": "agenthub_ephemeral",
+            "cache_source": "agenthub",
+            "ephemeral_repo": True,
         }
     if not github_url:
         missing = requested_project_path or ""
@@ -270,11 +293,74 @@ class TestFailureError(Exception):
     pass
 
 
+def _push_repo_bundle_to_agenthub(project_path: str) -> None:
+    """Upload all refs in project_path to AgentHub (best-effort; required for composed merge commits)."""
+    url = _ah_url()
+    if not url:
+        raise ComposeError("AGENTHUB_URL is required to publish composed commits to AgentHub.")
+    api_key = _env("AGENTHUB_API_KEY")
+    if not api_key:
+        raise ComposeError("AGENTHUB_API_KEY is required to publish composed commits to AgentHub.")
+    bundle_path = os.path.join(project_path, ".terarchitect-ship.bundle")
+    r = subprocess.run(
+        ["git", "bundle", "create", bundle_path, "--all"],
+        cwd=project_path,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if r.returncode != 0:
+        detail = (r.stderr or r.stdout or "").strip()[:400]
+        raise ComposeError(f"Could not create git bundle for AgentHub push: {detail}")
+    try:
+        with open(bundle_path, "rb") as handle:
+            resp = requests.post(
+                f"{url}/api/git/push",
+                headers={
+                    **_ah_headers(),
+                    "Content-Type": "application/octet-stream",
+                },
+                data=handle,
+                timeout=120,
+            )
+        if not resp.ok:
+            raise ComposeError(
+                f"AgentHub bundle push failed ({resp.status_code}): {(resp.text or '')[:300]}"
+            )
+    finally:
+        try:
+            os.unlink(bundle_path)
+        except OSError:
+            pass
+
+
+def _agenthub_receipt_exists(commit_hash: str) -> bool:
+    url = _ah_url()
+    if not url or not commit_hash:
+        return False
+    try:
+        resp = requests.get(
+            f"{url}/api/git/receipts/{commit_hash}",
+            headers=_ah_headers(),
+            timeout=15,
+        )
+        if resp.status_code == 404:
+            return False
+        if not resp.ok:
+            return False
+        payload = resp.json()
+        return bool(payload.get("exists") and payload.get("bundle_fetchable", True))
+    except Exception:
+        return False
+
+
 def _compose_release_branch(
     commit_hashes: list[str],
     project_path: str,
     run_short_id: str,
     tmp_dir: str,
+    *,
+    base_ref: str | None = None,
 ) -> str:
     """Compose accepted leaves onto a release branch starting from current main.
 
@@ -288,20 +374,24 @@ def _compose_release_branch(
         if not _ensure_commit(h, project_path, tmp_dir):
             print(f"[shipper] Warning: could not fetch {h[:12]} from AgentHub", file=sys.stderr)
 
-    # Start release branch from current main
-    _git(["fetch", "origin", "main"], cwd=project_path, check=False)
-    _git(["fetch", "origin", "master"], cwd=project_path, check=False)
+    if base_ref:
+        if not _ensure_commit(base_ref, project_path, tmp_dir):
+            raise ComposeError(f"Could not fetch shipped frontier {base_ref[:12]} from AgentHub.")
+        _git(["checkout", "-B", branch, base_ref], cwd=project_path)
+        print(f"[shipper] Release branch {branch!r} created from shipped frontier {base_ref[:12]}")
+        default_branch = "main"
+    else:
+        _git(["fetch", "origin", "main"], cwd=project_path, check=False)
+        _git(["fetch", "origin", "master"], cwd=project_path, check=False)
 
-    # Determine default branch
-    default_branch = "main"
-    r = subprocess.run(["git", "rev-parse", "origin/main"], cwd=project_path, capture_output=True)
-    if r.returncode != 0:
-        default_branch = "master"
+        default_branch = "main"
+        r = subprocess.run(["git", "rev-parse", "origin/main"], cwd=project_path, capture_output=True)
+        if r.returncode != 0:
+            default_branch = "master"
 
-    _git(["checkout", "-B", branch, f"origin/{default_branch}"], cwd=project_path)
-    print(f"[shipper] Release branch {branch!r} created from origin/{default_branch}")
+        _git(["checkout", "-B", branch, f"origin/{default_branch}"], cwd=project_path)
+        print(f"[shipper] Release branch {branch!r} created from origin/{default_branch}")
 
-    # Get base main hash (before merging)
     base_r = _git(["rev-parse", "HEAD"], cwd=project_path)
     base_main_hash = base_r.stdout.strip()
 
@@ -453,6 +543,9 @@ def run_once() -> bool:
     commit_hashes = data.get("commit_hashes") or []
     membership = data.get("membership") or {}
     project_path = (project.get("project_path") or "").strip()
+    ship_target = (project.get("ship_target") or "agenthub").strip().lower()
+    shipped_frontier = (project.get("shipped_frontier") or "").strip() or None
+    publish_github = ship_target == "github"
     slug = None
     github_url = (project.get("github_url") or "").strip()
     if github_url and "github.com" in github_url:
@@ -484,9 +577,9 @@ def run_once() -> bool:
         })
         return True
 
-    if not slug:
+    if publish_github and not slug:
         _api_post(f"/api/worker/ship-run/{run_id}/fail", {
-            "error": "Project has no parseable GitHub URL — cannot open release PR.",
+            "error": "ship_target=github but project has no parseable GitHub URL.",
             "compose_failed": True,
         })
         return True
@@ -495,7 +588,14 @@ def run_once() -> bool:
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         try:
-            runtime_repo_path, runtime_repo = _prepare_runtime_repo(project_path, github_url, tmp_dir)
+            runtime_repo_path, runtime_repo = _prepare_runtime_repo(
+                project_path,
+                github_url,
+                tmp_dir,
+                allow_ephemeral_agenthub=not publish_github,
+                shipped_frontier=shipped_frontier,
+                seed_commits=commit_hashes,
+            )
         except ComposeError as e:
             _api_post(f"/api/worker/ship-run/{run_id}/fail", {
                 "error": str(e),
@@ -522,10 +622,30 @@ def run_once() -> bool:
                 },
             ),
         )
+        branch = None
+        base_main_hash = shipped_frontier
+        composed_commit_hash = None
         try:
-            branch, base_main_hash = _compose_release_branch(
-                commit_hashes, runtime_repo_path, run_short_id, tmp_dir
-            )
+            if not publish_github and len(commit_hashes) == 1:
+                only_hash = commit_hashes[0]
+                if not _ensure_commit(only_hash, runtime_repo_path, tmp_dir):
+                    raise ComposeError(f"Could not fetch attempt commit {only_hash[:12]} from AgentHub.")
+                composed_commit_hash = only_hash
+                base_main_hash = shipped_frontier or only_hash
+                if not _agenthub_receipt_exists(composed_commit_hash):
+                    _push_repo_bundle_to_agenthub(runtime_repo_path)
+            else:
+                branch, base_main_hash = _compose_release_branch(
+                    commit_hashes,
+                    runtime_repo_path,
+                    run_short_id,
+                    tmp_dir,
+                    base_ref=shipped_frontier if not publish_github else None,
+                )
+                head_r = _git(["rev-parse", "HEAD"], cwd=runtime_repo_path, check=False)
+                composed_commit_hash = head_r.stdout.strip() if head_r.returncode == 0 else None
+                if not publish_github and composed_commit_hash:
+                    _push_repo_bundle_to_agenthub(runtime_repo_path)
         except ComposeError as e:
             print(f"[shipper] Compose conflict: {e}", file=sys.stderr)
             _post_to_channel(
@@ -575,55 +695,90 @@ def run_once() -> bool:
             })
             return True
 
-        # --- Get composed commit hash and changed files ---
-        head_r = _git(["rev-parse", "HEAD"], cwd=runtime_repo_path, check=False)
-        composed_commit_hash = head_r.stdout.strip() if head_r.returncode == 0 else None
+        if not composed_commit_hash:
+            head_r = _git(["rev-parse", "HEAD"], cwd=runtime_repo_path, check=False)
+            composed_commit_hash = head_r.stdout.strip() if head_r.returncode == 0 else None
 
         default_branch = "main"
         r_check = subprocess.run(["git", "rev-parse", "origin/main"], cwd=runtime_repo_path, capture_output=True)
         if r_check.returncode != 0:
             default_branch = "master"
-        changed_files = _get_changed_files(runtime_repo_path, default_branch)
+        if publish_github:
+            changed_files = _get_changed_files(runtime_repo_path, default_branch)
+        elif shipped_frontier and composed_commit_hash:
+            diff_r = _git(
+                ["diff", f"{shipped_frontier}...{composed_commit_hash}", "--name-only"],
+                cwd=runtime_repo_path,
+                check=False,
+            )
+            changed_files = [f for f in (diff_r.stdout or "").splitlines() if f.strip()] if diff_r.returncode == 0 else []
+        else:
+            changed_files = []
 
-        # --- Push release branch ---
-        push_r = _git(
-            ["push", "-u", "origin", branch, "--force-with-lease"],
-            cwd=runtime_repo_path, check=False,
-        )
-        if push_r.returncode != 0:
-            push_error = _redact_secrets(push_r.stderr or push_r.stdout or "")
-            print(f"[shipper] Push failed: {push_error[:300]}", file=sys.stderr)
-            _api_post(f"/api/worker/ship-run/{run_id}/fail", {
-                "error": f"Failed to push release branch {branch!r}: {push_error[:1000]}",
-                "compose_failed": True,
-                "runtime": runtime_repo,
-            })
-            return True
+        pr_url, pr_number = None, None
+        if publish_github:
+            push_r = _git(
+                ["push", "-u", "origin", branch, "--force-with-lease"],
+                cwd=runtime_repo_path, check=False,
+            )
+            if push_r.returncode != 0:
+                push_error = _redact_secrets(push_r.stderr or push_r.stdout or "")
+                print(f"[shipper] Push failed: {push_error[:300]}", file=sys.stderr)
+                _api_post(f"/api/worker/ship-run/{run_id}/fail", {
+                    "error": f"Failed to push release branch {branch!r}: {push_error[:1000]}",
+                    "compose_failed": True,
+                    "runtime": runtime_repo,
+                })
+                return True
 
-        # --- Open release PR ---
-        pr_url, pr_number = _open_release_pr(
-            runtime_repo_path, slug, branch,
-            commit_hashes, changed_files, test_status, test_output,
-        )
+            pr_url, pr_number = _open_release_pr(
+                runtime_repo_path, slug, branch,
+                commit_hashes, changed_files, test_status, test_output,
+            )
+            _post_to_channel(
+                ship_ch,
+                _event_content(
+                    "release_pr_opened",
+                    f"PR #{pr_number} opened for {branch}; tests={test_status}; files={len(changed_files)}",
+                    {
+                        "ship_run_id": run_id,
+                        "promotion_candidate_id": candidate_id,
+                        "release_pr_number": pr_number,
+                        "release_pr_url": pr_url,
+                        "release_branch": branch,
+                        "test_status": test_status,
+                        "changed_file_count": len(changed_files),
+                        "composed_commit_hash": composed_commit_hash,
+                    },
+                ),
+            )
+        else:
+            if composed_commit_hash and not _agenthub_receipt_exists(composed_commit_hash):
+                _api_post(f"/api/worker/ship-run/{run_id}/fail", {
+                    "error": (
+                        f"Composed commit {composed_commit_hash[:12]} is not fetchable from AgentHub "
+                        "after publish."
+                    ),
+                    "compose_failed": True,
+                    "runtime": runtime_repo,
+                })
+                return True
+            _post_to_channel(
+                ship_ch,
+                _event_content(
+                    "release_composed",
+                    f"AgentHub-only composition ready; tests={test_status}; files={len(changed_files)}",
+                    {
+                        "ship_run_id": run_id,
+                        "promotion_candidate_id": candidate_id,
+                        "test_status": test_status,
+                        "changed_file_count": len(changed_files),
+                        "composed_commit_hash": composed_commit_hash,
+                        "ship_target": ship_target,
+                    },
+                ),
+            )
 
-        # --- Report composed ---
-        _post_to_channel(
-            ship_ch,
-            _event_content(
-                "release_pr_opened",
-                f"PR #{pr_number} opened for {branch}; tests={test_status}; files={len(changed_files)}",
-                {
-                    "ship_run_id": run_id,
-                    "promotion_candidate_id": candidate_id,
-                    "release_pr_number": pr_number,
-                    "release_pr_url": pr_url,
-                    "release_branch": branch,
-                    "test_status": test_status,
-                    "changed_file_count": len(changed_files),
-                    "composed_commit_hash": composed_commit_hash,
-                },
-            ),
-        )
         _api_post(f"/api/worker/ship-run/{run_id}/composed", {
             "release_branch": branch,
             "release_pr_url": pr_url,
@@ -638,10 +793,16 @@ def run_once() -> bool:
                 "project_path": runtime_repo_path,
             },
         })
-        print(
-            f"[shipper] ShipRun composed. branch={branch!r} "
-            f"pr={pr_number} tests={test_status} files={len(changed_files)}"
-        )
+        if publish_github:
+            print(
+                f"[shipper] ShipRun composed. branch={branch!r} "
+                f"pr={pr_number} tests={test_status} files={len(changed_files)}"
+            )
+        else:
+            print(
+                f"[shipper] ShipRun composed (AgentHub-only). commit={(composed_commit_hash or '')[:12]} "
+                f"tests={test_status} files={len(changed_files)}"
+            )
         return True
 
 

@@ -20,6 +20,7 @@ os.environ["TERARCHITECT_CLI_DOGFOOD_LOCAL"] = "1"
 import subprocess
 import sys
 import threading
+from http.server import HTTPServer
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -100,6 +101,7 @@ def test_dogfood_cli_decomposed_ship_loop_advances_frontier(client, live_api_url
             "execution_mode": "local",
             "project_path": str(work_dir),
             "github_url": "https://github.com/owner/repo",
+            "ship_target": "github",
             "accepted_frontier_id": base_hash,
             "is_existing_repo": True,
         },
@@ -276,6 +278,7 @@ def test_dogfood_cli_operator_loop_single_command_advances_frontier(
             "execution_mode": "local",
             "project_path": str(work_dir),
             "github_url": "https://github.com/owner/repo",
+            "ship_target": "github",
             "accepted_frontier_id": base_hash,
             "is_existing_repo": True,
         },
@@ -402,3 +405,121 @@ def test_dogfood_cli_operator_loop_single_command_advances_frontier(
     with client.application.app_context():
         p = db.session.get(Project, pid)
         assert p.shipped_frontier == merged_main_sha
+
+
+@pytest.fixture(autouse=True)
+def _dogfood_agenthub_backend_env(stub_agenthub_server, monkeypatch):
+    """In-process backend ship-run requires a reachable AgentHub for receipt checks."""
+    monkeypatch.setenv("AGENTHUB_URL", stub_agenthub_server)
+    monkeypatch.setenv("AGENTHUB_API_KEY", "stub-ah-key")
+
+
+@pytest.fixture
+def stub_agenthub_server():
+    from tests.stubs.ah_server import Handler
+
+    server = HTTPServer(("127.0.0.1", 8088), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield "http://127.0.0.1:8088"
+    server.shutdown()
+
+
+def test_dogfood_cli_agenthub_only_operator_loop_advances_frontier(
+    client, live_api_url, tmp_path: Path, stub_agenthub_server, monkeypatch
+):
+    """Default ship_target=agenthub: operator-loop ships without GitHub PR merge."""
+    monkeypatch.setenv("AGENTHUB_URL", stub_agenthub_server)
+    monkeypatch.setenv("AGENTHUB_API_KEY", "stub-ah-key")
+    monkeypatch.setenv("TERARCHITECT_AGENTHUB_URL", stub_agenthub_server)
+
+    work_dir, _origin = make_local_git_repo(tmp_path)
+    base_hash, attempt_hash = _feature_commit(work_dir)
+
+    resp = client.post(
+        "/api/projects",
+        json={
+            "name": "dogfood-agenthub-only",
+            "git_mode": "swarm",
+            "execution_mode": "local",
+            "project_path": str(work_dir),
+            "accepted_frontier_id": base_hash,
+            "is_existing_repo": True,
+        },
+    )
+    assert resp.status_code == 201
+    pid = resp.get_json()["id"]
+
+    from datetime import UTC, datetime
+
+    from models.db import Project, Ticket, TicketAttempt, db
+
+    with client.application.app_context():
+        stored = db.session.get(Project, pid)
+        stored.shipped_frontier = base_hash
+        db.session.commit()
+
+    ticket_resp = client.post(
+        f"/api/projects/{pid}/tickets",
+        json={"column_id": "backlog", "title": "AgentHub ship ticket", "intent_status": "ready"},
+    )
+    ticket_id = ticket_resp.get_json()["id"]
+
+    with client.application.app_context():
+        t = db.session.get(Ticket, ticket_id)
+        t.column_id = "done"
+        t.status = "completed"
+        t.intent_status = "active"
+        t.base_leaf_id = base_hash
+        attempt = TicketAttempt(
+            project_id=pid,
+            ticket_id=ticket_id,
+            agenthub_commit_hash=attempt_hash,
+            base_hash=base_hash,
+            attempt_num=1,
+            status="validated",
+            summary="AgentHub-only validated attempt",
+            validated_at=datetime.now(UTC),
+        )
+        db.session.add(attempt)
+        db.session.commit()
+        attempt_id = str(attempt.id)
+        db.session.remove()
+
+    stub_path = str(STUBS_DIR)
+    compose_env = {
+        "PATH": f"{stub_path}:{os.environ.get('PATH', '')}",
+        "TERARCHITECT_AGENTHUB_URL": stub_agenthub_server,
+        "AGENTHUB_API_KEY": "stub-ah-key",
+        "MERGE_TEST_COMMAND": "true",
+    }
+
+    loop = _run_ta(
+        live_api_url,
+        [
+            "ship",
+            "operator-loop",
+            pid,
+            ticket_id,
+            attempt_id,
+            "--expect-frontier",
+            base_hash,
+            "--sync",
+        ],
+        extra_env=compose_env,
+    )
+    loop_payload = _cli_json(loop)
+    assert loop_payload["shipped_frontier_before"] == base_hash
+    assert loop_payload["shipped_frontier_after"] == attempt_hash
+    assert loop_payload["status"] == "shipped"
+
+    with client.application.app_context():
+        p = db.session.get(Project, pid)
+        assert p.shipped_frontier == attempt_hash
+        assert p.accepted_frontier_id == attempt_hash
+
+    job_start = client.post("/api/worker/jobs/start", json={"project_id": pid})
+    if job_start.status_code == 200:
+        job_payload = job_start.get_json()
+        assert job_payload["base_hash"] == attempt_hash
+        assert job_payload["base_leaf_id"] == attempt_hash

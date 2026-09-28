@@ -15,9 +15,10 @@ def test_ship_doctor_reports_partial_checks_and_next_commands(client, project):
     assert payload["status"] == "warn"
     checks = {item["name"]: item for item in payload["checks"]}
     assert checks["db_schema"]["status"] == "pass"
-    assert checks["github_auth"]["status"] == "warn"
+    assert checks["github_auth"]["status"] == "pass"
     assert checks["agenthub"]["status"] == "warn"
-    assert checks["project_repo"]["status"] == "warn"
+    assert checks["project_repo"]["status"] == "pass"
+    assert checks["ship_target"]["status"] == "pass"
     # Project fixture now sets shipped_frontier, so this check passes
     assert checks["frontier"]["status"] == "pass"
     assert any(cmd.startswith("ta ship doctor ") for cmd in payload["next_commands"])
@@ -45,7 +46,10 @@ def test_ship_run_merge_failure_preserves_detail_and_hint(client, project):
 
     update_resp = client.put(
         f"/api/projects/{pid}",
-        json={"github_url": "https://github.com/owner/repo"},
+        json={
+            "github_url": "https://github.com/owner/repo",
+            "ship_target": "github",
+        },
     )
     assert update_resp.status_code == 200
 
@@ -121,7 +125,10 @@ def test_ship_run_already_merged_reconciles_and_returns_evidence_summary(client,
 
     update_resp = client.put(
         f"/api/projects/{pid}",
-        json={"github_url": "https://github.com/owner/repo"},
+        json={
+            "github_url": "https://github.com/owner/repo",
+            "ship_target": "github",
+        },
     )
     assert update_resp.status_code == 200
 
@@ -246,7 +253,10 @@ def test_ship_run_stuck_shipping_reconciles_merged_pr(client, project):
 
     update_resp = client.put(
         f"/api/projects/{pid}",
-        json={"github_url": "https://github.com/owner/repo"},
+        json={
+            "github_url": "https://github.com/owner/repo",
+            "ship_target": "github",
+        },
     )
     assert update_resp.status_code == 200
 

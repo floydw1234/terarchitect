@@ -49,6 +49,13 @@ def register(subparsers) -> None:
     d = sub.add_parser("doctor", help="Show operator diagnostics for a project")
     d.add_argument("project_ref", help="Project ID or exact project name")
 
+    st = sub.add_parser(
+        "set-ship-target",
+        help="Set shipping mode: agenthub (default, no GitHub PRs) or github (release PR + merge)",
+    )
+    st.add_argument("project_id", help="Project ID")
+    st.add_argument("ship_target", choices=["agenthub", "github"], help="Ship target mode")
+
     # update
     u = sub.add_parser("update", help="Update a project")
     u.add_argument("project_id", help="Project ID")
@@ -107,6 +114,8 @@ def _dispatch(args, api: API) -> None:
         _cmd_show(args, api)
     elif cmd == "doctor":
         _cmd_doctor(args, api)
+    elif cmd == "set-ship-target":
+        _cmd_set_ship_target(args, api)
     elif cmd == "update":
         _cmd_update(args, api)
     elif cmd == "import-agenthub-root":
@@ -251,6 +260,26 @@ def _augment_project_payload(project: dict, payload: dict) -> dict:
     if payload.get("base_ref") and not (result.get("github_ref") or result.get("base_ref")):
         result["base_ref"] = payload["base_ref"]
     return result
+
+
+def _cmd_set_ship_target(args, api: API) -> None:
+    try:
+        project = api.put(
+            f"/api/projects/{args.project_id}",
+            {"ship_target": args.ship_target},
+        )
+    except APIError as e:
+        die(e, output=args.output)
+    if args.output == "json":
+        print_json(project)
+        return
+    print_receipt(
+        "Updated ship target",
+        fields=[
+            ("Project", project.get("name") or args.project_id),
+            ("Ship target", project.get("ship_target") or args.ship_target),
+        ],
+    )
 
 
 def _cmd_show(args, api: API) -> None:

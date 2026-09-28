@@ -60,7 +60,10 @@ from .services.project_service import (
     compare_base_to_shipped_frontier as _compare_base_to_shipped_frontier,
     get_project_frontier_id as _get_project_frontier_id,
     get_project_shipped_frontier as _get_project_shipped_frontier,
+    get_project_ship_target as _get_project_ship_target,
     infer_project_source_type as _infer_project_source_type,
+    normalize_ship_target as _normalize_ship_target,
+    project_publishes_to_github as _project_publishes_to_github,
     normalize_github_ref as _normalize_github_ref,
     normalize_frontier_id as _normalize_frontier_id,
     project_doctor_report as _project_doctor_report,
@@ -75,6 +78,7 @@ from .services.project_migration_service import (
 )
 from .services.agenthub_import_service import (
     AgenthubImportError as _AgenthubImportError,
+    ensure_commit_in_agenthub as _ensure_commit_in_agenthub,
     import_github_project_to_agenthub as _import_github_project_to_agenthub,
     import_project_agenthub_root as _import_project_agenthub_root,
 )
@@ -243,18 +247,39 @@ def _ship_doctor_report(project) -> dict:
     else:
         checks.append(_ship_doctor_check("db_schema", "pass", "Ship Room tables are present."))
 
+    ship_target = _get_project_ship_target(project)
+    checks.append(_ship_doctor_check(
+        "ship_target",
+        "pass",
+        f"Ship target is {ship_target!r} (default for new projects is agenthub).",
+        next_commands=[f"ta project set-ship-target {project_id} agenthub|github"],
+    ))
+
     github_url = (project.github_url or "").strip()
     slug = _repo_slug_from_github_url(github_url) if github_url else None
-    if slug:
-        checks.append(_ship_doctor_check("project_repo", "pass", f"GitHub target repo resolves to {slug}."))
+    if ship_target == "github":
+        if slug:
+            checks.append(_ship_doctor_check("project_repo", "pass", f"GitHub target repo resolves to {slug}."))
+        else:
+            checks.append(_ship_doctor_check(
+                "project_repo",
+                "fail",
+                "GitHub shipping is enabled but project github_url is not configured.",
+                next_commands=[f"ta project update {project_id} --github-url https://github.com/OWNER/REPO"],
+            ))
+            next_commands.append(f"ta project update {project_id} --github-url https://github.com/OWNER/REPO")
     else:
         checks.append(_ship_doctor_check(
             "project_repo",
-            "warn",
-            "Project GitHub target repo is not configured.",
-            next_commands=[f"ta project update {project_id} --github-url https://github.com/OWNER/REPO"],
+            "pass",
+            "AgentHub-only shipping (no GitHub release PRs required).",
         ))
-        next_commands.append(f"ta project update {project_id} --github-url https://github.com/OWNER/REPO")
+        if slug:
+            checks.append(_ship_doctor_check(
+                "project_repo_github_optional",
+                "pass",
+                f"Optional GitHub URL is set ({slug}); ignored until ship_target=github.",
+            ))
 
     frontier = (project.shipped_frontier or "").strip()
     if frontier:
@@ -268,31 +293,38 @@ def _ship_doctor_report(project) -> dict:
         ))
         next_commands.append(f"ta project show {project_id}")
 
-    try:
-        result = subprocess.run(
-            ["gh", "auth", "status", "--hostname", "github.com"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            env=_env_for_gh_user(),
-        )
-        if result.returncode == 0:
-            checks.append(_ship_doctor_check("github_auth", "pass", "Backend runtime can authenticate to GitHub."))
-        else:
+    if ship_target == "github":
+        try:
+            result = subprocess.run(
+                ["gh", "auth", "status", "--hostname", "github.com"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                env=_env_for_gh_user(),
+            )
+            if result.returncode == 0:
+                checks.append(_ship_doctor_check("github_auth", "pass", "Backend runtime can authenticate to GitHub."))
+            else:
+                checks.append(_ship_doctor_check(
+                    "github_auth",
+                    "warn",
+                    "Backend runtime GitHub auth is unavailable.",
+                    detail=(result.stderr or result.stdout or "").strip() or "gh auth status returned a non-zero exit code.",
+                    next_commands=[f"ta ship doctor {project_id}"],
+                ))
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             checks.append(_ship_doctor_check(
                 "github_auth",
                 "warn",
-                "Backend runtime GitHub auth is unavailable.",
-                detail=(result.stderr or result.stdout or "").strip() or "gh auth status returned a non-zero exit code.",
+                "Backend runtime GitHub auth could not be verified.",
+                detail=str(exc),
                 next_commands=[f"ta ship doctor {project_id}"],
             ))
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+    else:
         checks.append(_ship_doctor_check(
             "github_auth",
-            "warn",
-            "Backend runtime GitHub auth could not be verified.",
-            detail=str(exc),
-            next_commands=[f"ta ship doctor {project_id}"],
+            "pass",
+            "GitHub auth is not required for AgentHub-only shipping.",
         ))
 
     agenthub_url = (os.environ.get("AGENTHUB_URL") or "").rstrip("/")
@@ -410,7 +442,12 @@ def _finalize_shipped_run(project, run, *, new_tip: str | None, root_refresh_sou
 
     if new_tip:
         try:
-            _apply_root_refresh(project, new_tip, source=root_refresh_source)
+            _apply_root_refresh(
+                project,
+                new_tip,
+                source=root_refresh_source,
+                sync_accepted_frontier=True,
+            )
         except Exception as exc:
             current_app.logger.warning("Root refresh after ship failed: %s", exc)
 
@@ -548,11 +585,19 @@ def _fetch_github_default_branch_tip(github_url: str) -> str | None:
     return None
 
 
-def _apply_root_refresh(project, new_hash: str, source: str = "ship_run") -> None:
+def _apply_root_refresh(
+    project,
+    new_hash: str,
+    source: str = "ship_run",
+    *,
+    sync_accepted_frontier: bool = False,
+) -> None:
     """Update shipped_frontier and re-dispatch any newly unblocked queued tickets."""
     from datetime import datetime, timezone
     project.shipped_frontier = new_hash
     project.shipped_frontier_updated_at = datetime.now(timezone.utc)
+    if sync_accepted_frontier:
+        project.accepted_frontier_id = new_hash
     db.session.commit()
     current_app.logger.info(
         "Root refresh project=%s frontier=%s source=%s", project.id, new_hash[:12], source
@@ -642,6 +687,12 @@ def projects():
         import_to_agenthub = data.get("import_to_agenthub") is True
         if import_to_agenthub and not github_url:
             return jsonify({"error": "github_url is required when import_to_agenthub=true"}), 400
+        try:
+            ship_target = _normalize_ship_target(data.get("ship_target"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        if ship_target == "github" and not github_url:
+            return jsonify({"error": "github_url is required when ship_target=github"}), 400
         project = Project(
             name=data.get("name"),
             description=data.get("description"),
@@ -653,6 +704,7 @@ def projects():
             project_path=project_path_val,
             workflow_file=(data.get("workflow_file") or "").strip() or None,
             accepted_frontier_id=accepted_frontier_id,
+            ship_target=ship_target,
         )
         if accepted_frontier_id is not None:
             valid, error = _validate_project_frontier_candidate(project, accepted_frontier_id)
@@ -772,6 +824,14 @@ def project_detail(project_id):
                 if not valid:
                     return jsonify({"error": error}), 400
             project.accepted_frontier_id = accepted_frontier_id
+        if "ship_target" in data:
+            try:
+                ship_target = _normalize_ship_target(data.get("ship_target"))
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            if ship_target == "github" and not (project.github_url or "").strip():
+                return jsonify({"error": "github_url is required when ship_target=github"}), 400
+            project.ship_target = ship_target
         if "source_type" in data or "github_url" in data or "project_path" in data or "accepted_frontier_id" in data:
             source_type, source_error = _infer_project_source_type(
                 explicit_source_type=data.get("source_type", _normalize_project_source_type(project.source_type)),
@@ -3668,6 +3728,7 @@ def ship_candidate_feedback(project_id, candidate_id):
 
 
 def _ship_run_ship_response(project, run, *, merge_method: str = "merge"):
+    ship_target = _get_project_ship_target(project)
     slug = _repo_slug_from_github_url(project.github_url) if project.github_url else None
 
     gate, gate_status = _evidence_gate_response(project, "ship_run", run.id)
@@ -3687,17 +3748,31 @@ def _ship_run_ship_response(project, run, *, merge_method: str = "merge"):
             "hint": "Recompose this ship run from the current frontier.",
         }), 409
 
-    use_github = bool(slug and run.release_pr_number)
-    if not use_github and not run.composed_commit_hash:
-        return jsonify({
-            "error": "Ship run has no composed commit hash. Recompose before shipping.",
-        }), 409
+    if ship_target == "github":
+        if not slug:
+            return jsonify({
+                "error": "GitHub shipping is enabled but project github_url is not configured.",
+                "hint": f"Set github_url or run: ta project set-ship-target {project.id} agenthub",
+            }), 409
+        use_github = bool(run.release_pr_number)
+        if not use_github and not run.composed_commit_hash:
+            return jsonify({
+                "error": "Ship run has no release PR or composed commit. Recompose before shipping.",
+            }), 409
+    else:
+        use_github = False
+        if not run.composed_commit_hash:
+            return jsonify({
+                "error": "Ship run has no composed commit hash. Recompose before shipping.",
+            }), 409
 
     run.status = "shipping"
     db.session.commit()
 
     new_tip = None
+    root_refresh_source = "agenthub_ship"
     if use_github:
+        root_refresh_source = "release_pr_merge"
         try:
             r_check = subprocess.run(
                 [
@@ -3791,13 +3866,46 @@ def _ship_run_ship_response(project, run, *, merge_method: str = "merge"):
                 new_tip = (ref_data.get("object") or {}).get("sha") or None
                 if new_tip:
                     break
+        if new_tip:
+            try:
+                _ensure_commit_in_agenthub(
+                    project, new_tip, github_ref="main", allow_github_import=True
+                )
+            except _AgenthubImportError as exc:
+                run.status = "ready_to_ship"
+                run.error = str(exc)[:2000]
+                db.session.commit()
+                payload, status_code = _ship_error_payload(
+                    project,
+                    run,
+                    detail=str(exc),
+                    hint=(
+                        f"GitHub merge succeeded but AgentHub import failed. "
+                        f"Run ta ship doctor {project.id} and retry after AgentHub is reachable."
+                    ),
+                    phase="agenthub_import",
+                    status_code=502,
+                )
+                return jsonify(payload), status_code
     else:
         new_tip = run.composed_commit_hash
         current_app.logger.info(
-            "ship_run_ship: no GitHub URL or PR — advancing frontier directly from composed hash %s",
+            "ship_run_ship: AgentHub-only ship advancing frontier from composed hash %s",
             (new_tip or "")[:12],
         )
-    return _finalize_shipped_run(project, run, new_tip=new_tip, root_refresh_source="release_pr_merge")
+        try:
+            _ensure_commit_in_agenthub(project, new_tip)
+        except _AgenthubImportError as exc:
+            run.status = "ready_to_ship"
+            run.error = str(exc)[:2000]
+            db.session.commit()
+            return jsonify({
+                "error": "Composed commit is not available in AgentHub.",
+                "detail": str(exc),
+                "hint": f"Recompose the ship run or run ta ship doctor {project.id}.",
+                "phase": "agenthub_receipt",
+            }), 502
+    return _finalize_shipped_run(project, run, new_tip=new_tip, root_refresh_source=root_refresh_source)
 
 
 @api_bp.route("/projects/<uuid:project_id>/ship/runs/<uuid:run_id>", methods=["GET"])
@@ -3937,6 +4045,8 @@ def worker_ship_run_next():
             "project_path": project.project_path,
             "github_url": project.github_url,
             "git_mode": project.git_mode,
+            "ship_target": _get_project_ship_target(project),
+            "shipped_frontier": _get_project_shipped_frontier(project),
         },
         "candidate": _promotion_candidate_to_json(context["candidate"], include_attempts=True) if context["candidate"] else None,
         "membership": context["membership"],
@@ -3963,6 +4073,8 @@ def worker_ship_run_get(run_id):
             "project_path": project.project_path,
             "github_url": project.github_url,
             "git_mode": project.git_mode,
+            "ship_target": _get_project_ship_target(project),
+            "shipped_frontier": _get_project_shipped_frontier(project),
         },
         "candidate": _promotion_candidate_to_json(context["candidate"], include_attempts=True) if context["candidate"] else None,
         "membership": context["membership"],

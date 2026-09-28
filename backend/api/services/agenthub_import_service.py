@@ -13,7 +13,7 @@ from flask import current_app
 
 from models.db import Project, db
 
-from .project_service import validate_project_frontier_candidate
+from .project_service import get_project_ship_target, validate_project_frontier_candidate
 
 
 class AgenthubImportError(RuntimeError):
@@ -110,11 +110,20 @@ def agenthub_connection_from_env() -> tuple[str, str]:
 
 
 def fetch_agenthub_receipt(base_url: str, api_key: str, commit_hash: str) -> dict[str, Any]:
-    response = requests.get(
-        f"{base_url}/api/git/receipts/{commit_hash}",
-        headers=_agenthub_headers(api_key),
-        timeout=30,
-    )
+    try:
+        response = requests.get(
+            f"{base_url}/api/git/receipts/{commit_hash}",
+            headers=_agenthub_headers(api_key),
+            timeout=30,
+        )
+    except requests.exceptions.ConnectionError as exc:
+        raise AgenthubImportError(
+            f"Could not reach AgentHub at {base_url!r} while fetching receipt for {commit_hash[:12]}: {exc}"
+        ) from exc
+    except requests.Timeout as exc:
+        raise AgenthubImportError(
+            f"Timed out reaching AgentHub at {base_url!r} while fetching receipt for {commit_hash[:12]}: {exc}"
+        ) from exc
     if response.status_code == 404:
         return {"hash": commit_hash, "exists": False, "bundle_fetchable": False}
     response.raise_for_status()
@@ -234,6 +243,52 @@ def _extract_import_frontier(payload: dict[str, Any]) -> tuple[str | None, str |
     accepted_frontier_id = str(accepted_frontier_id).strip() if accepted_frontier_id is not None else None
     resolved_sha = str(resolved_sha).strip() if resolved_sha is not None else None
     return accepted_frontier_id or None, resolved_sha or None
+
+
+def commit_available_in_agenthub(base_url: str, api_key: str, commit_hash: str) -> bool:
+    receipt = fetch_agenthub_receipt(base_url, api_key, commit_hash)
+    return bool(receipt.get("exists") and receipt.get("bundle_fetchable", True))
+
+
+def ensure_commit_in_agenthub(
+    project: Project,
+    commit_hash: str,
+    *,
+    github_ref: str | None = "main",
+    allow_github_import: bool = False,
+) -> dict[str, Any]:
+    """Ensure ``commit_hash`` is fetchable from AgentHub.
+
+    When ``allow_github_import`` is true (GitHub ship target after a merge), retry via
+    AgentHub's GitHub import using ``github_ref`` (default ``main``).
+    """
+    normalized = (commit_hash or "").strip()
+    if not normalized:
+        raise AgenthubImportError("Cannot ensure an empty commit hash in AgentHub.")
+
+    base_url, api_key = agenthub_connection_from_env()
+    if commit_available_in_agenthub(base_url, api_key, normalized):
+        return fetch_agenthub_receipt(base_url, api_key, normalized)
+
+    github_url = (project.github_url or "").strip()
+    if (
+        allow_github_import
+        and github_url
+        and get_project_ship_target(project) == "github"
+    ):
+        import_github_project_to_agenthub(
+            project,
+            github_url=github_url,
+            github_ref=(github_ref or "main").strip() or "main",
+        )
+        db.session.commit()
+        if commit_available_in_agenthub(base_url, api_key, normalized):
+            return fetch_agenthub_receipt(base_url, api_key, normalized)
+
+    raise AgenthubImportError(
+        f"Commit {normalized[:12]} is not available in AgentHub"
+        + (" after GitHub import." if allow_github_import else ". Recompose or push the commit to AgentHub.")
+    )
 
 
 def import_github_project_to_agenthub(

@@ -13,6 +13,27 @@ except (ModuleNotFoundError, ImportError):
 
 _FRONTIER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{6,254}$")
 _SOURCE_TYPES = {"github", "local_path", "agenthub_leaf"}
+SHIP_TARGETS = frozenset({"agenthub", "github"})
+
+
+def normalize_ship_target(value) -> str:
+    raw = (str(value).strip().lower() if value is not None else "") or "agenthub"
+    if raw not in SHIP_TARGETS:
+        raise ValueError("ship_target must be one of: agenthub, github")
+    return raw
+
+
+def get_project_ship_target(project: Project | None) -> str:
+    if project is None:
+        return "agenthub"
+    try:
+        return normalize_ship_target(getattr(project, "ship_target", None))
+    except ValueError:
+        return "agenthub"
+
+
+def project_publishes_to_github(project: Project | None) -> bool:
+    return get_project_ship_target(project) == "github"
 
 
 def _truthy_env(value: str | None) -> bool:
@@ -75,6 +96,9 @@ def independent_ticket_should_use_current_shipped_frontier(
     if not base or base == shipped:
         return True
     if accepted and base == accepted:
+        return True
+    # After ship, accepted_frontier is synced to shipped; rebase tickets still pinned to the pre-ship accepted base.
+    if accepted and shipped and accepted == shipped and base != shipped:
         return True
     return False
 
@@ -206,6 +230,7 @@ def project_to_json(project: Project):
         "accepted_frontier_id": get_project_frontier_id(project),
         "shipped_frontier": frontier,
         "shipped_frontier_updated_at": frontier_updated.isoformat() if frontier_updated else None,
+        "ship_target": get_project_ship_target(project),
         "created_at": project.created_at.isoformat() if project.created_at else None,
         "updated_at": project.updated_at.isoformat() if project.updated_at else None,
     }

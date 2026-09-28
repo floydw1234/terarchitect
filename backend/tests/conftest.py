@@ -2,12 +2,25 @@
 import os
 import sys
 import uuid
+from unittest.mock import patch
 
 import pytest
 
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
+
+
+@pytest.fixture(autouse=True)
+def _mock_agenthub_commit_ensure_on_ship():
+    """Ship-run tests should not require a live AgentHub for receipt checks."""
+    with patch("api.routes._ensure_commit_in_agenthub") as mocked:
+        mocked.side_effect = lambda project, commit_hash, **kwargs: {
+            "hash": commit_hash,
+            "exists": True,
+            "bundle_fetchable": True,
+        }
+        yield mocked
 
 
 @pytest.fixture(scope="function")

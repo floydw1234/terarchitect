@@ -17,6 +17,7 @@ _HOST_AGENTHUB_PORT = 8088
 SHIPPER_ENV_KEYS = (
     "TERARCHITECT_API_URL",
     "TERARCHITECT_WORKER_API_KEY",
+    "TERARCHITECT_AGENTHUB_URL",
     "AGENTHUB_URL",
     "AGENTHUB_API_KEY",
     "MERGE_TEST_COMMAND",
@@ -92,17 +93,20 @@ def run_local_shipper(api_url: str, ship_run_id: str, *, capture_stdout: bool = 
     ``SHIP_RUN_ID``; the shipper accepts a queued run when fetched by id.
     """
     env: dict[str, str] = {}
+    host_agenthub = (os.environ.get("TERARCHITECT_AGENTHUB_URL") or "").strip()
     for key in SHIPPER_ENV_KEYS:
         val = os.environ.get(key)
         if not val:
             continue
-        if key == "AGENTHUB_URL":
-            remapped, warning = remap_agenthub_url_for_host(val)
-            env[key] = remapped
-            if warning:
-                print(warning, file=sys.stderr)
-        else:
-            env[key] = val
+        if key in {"AGENTHUB_URL", "TERARCHITECT_AGENTHUB_URL"}:
+            continue
+        env[key] = val
+    ah_raw = host_agenthub or (os.environ.get("AGENTHUB_URL") or "").strip()
+    if ah_raw:
+        remapped, warning = remap_agenthub_url_for_host(ah_raw)
+        env["AGENTHUB_URL"] = remapped
+        if warning:
+            print(warning, file=sys.stderr)
     env["TERARCHITECT_API_URL"] = api_url.rstrip("/")
     env["SHIP_RUN_ID"] = str(ship_run_id)
 
