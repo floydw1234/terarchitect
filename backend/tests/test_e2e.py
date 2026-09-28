@@ -117,6 +117,25 @@ def _attempts_by_commit(client, project_id):
     return {attempt["agenthub_commit_hash"]: attempt for attempt in attempts}
 
 
+def _claim_worker_job_for_ticket(client, project_id, ticket_id, *, max_rounds=12):
+    """Claim pending worker jobs until the requested ticket is running."""
+    last_payload = None
+    for _ in range(max_rounds):
+        resp = client.post("/api/worker/jobs/start", json={"project_id": project_id})
+        if resp.status_code == 204:
+            break
+        assert resp.status_code == 200, resp.get_json()
+        payload = resp.get_json()
+        last_payload = payload
+        if payload["ticket_id"] == ticket_id:
+            return payload
+        complete = client.post(f"/api/worker/jobs/{payload['job_id']}/complete", json={})
+        assert complete.status_code == 200, complete.get_json()
+    raise AssertionError(
+        f"Could not claim worker job for ticket {ticket_id}; last payload={last_payload}"
+    )
+
+
 def _seed_validated_attempt(client, project_id, ticket_id, commit_hash, *, base_hash, summary):
     """Create a validated attempt directly for test flows that only care about winner ordering."""
     from models.db import db, Ticket, TicketAttempt
@@ -444,6 +463,134 @@ def test_e2e_create_promotion_candidate_from_accepted_attempts(client, project):
             for attempt_id in candidate["selected_attempt_ids"]
         )
         assert stored_attempt_ids == {"a" * 40, "b" * 40}
+
+
+def test_e2e_dependency_ship_loop_from_parent_attempt_base(client, project):
+    """Parent accept → child claims parent attempt base → validated child → compose/ship advances frontier."""
+    pid = project["id"]
+    frontier = project.get("shipped_frontier") or project["accepted_frontier_id"]
+    parent_hash = "a" * 40
+    child_hash = "b" * 40
+    composed_hash = "m" * 40
+
+    client.put(f"/api/projects/{pid}", json={"github_url": "https://github.com/owner/repo"})
+
+    from models.db import db, Project, Ticket
+    with client.application.app_context():
+        stored_project = db.session.get(Project, pid)
+        stored_project.shipped_frontier = frontier
+        db.session.commit()
+
+    t_parent = _create_ticket(client, pid, "Parent ticket", column_id="queued")
+    t_child = _create_ticket(
+        client,
+        pid,
+        "Child depends on parent",
+        deps=[t_parent["id"]],
+        column_id="queued",
+    )
+
+    from api.services.ticket_service import dispatch_unblocked_queued
+    dispatch_unblocked_queued(pid)
+
+    parent_payload = _claim_worker_job_for_ticket(client, pid, t_parent["id"])
+    assert parent_payload["ticket_id"] == t_parent["id"]
+    assert parent_payload["base_hash"] == frontier
+    assert parent_payload["base_selection"]["base_source"] == "shipped_frontier"
+
+    parent_complete = _complete_ticket(
+        client,
+        pid,
+        t_parent["id"],
+        parent_hash,
+        base_hash=frontier,
+    )
+    assert parent_complete.status_code == 200
+
+    attempts_by_commit = _attempts_by_commit(client, pid)
+    attempt_parent = attempts_by_commit[parent_hash]
+    assert attempt_parent["status"] == "validated"
+    _choose_winner(client, pid, t_parent["id"], attempt_parent["id"])
+    _accept_attempt(client, pid, t_parent["id"], attempt_parent["id"])
+
+    dispatch_unblocked_queued(pid)
+
+    child_payload = _claim_worker_job_for_ticket(client, pid, t_child["id"])
+    assert child_payload["ticket_id"] == t_child["id"]
+    assert child_payload["base_hash"] == parent_hash
+    assert child_payload["base_leaf_id"] == parent_hash
+    assert child_payload["base_selection"]["base_source"] == "accepted_dependency"
+    assert child_payload["base_selection"]["resolved_from_ticket_id"] == t_parent["id"]
+
+    with client.application.app_context():
+        child_ticket = db.session.get(Ticket, t_child["id"])
+        assert child_ticket.base_leaf_id == parent_hash
+
+    child_complete = _complete_ticket(
+        client,
+        pid,
+        t_child["id"],
+        child_hash,
+        base_hash=parent_hash,
+    )
+    assert child_complete.status_code == 200
+
+    attempts_by_commit = _attempts_by_commit(client, pid)
+    attempt_child = attempts_by_commit[child_hash]
+    assert attempt_child["status"] == "validated"
+    assert attempt_child["base_hash"] == parent_hash
+    _choose_winner(client, pid, t_child["id"], attempt_child["id"])
+    _accept_attempt(client, pid, t_child["id"], attempt_child["id"])
+
+    candidate_resp = client.post(
+        f"/api/projects/{pid}/ship/candidates",
+        json={"selected_attempt_ids": [attempt_child["id"]]},
+    )
+    assert candidate_resp.status_code == 201
+    candidate = candidate_resp.get_json()
+    assert candidate["status"] == "valid"
+    assert set(candidate["selected_attempt_ids"]) == {attempt_parent["id"], attempt_child["id"]}
+    assert candidate["selected_leaf_hashes"] == [child_hash]
+
+    compose_resp = client.post(
+        f"/api/projects/{pid}/ship/candidates/{candidate['id']}/compose",
+        json={},
+    )
+    assert compose_resp.status_code in (200, 201)
+    run_id = compose_resp.get_json()["id"]
+
+    claim_resp = client.post("/api/worker/ship-run/next", json={})
+    assert claim_resp.status_code == 200
+    claim_data = claim_resp.get_json()
+    assert claim_data["run"]["id"] == run_id
+    assert claim_data["commit_hashes"] == [child_hash]
+
+    composed_resp = client.post(f"/api/worker/ship-run/{run_id}/composed", json={
+        "composed_commit_hash": composed_hash,
+        "base_main_hash": frontier,
+        "test_status": "passed",
+        "test_output": "dependency ship loop",
+        "changed_files": ["src/child.py"],
+    })
+    assert composed_resp.status_code == 200
+    assert composed_resp.get_json()["status"] == "ready_to_ship"
+
+    ship_resp = client.post(f"/api/projects/{pid}/ship/runs/{run_id}/ship", json={})
+    assert ship_resp.status_code == 200, ship_resp.get_json()
+    ship_data = ship_resp.get_json()
+    assert ship_data["status"] == "shipped"
+    assert ship_data["shipped_commit_hash"] == composed_hash
+
+    with client.application.app_context():
+        from models.db import TicketAttempt
+        p = db.session.get(Project, pid)
+        assert p.shipped_frontier == composed_hash
+        statuses = {
+            a.agenthub_commit_hash: a.status
+            for a in TicketAttempt.query.filter_by(project_id=pid).all()
+        }
+        assert statuses[parent_hash] == "shipped"
+        assert statuses[child_hash] == "shipped"
 
 
 def test_e2e_ship_release_pr_merge_advances_frontier(client, project):
