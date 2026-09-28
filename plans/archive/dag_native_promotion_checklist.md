@@ -255,7 +255,7 @@ Files:
 - `README.md`
 - `docs/RUNBOOK.md`
 - `docs/PHASE1_WORKER_API.md`
-- `plans/agenthub_mvp_execution_checklist.md`
+- `plans/archive/agenthub_mvp_execution_checklist.md` (historical; see `plans/ROADMAP.md`)
 
 Tasks:
 
