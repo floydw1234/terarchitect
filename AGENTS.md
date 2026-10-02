@@ -1,5 +1,7 @@
 # Guidance for coding agents
 
+For machine-readable promotion status (`schema_version`, `status`, frontiers, validation, `needs`), see [`docs/AGENT_API.md`](docs/AGENT_API.md). Use `ta status`, `ta attempt show`, `ta ship run`, or `ta ship operator-loop` with `--json`.
+
 Before you push or open a pull request, run the same checks CI will run:
 
 ```bash

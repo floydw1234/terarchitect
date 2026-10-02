@@ -2,6 +2,7 @@
 
 import urllib.parse
 
+from cli._agent_result import emit_agent_result, result_from_attempt
 from cli._api import API, APIError
 from cli._output import die, print_json, print_table, short_id
 from cli._ship_candidate import (
@@ -257,19 +258,29 @@ def _cmd_show(args, api: API) -> None:
             candidate_id = None
 
     if args.output == "json":
-        payload = dict(attempt)
+        next_commands = None
         if candidate_eligible:
-            payload["candidate_eligible"] = True
-            payload["candidate_id"] = candidate_id
-            payload["next_commands"] = build_promotion_next_commands(
+            next_commands = build_promotion_next_commands(
                 args.project_id,
                 args.attempt_id,
                 ticket_id=attempt.get("ticket_id"),
                 candidate_id=candidate_id,
                 candidate_eligible=True,
             )
-        print_json(payload)
-        return
+        shipped_frontier = None
+        try:
+            project = api.get(f"/api/projects/{args.project_id}")
+            shipped_frontier = (project.get("shipped_frontier") or "").strip() or None
+        except APIError:
+            shipped_frontier = None
+        emit_agent_result(
+            result_from_attempt(
+                attempt,
+                args.project_id,
+                shipped_frontier=shipped_frontier,
+                next_commands=next_commands,
+            )
+        )
     if candidate_id:
         attempt = {**attempt, "_promotion_candidate_id": candidate_id}
     _print_attempt_summary(attempt, args.project_id)

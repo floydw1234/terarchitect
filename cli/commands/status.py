@@ -1,7 +1,8 @@
 """status subcommand: show the ticket work ledger."""
 
+from cli._agent_result import emit_agent_result, result_from_ticket_ledger
 from cli._api import API
-from cli._output import die, print_json, print_receipt
+from cli._output import die, print_receipt
 
 
 def register(subparsers) -> None:
@@ -24,8 +25,7 @@ def run(args, api: API) -> None:
     except Exception as exc:
         die(exc, output=args.output)
     if args.output == "json":
-        print_json(ledger)
-        return
+        emit_agent_result(result_from_ticket_ledger(ledger, args.project_id))
 
     accepted_attempt = ledger.get("accepted_attempt") or {}
     candidate = ledger.get("promotion_candidate") or {}

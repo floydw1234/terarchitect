@@ -1,7 +1,10 @@
 import argparse
 import json
 
+import pytest
+
 from cli.commands import context, status
+from tests.test_agent_result import STABLE_KEYS
 
 
 class FakeAPI:
@@ -116,11 +119,17 @@ def test_status_json_output_emits_machine_readable_payload(capsys):
         output="json",
     )
 
-    status.run(args, FakeAPI())
+    with pytest.raises(SystemExit) as exc:
+        status.run(args, FakeAPI())
+    assert exc.value.code == 0
 
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["ticket"]["id"] == "ticket-1"
-    assert payload["timeline"][1]["kind"] == "attempt"
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert set(payload.keys()) == STABLE_KEYS
+    assert payload["ticket_id"] == "ticket-1"
+    assert payload["ship_run_id"] == "run-1"
+    assert payload["status"] == "needs_input"
 
 
 def test_context_human_output_renders_channels_paths_and_events(capsys):
