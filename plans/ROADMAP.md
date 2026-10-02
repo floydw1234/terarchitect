@@ -63,6 +63,10 @@ Ticket → TicketAttempt → evaluate/choose-winner → accept-winner → create
 - No **protected-path gate** (minimal glob list) before ship/merge.
 - **Repeatability:** one live AgentHub-target loop passed on spark (2026-09-28, Smoke 06); needs consistent repeats, not a one-off.
 
+**Later (planned, not implemented):**
+
+- **Attempt pruning:** When several competing attempts (e.g. 3) target the same ticket, non-selected attempts’ AgentHub commits are retained for a configurable per-project period (default 30 days), then pruned. Never prune `shipped_frontier` history or accepted attempts; keep a small permanent record per pruned attempt (ticket, attempt id, outcome/reason).
+
 ---
 
 ## 4. Out of scope (for the current spine)
