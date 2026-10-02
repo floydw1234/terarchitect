@@ -626,12 +626,12 @@ def run_once() -> bool:
         base_main_hash = shipped_frontier
         composed_commit_hash = None
         try:
-            if not publish_github and len(commit_hashes) == 1:
+            if not publish_github and len(commit_hashes) == 1 and not shipped_frontier:
                 only_hash = commit_hashes[0]
                 if not _ensure_commit(only_hash, runtime_repo_path, tmp_dir):
                     raise ComposeError(f"Could not fetch attempt commit {only_hash[:12]} from AgentHub.")
                 composed_commit_hash = only_hash
-                base_main_hash = shipped_frontier or only_hash
+                base_main_hash = only_hash
                 if not _agenthub_receipt_exists(composed_commit_hash):
                     _push_repo_bundle_to_agenthub(runtime_repo_path)
             else:

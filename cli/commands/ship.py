@@ -147,6 +147,20 @@ def register(subparsers) -> None:
                     help="Target a specific ticket ID instead of the candidate channel")
     fb.add_argument("--json", action="store_true", help="Print JSON for this command")
 
+    rv = sub.add_parser(
+        "revert",
+        help="Move shipped_frontier back to a prior ShipRun base (recorded as a revert ShipRun)",
+    )
+    rv.add_argument("project_id")
+    rv.add_argument(
+        "--to",
+        dest="to_ship_run_id",
+        default=None,
+        metavar="SHIPRUN",
+        help="Revert to the base_main_hash of this shipped ShipRun (default: one step back)",
+    )
+    rv.add_argument("--json", action="store_true", help="Print JSON for this command")
+
     p.set_defaults(func=_dispatch)
 
 
@@ -182,6 +196,8 @@ def _dispatch(args, api: API) -> None:
         _cmd_happy_path(args, api)
     elif cmd == "feedback":
         _cmd_feedback(args, api)
+    elif cmd == "revert":
+        _cmd_revert(args, api)
 
 
 def _want_json(args) -> bool:
@@ -756,3 +772,25 @@ def _cmd_feedback(args, api: API) -> None:
         print_json(result)
         return
     print(f"Feedback posted for {_candidate_label(detail)}.")
+
+
+def _cmd_revert(args, api: API) -> None:
+    body = {}
+    if args.to_ship_run_id:
+        body["to_ship_run_id"] = args.to_ship_run_id
+    try:
+        payload = api.post(f"/api/projects/{args.project_id}/ship/revert", body)
+    except APIError as e:
+        die(e, output=args.output)
+    if _want_json(args):
+        print_json(payload)
+        return
+    print_receipt(
+        "Ship frontier reverted",
+        fields=[
+            ("Before", (payload.get("shipped_frontier_before") or "unset")[:12]),
+            ("After", (payload.get("shipped_frontier_after") or "unset")[:12]),
+            ("Revert ShipRun", short_id(payload.get("ship_run_id") or "", 12)),
+        ],
+        next_commands=[f"ta project show {args.project_id}"],
+    )

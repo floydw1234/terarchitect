@@ -56,6 +56,13 @@ def register(subparsers) -> None:
     st.add_argument("project_id", help="Project ID")
     st.add_argument("ship_target", choices=["agenthub", "github"], help="Ship target mode")
 
+    aship = sub.add_parser(
+        "set-auto-ship",
+        help="Enable or disable automatic shipping when ticket attempts finish validation",
+    )
+    aship.add_argument("project_id", help="Project ID")
+    aship.add_argument("mode", choices=["on", "off"], help="on or off")
+
     # update
     u = sub.add_parser("update", help="Update a project")
     u.add_argument("project_id", help="Project ID")
@@ -116,6 +123,8 @@ def _dispatch(args, api: API) -> None:
         _cmd_doctor(args, api)
     elif cmd == "set-ship-target":
         _cmd_set_ship_target(args, api)
+    elif cmd == "set-auto-ship":
+        _cmd_set_auto_ship(args, api)
     elif cmd == "update":
         _cmd_update(args, api)
     elif cmd == "import-agenthub-root":
@@ -278,6 +287,27 @@ def _cmd_set_ship_target(args, api: API) -> None:
         fields=[
             ("Project", project.get("name") or args.project_id),
             ("Ship target", project.get("ship_target") or args.ship_target),
+        ],
+    )
+
+
+def _cmd_set_auto_ship(args, api: API) -> None:
+    enabled = args.mode == "on"
+    try:
+        project = api.put(
+            f"/api/projects/{args.project_id}",
+            {"auto_ship": enabled},
+        )
+    except APIError as e:
+        die(e, output=args.output)
+    if args.output == "json":
+        print_json(project)
+        return
+    print_receipt(
+        "Updated auto-ship",
+        fields=[
+            ("Project", project.get("name") or args.project_id),
+            ("Auto ship", "on" if project.get("auto_ship") else "off"),
         ],
     )
 
