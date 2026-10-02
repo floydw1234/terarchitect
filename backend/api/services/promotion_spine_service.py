@@ -8,7 +8,6 @@ from typing import Any
 from flask import current_app
 
 from models.db import db, Project, ShipRun, Ticket, TicketAttempt
-from .attempt_service import attempt_is_validated as _attempt_is_validated
 from .project_service import get_project_ship_target as _get_project_ship_target
 
 
@@ -204,35 +203,10 @@ def _run_local_shipper_for_run(run_id: str) -> None:
 
 
 def pick_auto_winner_attempt(project: Project, ticket: Ticket) -> TicketAttempt | None:
-    from .attempt_service import attempt_stale_status as _attempt_stale_status
+    from .auto_ship_judge_service import pick_auto_winner_with_decision
 
-    attempts = (
-        TicketAttempt.query.filter_by(project_id=project.id, ticket_id=ticket.id)
-        .order_by(TicketAttempt.attempt_num.asc())
-        .all()
-    )
-    eligible: list[TicketAttempt] = []
-    for attempt in attempts:
-        if not _attempt_is_validated(attempt):
-            continue
-        stale, _reason = _attempt_stale_status(
-            attempt,
-            project=project,
-            ticket=ticket,
-        )
-        if stale is not False:
-            continue
-        eligible.append(attempt)
-    if not eligible:
-        return None
-
-    def _rank(item: TicketAttempt) -> tuple[int, int]:
-        test_status = (item.test_status or "").strip().lower()
-        passed_rank = 0 if test_status == "passed" else 1
-        return (passed_rank, item.attempt_num or 999)
-
-    eligible.sort(key=_rank)
-    return eligible[0]
+    attempt, _decision = pick_auto_winner_with_decision(project, ticket)
+    return attempt
 
 
 def ticket_execution_batch_settled(ticket_id: str) -> bool:

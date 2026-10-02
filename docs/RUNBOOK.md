@@ -49,6 +49,12 @@ For **auto-ship** (Alembic `024_project_auto_ship` on managed DBs):
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS auto_ship BOOLEAN NOT NULL DEFAULT false;
 ```
 
+For **auto-ship winner audit** (Alembic `025_ticket_auto_ship_winner_decision` on managed DBs):
+
+```sql
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS auto_ship_winner_decision JSONB;
+```
+
 ---
 
 ## 1. Run the app (API + DB + frontend only)
@@ -313,7 +319,11 @@ One command for the full decomposed path: **`ta ship operator-loop <project_id> 
 
 End-to-end from a goal string: **`ta run <project_id> "<goal or ticket title>"`** (creates the ticket, dispatches attempts, waits, then ships or exits non-zero on failure).
 
-**Auto-ship (opt-in):** `ta project set-auto-ship <project_id> on|off`. When `on`, after the last attempt in a ticket batch validates, Terarchitect runs choose-winner → accept → candidate → compose → ship (`agenthub` target). For `github` target, automation stops after the release PR is opened (compose completes).
+**Auto-ship (opt-in):** `ta project set-auto-ship <project_id> on|off`. When `on`, after the last attempt in a ticket batch validates, Terarchitect picks a winner (LLM judge when multiple eligible attempts share the same ticket context, with the legacy test-pass / lowest-`attempt_num` rule as fallback), then runs choose-winner → accept → candidate → compose → ship (`agenthub` target). For `github` target, automation stops after the release PR is opened (compose completes).
+
+The judge uses the same backend LLM config as graph generation and other server features: `FRONTEND_LLM_*`, falling back to `DIRECTOR_*` (`get_frontend_llm_settings`). With exactly one eligible attempt it skips the LLM (`judged_by: single`). On any judge error it falls back (`judged_by: fallback`) and logs the reason.
+
+The decision is stored on the ticket as `auto_ship_winner_decision` (winner id, rationale, `judged_by`, model name, optional per-attempt notes) and echoed on the ticket-complete API response under `auto_ship.winner_pick` when auto-ship runs.
 
 **Revert:** `ta ship revert <project_id>` moves `shipped_frontier` back to the previous shipped run’s `base_main_hash` (recorded as a revert `ShipRun`; commits are not deleted). Use `--to <ship_run_id>` to revert to a specific shipped run’s base.
 

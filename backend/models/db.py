@@ -118,6 +118,7 @@ class Ticket(db.Model):
     rationale = db.Column(db.Text)           # why this work matters
     acceptance_criteria = db.Column(db.Text) # what done looks like
     constraints = db.Column(db.Text)         # limits, non-goals, what not to do
+    auto_ship_winner_decision = db.Column(JSON_TYPE)  # LLM/rule auto-ship winner pick audit
     value_score = db.Column(db.Integer)      # optional 1-10 value estimate
     risk_level = db.Column(db.String(50))    # low | medium | high
     created_source = db.Column(db.String(50))# manual | ai | import

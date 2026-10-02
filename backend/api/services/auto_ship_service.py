@@ -8,9 +8,9 @@ from models.db import db, Project, Ticket, TicketAttempt
 from .attempt_service import get_accepted_attempt as _get_accepted_attempt
 from .merge_service import lock_project_for_update as _lock_project_for_update
 from .project_service import get_project_auto_ship as _get_project_auto_ship
+from .auto_ship_judge_service import pick_auto_winner_with_decision
 from .promotion_spine_service import (
     PromotionSpineError,
-    pick_auto_winner_attempt,
     run_promotion_spine_for_attempt,
     ticket_execution_batch_settled,
 )
@@ -42,8 +42,9 @@ def maybe_auto_ship_after_validation(project_id, ticket_id, attempt_id: str | No
             ticket_id=ticket.id,
             id=attempt_id,
         ).first()
+    winner_decision = None
     if attempt is None:
-        attempt = pick_auto_winner_attempt(project, ticket)
+        attempt, winner_decision = pick_auto_winner_with_decision(project, ticket)
     if attempt is None:
         current_app.logger.info(
             "auto_ship skipped project=%s ticket=%s: no eligible validated attempt",
@@ -51,6 +52,10 @@ def maybe_auto_ship_after_validation(project_id, ticket_id, attempt_id: str | No
             ticket_id,
         )
         return None
+
+    if winner_decision:
+        ticket.auto_ship_winner_decision = winner_decision
+        db.session.commit()
 
     try:
         result = run_promotion_spine_for_attempt(
@@ -71,6 +76,9 @@ def maybe_auto_ship_after_validation(project_id, ticket_id, attempt_id: str | No
             _dispatch_unblocked_queued(project_id)
         except Exception as exc:
             current_app.logger.warning("auto_ship dispatch queued failed: %s", exc)
+        if winner_decision:
+            result = dict(result)
+            result["winner_pick"] = winner_decision
         return result
     except PromotionSpineError as exc:
         current_app.logger.warning(
@@ -79,9 +87,12 @@ def maybe_auto_ship_after_validation(project_id, ticket_id, attempt_id: str | No
             ticket_id,
             exc,
         )
-        return {
+        payload = {
             "error": str(exc),
             "status_code": exc.status_code,
             "detail": exc.detail,
             "attempt_id": str(attempt.id),
         }
+        if winner_decision:
+            payload["winner_pick"] = winner_decision
+        return payload

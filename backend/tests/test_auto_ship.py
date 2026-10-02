@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from models.db import db, Project, Ticket, TicketAttempt
+from models.db import db, Project, Ticket
 
 
 def test_project_auto_ship_defaults_off(client, project):
@@ -64,47 +64,3 @@ def test_ticket_complete_triggers_auto_ship_when_enabled(client, project):
     mocked.assert_called_once()
 
 
-def test_pick_auto_winner_prefers_passed_test(client, project):
-    from api.services.promotion_spine_service import pick_auto_winner_attempt
-
-    pid = project["id"]
-    frontier = project["accepted_frontier_id"]
-
-    with client.application.app_context():
-        proj = db.session.get(Project, pid)
-        proj.shipped_frontier = frontier
-        ticket = Ticket(
-            project_id=pid,
-            column_id="done",
-            title="Pick winner",
-            intent_status="active",
-            base_leaf_id=frontier,
-        )
-        db.session.add(ticket)
-        db.session.flush()
-        db.session.add_all(
-            [
-                TicketAttempt(
-                    project_id=pid,
-                    ticket_id=ticket.id,
-                    agenthub_commit_hash="a" * 40,
-                    base_hash=frontier,
-                    attempt_num=1,
-                    status="validated",
-                    test_status="failed",
-                ),
-                TicketAttempt(
-                    project_id=pid,
-                    ticket_id=ticket.id,
-                    agenthub_commit_hash="b" * 40,
-                    base_hash=frontier,
-                    attempt_num=2,
-                    status="validated",
-                    test_status="passed",
-                ),
-            ]
-        )
-        db.session.commit()
-        winner = pick_auto_winner_attempt(proj, ticket)
-        assert winner is not None
-        assert winner.agenthub_commit_hash == "b" * 40
