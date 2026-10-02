@@ -35,16 +35,10 @@ def maybe_auto_ship_after_validation(project_id, ticket_id, attempt_id: str | No
     if _get_accepted_attempt(ticket.id) is not None:
         return None
 
-    attempt = None
-    if attempt_id:
-        attempt = TicketAttempt.query.filter_by(
-            project_id=project_id,
-            ticket_id=ticket.id,
-            id=attempt_id,
-        ).first()
-    winner_decision = None
-    if attempt is None:
-        attempt, winner_decision = pick_auto_winner_with_decision(project, ticket)
+    # ``attempt_id`` is only the attempt whose validation triggered this hook (usually the
+    # last one to finish). It must not short-circuit winner selection, otherwise the
+    # judge never runs and the last finisher always wins.
+    attempt, winner_decision = pick_auto_winner_with_decision(project, ticket)
     if attempt is None:
         current_app.logger.info(
             "auto_ship skipped project=%s ticket=%s: no eligible validated attempt",

@@ -117,6 +117,14 @@ services:
       MEMORY_LLM_BASE_URL: ${MEMORY_LLM_BASE_URL:-}
       MEMORY_LLM_API_KEY: ${MEMORY_LLM_API_KEY:-}
       ENABLE_COMPOSITE_WORKSPACE: ${ENABLE_COMPOSITE_WORKSPACE:-1}
+      # Backend LLM (graph generation + auto-ship winner judge): FRONTEND_LLM_* falling back to DIRECTOR_*.
+      FRONTEND_LLM_URL: ${FRONTEND_LLM_URL:-}
+      FRONTEND_LLM_MODEL: ${FRONTEND_LLM_MODEL:-}
+      FRONTEND_LLM_API_KEY: ${FRONTEND_LLM_API_KEY:-}
+      DIRECTOR_LLM_URL: ${DIRECTOR_LLM_URL:-}
+      DIRECTOR_MODEL: ${DIRECTOR_MODEL:-}
+      DIRECTOR_API_KEY: ${DIRECTOR_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       # CORS: allow the frontend (port 3000) from any hostname.
       # This covers localhost, LAN IPs, SSH port-forwards, etc.
       CORS_ORIGINS: "ANY_PORT_3000"

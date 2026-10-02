@@ -65,7 +65,10 @@ def get_frontend_llm_settings() -> dict:
     Returns dict with keys: url, model, api_key. Values may be None if unconfigured."""
     url = _env("FRONTEND_LLM_URL") or _env("DIRECTOR_LLM_URL")
     model = _env("FRONTEND_LLM_MODEL") or _env("DIRECTOR_MODEL")
-    api_key = _env("FRONTEND_LLM_API_KEY") or _env("DIRECTOR_API_KEY") or _env("openai_api_key") or _env("OPENAI_API_KEY")
+    api_key = _env("FRONTEND_LLM_API_KEY") or _env("DIRECTOR_API_KEY")
+    if not api_key and url and "openrouter.ai" in url:
+        api_key = _env("OPENROUTER_API_KEY")
+    api_key = api_key or _env("openai_api_key") or _env("OPENAI_API_KEY")
     return {"url": url, "model": model, "api_key": api_key}
 
 

@@ -65,3 +65,11 @@ def test_run_json_failed_without_validated_attempt(monkeypatch, capsys):
     assert doc["status"] == "failed"
     assert "validated" in doc["failure_reason"]
     assert doc["needs"]
+
+
+def test_run_passes_description(monkeypatch, capsys):
+    monkeypatch.setattr(run_goal, "_POLL_INTERVAL", 0)
+    api = _StubAPI(["aaa", "bbb"])
+    with pytest.raises(SystemExit):
+        run_goal._cmd_run(_args(description="Full prompt"), api)
+    assert api.posts[0][1]["description"] == "Full prompt"

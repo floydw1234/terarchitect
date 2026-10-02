@@ -39,6 +39,28 @@ def extract_llm_text(raw: dict[str, Any], *, model_name: str) -> str:
     return (raw.get("choices", [{}])[0].get("message", {}) or {}).get("content", "") or ""
 
 
+_VERSION_SUFFIX = re.compile(r"/v\d+[a-z0-9]*(?:/openai)?$")
+
+
+def normalize_llm_base_url(url: str | None) -> str:
+    """Return an OpenAI-compatible base URL ending in a version segment.
+
+    Matches the Director's convention (``DIRECTOR_LLM_URL`` + ``/v1/chat/completions``):
+    ``https://openrouter.ai/api`` -> ``https://openrouter.ai/api/v1``. URLs that already end
+    in a version segment (``/v1``, ``/v1beta/openai``) are kept; a full
+    ``.../chat/completions`` endpoint is trimmed back to its base.
+    """
+    base = (url or "").strip().rstrip("/")
+    if not base:
+        return "https://api.openai.com/v1"
+    for suffix in ("/chat/completions", "/responses"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)].rstrip("/")
+    if not _VERSION_SUFFIX.search(base):
+        base = f"{base}/v1"
+    return base
+
+
 def strip_json_fences(content: str) -> str:
     text = (content or "").strip()
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.MULTILINE)
@@ -59,7 +81,7 @@ def complete_user_prompt(
     if not model_name:
         raise ValueError("No LLM model configured (FRONTEND_LLM_MODEL or DIRECTOR_MODEL)")
 
-    llm_url = (llm.get("url") or "").rstrip("/") or "https://api.openai.com/v1"
+    llm_url = normalize_llm_base_url(llm.get("url"))
     headers = {"Content-Type": "application/json"}
     api_key = llm.get("api_key")
     if api_key:

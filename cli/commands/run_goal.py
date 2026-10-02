@@ -34,6 +34,11 @@ def register(subparsers) -> None:
         help="Parallel attempt count (default: project/ticket default, usually 3)",
     )
     p.add_argument(
+        "--description",
+        default=None,
+        help="Ticket description / full task prompt (goal stays the title)",
+    )
+    p.add_argument(
         "--json",
         action="store_true",
         help="Print a machine-readable agent result (docs/AGENT_API.md schema v1)",
@@ -133,6 +138,7 @@ def _cmd_run(args, api: API) -> None:
                 "column_id": "backlog",
                 "title": args.goal,
                 "intent_status": "ready",
+                **({"description": args.description} if getattr(args, "description", None) else {}),
             },
         )
     except APIError as e:
