@@ -10,6 +10,7 @@ Terarchitect’s CLI is built for agents that hand off a goal and poll for outco
 | `ta attempt show <project> <attempt_id> --json` | Single attempt readiness |
 | `ta ship run <project> <run_id> --json` | ShipRun composition / ship state |
 | `ta ship operator-loop <project> <ticket> <attempt> --json` | End-to-end promote-and-ship result |
+| `ta run <project> "<goal>" --json` | Goal → ticket → attempts → auto-ship (or operator-loop fallback) result |
 
 Human-readable output is unchanged when `--json` is not set.
 

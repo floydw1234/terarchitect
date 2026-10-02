@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+from cli._agent_result import build_result, emit_agent_result, need, result_from_operator_loop
 from cli._api import API, APIError
 from cli._operator_loop import run_operator_ship_loop
 from cli._output import die, print_json, print_receipt, short_id
@@ -32,7 +33,35 @@ def register(subparsers) -> None:
         default=None,
         help="Parallel attempt count (default: project/ticket default, usually 3)",
     )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print a machine-readable agent result (docs/AGENT_API.md schema v1)",
+    )
     p.set_defaults(func=_cmd_run)
+
+
+def _want_json(args) -> bool:
+    return bool(getattr(args, "json", False)) or getattr(args, "output", "human") == "json"
+
+
+def _fail(args, message, *, project_id=None, ticket_id=None, attempt_id=None,
+          frontier_before=None, needs=None, next_commands=None) -> None:
+    if _want_json(args):
+        emit_agent_result(
+            build_result(
+                status="failed",
+                project_id=project_id,
+                ticket_id=ticket_id,
+                attempt_id=attempt_id,
+                shipped_frontier_before=frontier_before,
+                failure_reason=str(message),
+                needs=needs,
+                next_commands=next_commands,
+            )
+        )
+        return
+    die(message, output=args.output)
 
 
 def _ticket_batch_settled(api: API, project_id: str, ticket_id: str) -> bool:
@@ -107,11 +136,14 @@ def _cmd_run(args, api: API) -> None:
             },
         )
     except APIError as e:
-        die(e, output=args.output)
+        _fail(args, e, project_id=args.project_id, frontier_before=frontier_before)
+        return
 
     ticket_id = str(ticket.get("id") or "")
     if not ticket_id:
-        die("Ticket create returned no id.", output=args.output)
+        _fail(args, "Ticket create returned no id.", project_id=args.project_id,
+              frontier_before=frontier_before)
+        return
 
     body: dict = {"column_id": "in_progress"}
     if args.attempt_count is not None:
@@ -121,11 +153,15 @@ def _cmd_run(args, api: API) -> None:
                 {"default_attempt_count": args.attempt_count},
             )
         except APIError as e:
-            die(e, output=args.output)
+            _fail(args, e, project_id=args.project_id, ticket_id=ticket_id,
+                  frontier_before=frontier_before)
+            return
     try:
         api.patch(f"/api/projects/{args.project_id}/tickets/{ticket_id}", body)
     except APIError as e:
-        die(e, output=args.output)
+        _fail(args, e, project_id=args.project_id, ticket_id=ticket_id,
+              frontier_before=frontier_before)
+        return
 
     deadline = time.time() + max(1, int(args.timeout))
     while time.time() < deadline:
@@ -133,7 +169,15 @@ def _cmd_run(args, api: API) -> None:
             break
         time.sleep(_POLL_INTERVAL)
     else:
-        die("Timed out waiting for ticket attempts to finish.", output=args.output)
+        _fail(
+            args,
+            "Timed out waiting for ticket attempts to finish.",
+            project_id=args.project_id,
+            ticket_id=ticket_id,
+            frontier_before=frontier_before,
+            next_commands=[f"ta status {args.project_id} --ticket {ticket_id} --json"],
+        )
+        return
 
     shipped = _wait_for_ship(api, args.project_id, ticket_id, frontier_before, deadline)
     if shipped is not None:
@@ -143,6 +187,18 @@ def _cmd_run(args, api: API) -> None:
             "goal": args.goal,
             **shipped,
         }
+        if _want_json(args):
+            emit_agent_result(
+                build_result(
+                    status="shipped",
+                    project_id=args.project_id,
+                    ticket_id=ticket_id,
+                    shipped_frontier_before=shipped.get("shipped_frontier_before"),
+                    shipped_frontier_after=shipped.get("shipped_frontier_after"),
+                    validation_summary={"shipped_by": "auto_ship"},
+                )
+            )
+            return
         if args.output == "json":
             print_json(payload)
             return
@@ -157,10 +213,16 @@ def _cmd_run(args, api: API) -> None:
 
     attempt_id = _pick_validated_attempt_id(api, args.project_id, ticket_id)
     if not attempt_id:
-        die(
+        _fail(
+            args,
             "Ticket finished without a validated attempt to ship.",
-            output=args.output,
+            project_id=args.project_id,
+            ticket_id=ticket_id,
+            frontier_before=frontier_before,
+            needs=[need("inspect_attempts", "No attempt validated; review attempt results.",
+                        command=f"ta status {args.project_id} --ticket {ticket_id} --json")],
         )
+        return
 
     try:
         result = run_operator_ship_loop(
@@ -172,9 +234,21 @@ def _cmd_run(args, api: API) -> None:
             expect_frontier=frontier_before,
         )
     except APIError as e:
-        die(e, output=args.output)
+        _fail(args, e, project_id=args.project_id, ticket_id=ticket_id, attempt_id=attempt_id,
+              frontier_before=frontier_before)
+        return
 
     if (result.get("status") or "").lower() != "shipped" and not result.get("shipped_commit_hash"):
+        if _want_json(args):
+            _fail(
+                args,
+                f"Run did not reach a shipped frontier (status={result.get('status')}).",
+                project_id=args.project_id,
+                ticket_id=ticket_id,
+                attempt_id=attempt_id,
+                frontier_before=frontier_before,
+            )
+            return
         die(
             APIError(1, "Run did not reach a shipped frontier.", detail=str(result.get("status"))),
             output=args.output,
@@ -187,6 +261,12 @@ def _cmd_run(args, api: API) -> None:
         "attempt_id": attempt_id,
         **result,
     }
+    if _want_json(args):
+        receipt = {"project_id": args.project_id, "ticket_id": ticket_id,
+                   "attempt_id": attempt_id, **result}
+        receipt.setdefault("shipped_frontier_before", frontier_before)
+        emit_agent_result(result_from_operator_loop(receipt))
+        return
     if args.output == "json":
         print_json(payload)
         return
