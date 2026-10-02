@@ -63,6 +63,7 @@ from .services.project_service import (
     get_project_ship_target as _get_project_ship_target,
     infer_project_source_type as _infer_project_source_type,
     normalize_ship_target as _normalize_ship_target,
+    normalize_auto_ship as _normalize_auto_ship,
     project_publishes_to_github as _project_publishes_to_github,
     normalize_github_ref as _normalize_github_ref,
     normalize_frontier_id as _normalize_frontier_id,
@@ -119,6 +120,8 @@ from .services.attempt_service import (
     validate_attempt as _validate_attempt,
     validate_attempt_base_eligible as _validate_attempt_base_eligible,
 )
+from .services.auto_ship_service import maybe_auto_ship_after_validation as _maybe_auto_ship_after_validation
+from .services.ship_revert_service import ShipRevertError as _ShipRevertError, revert_shipped_frontier as _revert_shipped_frontier
 from .services.attempt_inspection_service import (
     attempt_inspection_json as _attempt_inspection_json,
     inspect_changed_files as _inspect_changed_files,
@@ -719,6 +722,7 @@ def projects():
             workflow_file=(data.get("workflow_file") or "").strip() or None,
             accepted_frontier_id=accepted_frontier_id,
             ship_target=ship_target,
+            auto_ship=_normalize_auto_ship(data.get("auto_ship")) if "auto_ship" in data else False,
         )
         if accepted_frontier_id is not None:
             valid, error = _validate_project_frontier_candidate(project, accepted_frontier_id)
@@ -846,6 +850,11 @@ def project_detail(project_id):
             if ship_target == "github" and not (project.github_url or "").strip():
                 return jsonify({"error": "github_url is required when ship_target=github"}), 400
             project.ship_target = ship_target
+        if "auto_ship" in data:
+            try:
+                project.auto_ship = _normalize_auto_ship(data.get("auto_ship"))
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
         if "source_type" in data or "github_url" in data or "project_path" in data or "accepted_frontier_id" in data:
             source_type, source_error = _infer_project_source_type(
                 explicit_source_type=data.get("source_type", _normalize_project_source_type(project.source_type)),
@@ -2142,6 +2151,7 @@ def ticket_complete(project_id, ticket_id):
     commit_hash = (data.get("commit_hash") or "").strip() or None
     requested_base_hash = (data.get("base_hash") or "").strip() or None
     agent_id_val = (data.get("agent_id") or "").strip() or None
+    auto_ship_result = None
 
     # Record AgentHub attempt for all completions
     project = db.session.get(Project, project_id)
@@ -2288,10 +2298,23 @@ def ticket_complete(project_id, ticket_id):
         except Exception as exc:
             current_app.logger.warning("Dispatch queued failed: %s", exc)
 
+    auto_ship_result = None
+    if is_swarm and attempt is not None and _attempt_is_validated(attempt):
+        try:
+            auto_ship_result = _maybe_auto_ship_after_validation(
+                project_id,
+                ticket.id,
+                str(attempt.id),
+            )
+        except Exception as exc:
+            current_app.logger.warning("auto_ship hook failed: %s", exc)
+
     response = {"message": "Complete", "ticket_id": str(ticket.id)}
     if attempt is not None:
         response["attempt_id"] = str(attempt.id)
         response["attempt_created"] = attempt_created
+    if auto_ship_result is not None:
+        response["auto_ship"] = auto_ship_result
     return jsonify(response)
 
 
@@ -3332,6 +3355,19 @@ def _candidate_next_actions(*, blockers: list[str], ship_run, can_compose: bool,
 def ship_doctor(project_id):
     project = _get_project_or_404(project_id)
     return jsonify(_ship_doctor_report(project))
+
+
+@api_bp.route("/projects/<uuid:project_id>/ship/revert", methods=["POST"])
+def ship_revert(project_id):
+    """Move shipped_frontier back to a prior ShipRun base (recorded as a revert ShipRun)."""
+    _get_project_or_404(project_id)
+    data = request.json or {}
+    to_run_id = (data.get("to_ship_run_id") or data.get("to") or "").strip() or None
+    try:
+        payload = _revert_shipped_frontier(project_id, to_ship_run_id=to_run_id)
+    except _ShipRevertError as exc:
+        return jsonify({"error": str(exc)}), exc.status_code
+    return jsonify(payload)
 
 
 @api_bp.route("/projects/<uuid:project_id>/ship/happy-path", methods=["POST"])
