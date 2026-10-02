@@ -65,6 +65,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to ta executable (default: python -m cli from repo root)",
     )
+    parser.add_argument("--project-id", default=None, help="Terarchitect project id for tickets without one")
+    parser.add_argument("--attempt-count", type=int, default=None, help="Competing attempts per ticket (ta run)")
+    parser.add_argument("--timeout", type=int, default=3600, help="Per-ticket ta run timeout in seconds")
+    parser.add_argument("--only", action="append", default=None, help="Run only this ticket id (repeatable)")
     return parser
 
 
@@ -80,6 +84,10 @@ def main(argv: list[str] | None = None) -> int:
             repo_root=args.repo_root.resolve(),
             dry_run=args.dry_run,
             ta_bin=args.ta_bin,
+            attempt_count=args.attempt_count,
+            timeout_sec=args.timeout,
+            project_id=args.project_id,
+            only=args.only,
         )
     except HarnessError as exc:
         print(f"error: {exc}", file=sys.stderr)

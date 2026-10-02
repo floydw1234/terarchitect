@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import csv
+import json
+import os
 import re
 import shlex
 import subprocess
+import tempfile
 import time
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -55,6 +59,9 @@ class BenchmarkResult:
     lines_removed: int | None = None
     error: str | None = None
     dry_run: bool = False
+    ta_ticket_id: str | None = None
+    frontier_before: str | None = None
+    frontier_after: str | None = None
 
     def to_row(self) -> dict[str, str]:
         def fmt_bool(value: bool | None) -> str:
@@ -83,6 +90,9 @@ class BenchmarkResult:
             "lines_removed": fmt_num(self.lines_removed),
             "error": self.error or "",
             "dry_run": fmt_bool(self.dry_run),
+            "ta_ticket_id": self.ta_ticket_id or "",
+            "frontier_before": (self.frontier_before or "")[:12],
+            "frontier_after": (self.frontier_after or "")[:12],
         }
 
 
@@ -201,6 +211,8 @@ def git_diff_stats(
 
     When base_ref is None, diff the working tree and index against HEAD (scratch worktrees).
     """
+    # Count new untracked files too (intent-to-add keeps the index otherwise unchanged).
+    run_subprocess(["git", "add", "-A", "-N"], cwd=repo_root, runner=runner)
     cmd = ["git", "diff", "--numstat"]
     if base_ref is None:
         cmd.append("HEAD")
@@ -277,10 +289,25 @@ def build_terarchitect_command(
     ta_bin: str | None = None,
     use_top_level_run: bool,
     use_operator_loop: bool,
+    attempt_count: int | None = None,
+    timeout_sec: int = 3600,
 ) -> list[str]:
     prefix = _ta_invocation_prefix(ta_bin)
     if use_top_level_run:
-        return [*prefix, "run", spec.project_id or "", spec.ticket_id or ""]
+        cmd = [
+            *prefix,
+            "--json",
+            "run",
+            spec.project_id or "",
+            spec.title,
+            "--description",
+            spec.prompt,
+            "--timeout",
+            str(int(timeout_sec)),
+        ]
+        if attempt_count:
+            cmd += ["--attempt-count", str(int(attempt_count))]
+        return cmd
     if use_operator_loop:
         if not (spec.project_id and spec.ticket_id and spec.attempt_id):
             raise HarnessError(
@@ -309,9 +336,9 @@ def resolve_terarchitect_strategy(
 ) -> tuple[bool, bool]:
     """Return (use_top_level_run, use_operator_loop)."""
     if ta_top_level_run_available(ta_bin=ta_bin, runner=runner):
-        if not (spec.project_id and spec.ticket_id):
+        if not spec.project_id:
             raise HarnessError(
-                f"ticket {spec.id}: `ta run` requires project_id and ticket_id in YAML"
+                f"ticket {spec.id}: `ta run` requires a project_id (YAML or --project-id)"
             )
         return True, False
     if spec.project_id and spec.ticket_id and spec.attempt_id:
@@ -396,6 +423,8 @@ def run_baseline_ticket(
         worktree = create_scratch_worktree(
             repo_root, base_ref=base_ref, runner=runner
         )
+        start_rev = run_subprocess(["git", "rev-parse", "HEAD"], cwd=worktree, runner=runner)
+        start_sha = (start_rev.stdout or "").strip() or None
         agent_proc = run_subprocess(agent_cmd, cwd=worktree, runner=runner)
         combined = (agent_proc.stdout or "") + (agent_proc.stderr or "")
         tin, tout, cost = parse_token_usage(combined)
@@ -406,7 +435,7 @@ def run_baseline_ticket(
             result.error = f"agent exited {agent_proc.returncode}: {agent_proc.stderr.strip()[:500]}"
 
         result.ci_pass = run_ci_python(worktree, ci_command=ci_command, runner=runner)
-        files, added, removed = git_diff_stats(worktree, base_ref=None, runner=runner)
+        files, added, removed = git_diff_stats(worktree, base_ref=start_sha, runner=runner)
         result.files_changed = files
         result.lines_added = added
         result.lines_removed = removed
@@ -424,6 +453,114 @@ def run_baseline_ticket(
     return result
 
 
+def parse_agent_result(text: str) -> dict[str, Any] | None:
+    """Return the last JSON object in ``text`` that looks like an agent-result envelope."""
+    decoder = json.JSONDecoder()
+    found: dict[str, Any] | None = None
+    idx = 0
+    while True:
+        idx = text.find("{", idx)
+        if idx < 0:
+            break
+        try:
+            obj, end = decoder.raw_decode(text, idx)
+        except ValueError:
+            idx += 1
+            continue
+        if isinstance(obj, dict) and ("status" in obj or "schema_version" in obj):
+            found = obj
+        idx = end
+    return found
+
+
+def fetch_agenthub_commit(
+    repo_root: Path,
+    commit: str,
+    *,
+    agenthub_url: str | None = None,
+    api_key: str | None = None,
+    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+) -> None:
+    """Fetch an AgentHub commit (bundle) into ``repo_root`` so it can be checked out."""
+    url = (
+        agenthub_url
+        or os.environ.get("TERARCHITECT_AGENTHUB_URL")
+        or os.environ.get("AGENTHUB_URL")
+        or "http://127.0.0.1:8088"
+    ).rstrip("/")
+    key = api_key if api_key is not None else os.environ.get("AGENTHUB_API_KEY", "")
+    req = urllib.request.Request(f"{url}/api/git/fetch/{commit}")
+    if key:
+        req.add_header("Authorization", f"Bearer {key}")
+    with tempfile.NamedTemporaryFile(suffix=".bundle", delete=False) as handle:
+        bundle = handle.name
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                handle.write(resp.read())
+        except Exception as exc:  # noqa: BLE001
+            raise HarnessError(f"AgentHub fetch {commit[:12]} failed: {exc}") from exc
+    try:
+        proc = run_subprocess(["git", "fetch", "--quiet", bundle, commit], cwd=repo_root, runner=runner)
+        if proc.returncode != 0:
+            # Bundles are created from a temporary ref; fetching all heads is the fallback.
+            proc = run_subprocess(
+                ["git", "fetch", "--quiet", bundle, "+refs/*:refs/bench/*"], cwd=repo_root, runner=runner
+            )
+        if proc.returncode != 0:
+            raise HarnessError(f"git fetch of AgentHub bundle failed: {proc.stderr.strip()[:300]}")
+    finally:
+        try:
+            os.unlink(bundle)
+        except OSError:
+            pass
+
+
+def evaluate_shipped_commit(
+    result: BenchmarkResult,
+    *,
+    repo_root: Path,
+    ci_command: Sequence[str] = DEFAULT_CI_COMMAND,
+    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    fetcher: Callable[..., None] = fetch_agenthub_commit,
+) -> None:
+    """Run CI and diff stats on the shipped frontier commit in a scratch worktree."""
+    after = result.frontier_after
+    if not after:
+        return
+    fetcher(repo_root, after, runner=runner)
+    if result.frontier_before:
+        try:
+            fetcher(repo_root, result.frontier_before, runner=runner)
+        except HarnessError:
+            pass
+    parent = repo_root / ".bench-worktrees"
+    parent.mkdir(parents=True, exist_ok=True)
+    path = parent / f"ta-{int(time.time() * 1000)}"
+    add = run_subprocess(["git", "worktree", "add", "--detach", str(path), after], cwd=repo_root, runner=runner)
+    if add.returncode != 0:
+        raise HarnessError(f"git worktree add {after[:12]} failed: {add.stderr.strip()[:300]}")
+    try:
+        result.ci_pass = run_ci_python(path, ci_command=ci_command, runner=runner)
+        if result.frontier_before:
+            proc = run_subprocess(
+                ["git", "diff", "--numstat", result.frontier_before, after], cwd=path, runner=runner
+            )
+            files = added = removed = 0
+            for line in (proc.stdout or "").splitlines():
+                parts = line.split("\t")
+                if len(parts) < 3 or parts[0] == "-" or parts[1] == "-":
+                    continue
+                files += 1
+                added += int(parts[0])
+                removed += int(parts[1])
+            result.files_changed, result.lines_added, result.lines_removed = files, added, removed
+    finally:
+        try:
+            remove_worktree(repo_root, path, runner=runner)
+        except HarnessError:
+            pass
+
+
 def run_terarchitect_ticket(
     spec: TicketSpec,
     *,
@@ -432,6 +569,9 @@ def run_terarchitect_ticket(
     ta_bin: str | None = None,
     ci_command: Sequence[str] = DEFAULT_CI_COMMAND,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    attempt_count: int | None = None,
+    timeout_sec: int = 3600,
+    evaluate: bool = True,
 ) -> BenchmarkResult:
     result = BenchmarkResult(ticket_id=spec.id, mode="terarchitect", dry_run=dry_run)
     try:
@@ -443,6 +583,8 @@ def run_terarchitect_ticket(
             ta_bin=ta_bin,
             use_top_level_run=use_run,
             use_operator_loop=use_loop,
+            attempt_count=attempt_count,
+            timeout_sec=timeout_sec,
         )
     except HarnessError as exc:
         result.error = str(exc)
@@ -454,25 +596,35 @@ def run_terarchitect_ticket(
 
     started = time.monotonic()
     try:
-        proc = run_subprocess(cmd, cwd=repo_root, runner=runner)
+        proc = run_subprocess(cmd, cwd=repo_root, runner=runner, timeout=timeout_sec + 600)
         combined = (proc.stdout or "") + (proc.stderr or "")
         tin, tout, cost = parse_token_usage(combined)
         result.tokens_in = tin
         result.tokens_out = tout
         result.cost_usd = cost
-        if proc.returncode != 0:
-            result.error = f"ta exited {proc.returncode}: {proc.stderr.strip()[:500]}"
-        shipped = detect_shipped_from_output(combined)
-        result.shipped = shipped if shipped is not None else (proc.returncode == 0 and use_loop)
-        result.ci_pass = run_ci_python(repo_root, ci_command=ci_command, runner=runner)
-        files, added, removed = git_diff_stats(repo_root, runner=runner)
-        result.files_changed = files
-        result.lines_added = added
-        result.lines_removed = removed
-    except HarnessError as exc:
+        envelope = parse_agent_result(proc.stdout or "") or parse_agent_result(combined)
+        if envelope is not None:
+            result.shipped = envelope.get("status") == "shipped"
+            result.ta_ticket_id = envelope.get("ticket_id")
+            result.frontier_before = envelope.get("shipped_frontier_before")
+            result.frontier_after = envelope.get("shipped_frontier_after")
+            if envelope.get("status") != "shipped":
+                result.error = f"ta status={envelope.get('status')}: {envelope.get('failure_reason') or ''}".strip()
+        else:
+            shipped = detect_shipped_from_output(combined)
+            result.shipped = shipped if shipped is not None else (proc.returncode == 0 and use_loop)
+        if proc.returncode != 0 and not result.error:
+            result.error = f"ta exited {proc.returncode}: {combined.strip()[-500:]}"
+        result.wall_time_sec = time.monotonic() - started
+        if evaluate and result.shipped and result.frontier_after:
+            evaluate_shipped_commit(result, repo_root=repo_root, ci_command=ci_command, runner=runner)
+        elif use_loop:
+            result.ci_pass = run_ci_python(repo_root, ci_command=ci_command, runner=runner)
+    except (HarnessError, subprocess.TimeoutExpired) as exc:
         result.error = str(exc)
     finally:
-        result.wall_time_sec = time.monotonic() - started
+        if result.wall_time_sec is None:
+            result.wall_time_sec = time.monotonic() - started
     return result
 
 
@@ -484,12 +636,28 @@ def run_harness(
     dry_run: bool = False,
     ta_bin: str | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    attempt_count: int | None = None,
+    timeout_sec: int = 3600,
+    project_id: str | None = None,
+    only: Sequence[str] | None = None,
 ) -> list[BenchmarkResult]:
     if mode not in {"terarchitect", "baseline"}:
         raise HarnessError(f"unsupported mode: {mode}")
 
     results: list[BenchmarkResult] = []
     for spec in specs:
+        if only and spec.id not in only:
+            continue
+        if project_id and not spec.project_id:
+            spec = TicketSpec(
+                id=spec.id,
+                title=spec.title,
+                prompt=spec.prompt,
+                project_id=project_id,
+                ticket_id=spec.ticket_id,
+                attempt_id=spec.attempt_id,
+                extra=spec.extra,
+            )
         if mode == "baseline":
             results.append(
                 run_baseline_ticket(
@@ -507,6 +675,9 @@ def run_harness(
                     dry_run=dry_run,
                     ta_bin=ta_bin,
                     runner=runner,
+                    attempt_count=attempt_count,
+                    timeout_sec=timeout_sec,
                 )
             )
+        print(f"[bench] {mode} {spec.id}: {results[-1].to_row()}", flush=True)
     return results
