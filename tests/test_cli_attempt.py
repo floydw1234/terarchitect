@@ -397,6 +397,8 @@ def test_attempt_show_candidate_eligible_surfaces_create_and_compose_commands(ca
                     "base_hash": "frontier-123",
                     "shipped_frontier": "frontier-123",
                 }
+            if path == "/api/projects/proj":
+                return {"id": "proj", "shipped_frontier": "frontier-123"}
             if path == "/api/projects/proj/ship/candidates":
                 return [{"id": "cand-2", "selected_attempt_ids": ["attempt-1"]}]
             raise AssertionError(f"Unexpected GET path: {path}")
@@ -409,11 +411,16 @@ def test_attempt_show_candidate_eligible_surfaces_create_and_compose_commands(ca
         output="json",
     )
 
-    attempt._dispatch(args, CandidateEligibleAPI())
+    with pytest.raises(SystemExit) as exc:
+        attempt._dispatch(args, CandidateEligibleAPI())
+    assert exc.value.code == 0
 
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["candidate_eligible"] is True
-    assert payload["candidate_id"] == "cand-2"
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert payload["schema_version"] == 1
+    assert payload["status"] == "needs_input"
+    assert payload["attempt_id"] == "attempt-1"
     assert "ta ship create-candidate proj --attempt attempt-1 --ticket ticket-1" in payload["next_commands"]
     assert "ta ship dry-compose proj cand-2" in payload["next_commands"]
     assert "ta ship compose-candidate proj cand-2" in payload["next_commands"]

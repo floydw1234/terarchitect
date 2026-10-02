@@ -1,4 +1,4 @@
-.PHONY: setup-venv python pip pytest ci-python test-smoke test-full test-swarm test-real test-swarm-docker test-clean help
+.PHONY: setup-venv python pip pytest ci-python bench-dry-run test-smoke test-full test-swarm test-real test-swarm-docker test-clean help
 
 COMPOSE      = docker compose -f docker-compose.yml -f docker-compose.test.yml --project-name terarchitect-test
 COMPOSE_SWARM = $(COMPOSE) --profile swarm
@@ -27,6 +27,10 @@ pytest: setup-venv
 ## Run the same Python unit checks as CI (.github/workflows/ci.yml python-smoke job)
 ci-python: setup-venv
 	./scripts/ci-python.sh
+
+## Dry-run the scripts/bench comparison harness (baseline mode, no agent/CI)
+bench-dry-run: setup-venv
+	PYTHONPATH= $(PYTHON) scripts/bench/run_compare.py --mode baseline --dry-run
 
 # ---------------------------------------------------------------------------
 # Test targets
