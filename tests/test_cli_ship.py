@@ -2,6 +2,8 @@ import argparse
 import json
 from unittest.mock import patch
 
+import pytest
+
 from cli._api import APIError
 from cli.commands import ship
 
@@ -135,14 +137,19 @@ def test_operator_loop_runs_decomposed_spine(capsys):
             json=True,
             output="json",
         )
-        ship._dispatch(args, FakeAPI())
+        with pytest.raises(SystemExit) as exc:
+            ship._dispatch(args, FakeAPI())
+        assert exc.value.code == 0
 
-    payload = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert payload["schema_version"] == 1
+    assert payload["status"] == "shipped"
     assert payload["shipped_frontier_before"] == frontier_before
     assert payload["shipped_frontier_after"] == frontier_after
     assert payload["candidate_id"] == "cand-1"
     assert payload["ship_run_id"] == "run-1"
-    assert "evaluate-attempts" in payload["sequence"]
     assert payload["next_commands"]
 
 

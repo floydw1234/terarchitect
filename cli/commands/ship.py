@@ -2,6 +2,7 @@
 
 import argparse
 
+from cli._agent_result import emit_agent_result, result_from_operator_loop, result_from_ship_run
 from cli._api import API, APIError
 from cli._output import die, print_json, print_receipt, print_table, short_id
 from cli._ship_candidate import (
@@ -380,8 +381,15 @@ def _cmd_run(args, api: API) -> None:
     except APIError as e:
         die(e, output=args.output)
     if _want_json(args):
-        print_json(detail)
-        return
+        shipped_frontier = _project_shipped_frontier(api, args.project_id)
+        emit_agent_result(
+            result_from_ship_run(
+                detail,
+                args.project_id,
+                shipped_frontier_before=detail.get("base_main_hash"),
+                shipped_frontier_after=shipped_frontier or detail.get("shipped_commit_hash"),
+            )
+        )
     _print_run_detail(detail)
 
 
@@ -625,8 +633,7 @@ def _cmd_operator_loop(args, api: API) -> None:
     except APIError as e:
         die(e, output=args.output)
     if _want_json(args):
-        print_json(receipt)
-        return
+        emit_agent_result(result_from_operator_loop(receipt))
     print_receipt(
         "Operator ship loop complete",
         fields=[
