@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
 export PYTHONPATH="${PYTHONPATH:-backend:agent}"
+# Avoid broken third-party pytest plugins from the host (e.g. ROS launch_testing).
+export PYTEST_DISABLE_PLUGIN_AUTOLOAD="${PYTEST_DISABLE_PLUGIN_AUTOLOAD:-1}"
 
 if [[ -n "${PYTEST:-}" ]]; then
   RUNNER=( "${PYTEST}" )

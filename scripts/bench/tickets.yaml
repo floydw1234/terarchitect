@@ -1,0 +1,59 @@
+# Sample ticket specs for dogfood benchmarks on the Terarchitect repo itself.
+# Replace terarchitect.* UUIDs with your spark project before a live terarchitect run.
+
+tickets:
+  - id: runbook-revert-stub
+    title: Document missing ta ship revert in RUNBOOK
+    prompt: |
+      ROADMAP gap: `ta ship revert` is not implemented. Add a short subsection under docs/RUNBOOK.md
+      (near ship / operator-loop docs) stating revert is planned, pointing to plans/ROADMAP.md section 3,
+      and listing the intended future command shape `ta ship revert <project>`. No implementation code.
+      Run `make ci-python` before finishing. Do not start Docker services.
+    terarchitect:
+      project_id: ""
+      ticket_id: ""
+      attempt_id: ""
+
+  - id: operator-loop-json-shipped-flag
+    title: Expose shipped boolean in operator-loop JSON
+    prompt: |
+      Week-board operator completeness: ensure `ta ship operator-loop --output json` includes an explicit
+      boolean field `shipped` (true when shipped_frontier advanced). Touch cli/_operator_loop.py and
+      cli/commands/ship.py only as needed; add or extend a unit test in tests/test_cli_ship.py with mocks.
+      Run `make ci-python`. No Docker.
+    terarchitect:
+      project_id: ""
+      ticket_id: ""
+      attempt_id: ""
+
+  - id: ticket-show-candidate-eligible
+    title: Show candidate_eligible on ta ticket show
+    prompt: |
+      Tue 2026-09-29 board: after accept-winner, operators need to see candidate_eligible on the ticket.
+      Add `candidate_eligible` to human and JSON output for `ta ticket show` when the API provides it.
+      Extend tests in tests/test_ticket_command.py. Run `make ci-python`.
+    terarchitect:
+      project_id: ""
+      ticket_id: ""
+      attempt_id: ""
+
+  - id: agents-bench-pointer
+    title: Point agents at scripts/bench from AGENTS.md
+    prompt: |
+      Add one sentence to AGENTS.md under verification guidance linking to scripts/bench/README.md for
+      local comparison harness usage (dry-run and baseline mode). No other doc churn. Run `make ci-python`.
+    terarchitect:
+      project_id: ""
+      ticket_id: ""
+      attempt_id: ""
+
+  - id: makefile-bench-target
+    title: Add make bench-dry-run helper
+    prompt: |
+      Add a `bench-dry-run` phony target to the Makefile that runs the comparison harness in dry-run
+      baseline mode against scripts/bench/tickets.yaml (use repo .venv python). Document it in
+      scripts/bench/README.md. Run `make ci-python`.
+    terarchitect:
+      project_id: ""
+      ticket_id: ""
+      attempt_id: ""
