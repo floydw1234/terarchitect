@@ -16,6 +16,25 @@ _SOURCE_TYPES = {"github", "local_path", "agenthub_leaf"}
 SHIP_TARGETS = frozenset({"agenthub", "github"})
 
 
+def normalize_auto_ship(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    raw = str(value).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off", ""}:
+        return False
+    raise ValueError("auto_ship must be a boolean or on/off")
+
+
+def get_project_auto_ship(project: Project | None) -> bool:
+    if project is None:
+        return False
+    return bool(getattr(project, "auto_ship", False))
+
+
 def normalize_ship_target(value) -> str:
     raw = (str(value).strip().lower() if value is not None else "") or "agenthub"
     if raw not in SHIP_TARGETS:
@@ -231,6 +250,7 @@ def project_to_json(project: Project):
         "shipped_frontier": frontier,
         "shipped_frontier_updated_at": frontier_updated.isoformat() if frontier_updated else None,
         "ship_target": get_project_ship_target(project),
+        "auto_ship": get_project_auto_ship(project),
         "created_at": project.created_at.isoformat() if project.created_at else None,
         "updated_at": project.updated_at.isoformat() if project.updated_at else None,
     }

@@ -43,6 +43,18 @@ If you created the database before execution mode was added, run:
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS execution_mode VARCHAR(50) NOT NULL DEFAULT 'docker';
 ```
 
+For **auto-ship** (Alembic `024_project_auto_ship` on managed DBs):
+
+```sql
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS auto_ship BOOLEAN NOT NULL DEFAULT false;
+```
+
+For **auto-ship winner audit** (Alembic `025_ticket_auto_ship_winner_decision` on managed DBs):
+
+```sql
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS auto_ship_winner_decision JSONB;
+```
+
 ---
 
 ## 1. Run the app (API + DB + frontend only)
@@ -305,7 +317,17 @@ Agent-run spine (optional human override at each step):
 
 One command for the full decomposed path: **`ta ship operator-loop <project_id> <ticket_id> <attempt_id>`**.
 
-Other ship CLI: `ta ship candidates`, `ta ship candidate`, `ta ship compose-candidate`, `ta ship compose-run`, `ta ship run`, `ta ship ship-run`, `ta ship ship-candidate`, `ta ship feedback`. Project ship mode: **`ta project set-ship-target <project_id> agenthub|github`**.
+End-to-end from a goal string: **`ta run <project_id> "<goal or ticket title>"`** (creates the ticket, dispatches attempts, waits, then ships or exits non-zero on failure).
+
+**Auto-ship (opt-in):** `ta project set-auto-ship <project_id> on|off`. When `on`, after the last attempt in a ticket batch validates, Terarchitect picks a winner (LLM judge when multiple eligible attempts share the same ticket context, with the legacy test-pass / lowest-`attempt_num` rule as fallback), then runs choose-winner → accept → candidate → compose → ship (`agenthub` target). For `github` target, automation stops after the release PR is opened (compose completes).
+
+The judge uses the same backend LLM config as graph generation and other server features: `FRONTEND_LLM_*`, falling back to `DIRECTOR_*` (`get_frontend_llm_settings`). With exactly one eligible attempt it skips the LLM (`judged_by: single`). On any judge error it falls back (`judged_by: fallback`) and logs the reason.
+
+The decision is stored on the ticket as `auto_ship_winner_decision` (winner id, rationale, `judged_by`, model name, optional per-attempt notes) and echoed on the ticket-complete API response under `auto_ship.winner_pick` when auto-ship runs.
+
+**Revert:** `ta ship revert <project_id>` moves `shipped_frontier` back to the previous shipped run’s `base_main_hash` (recorded as a revert `ShipRun`; commits are not deleted). Use `--to <ship_run_id>` to revert to a specific shipped run’s base.
+
+Other ship CLI: `ta ship candidates`, `ta ship candidate`, `ta ship compose-candidate`, `ta ship compose-run`, `ta ship run`, `ta ship ship-run`, `ta ship ship-candidate`, `ta ship feedback`, `ta ship revert`. Project ship mode: **`ta project set-ship-target <project_id> agenthub|github`**.
 
 ---
 
@@ -343,4 +365,4 @@ Use `--output json` / `--json` when scripting. No UI required for verification o
 
 **AgentHub URL on spark:** Host-side `ta ship … --sync` and `ta ticket run --run-local` must reach AgentHub at `http://127.0.0.1:8088`. Set **`TERARCHITECT_AGENTHUB_URL=http://127.0.0.1:8088`** in the host shell (not in a `.env` file that Compose passes into containers). The CLI shipper and local ticket runner prefer `TERARCHITECT_AGENTHUB_URL`, then fall back to `AGENTHUB_URL` with docker-hostname remapping when needed.
 
-**AgentHub-only ship frontier shape:** With a single accepted attempt, `ship_target=agenthub` sets `shipped_frontier` to that attempt’s **tip commit** (the worker’s published leaf). That commit’s git parent is usually the worker’s step commit on top of the old frontier, not the old frontier hash itself. That is expected; the next ticket bases from the new tip via `shipped_frontier` / AgentHub materialization.
+**AgentHub-only ship frontier shape:** Compose merges accepted attempt commits onto `shipped_frontier` so the **shipped composed commit’s parent is the prior frontier**, not the worker’s intermediate step commit. The next ticket bases from the new `shipped_frontier` tip.

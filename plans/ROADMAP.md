@@ -36,7 +36,9 @@ Ticket → TicketAttempt → evaluate/choose-winner → accept-winner → create
 | Compose | `ta ship compose-candidate … --sync` (or compose-run) |
 | Inspect | `ta ship run`, `ta ship candidates` |
 | Ship | `ta ship ship-run` / `ta ship ship-candidate` |
-| One command | `ta ship operator-loop <project> <ticket> <attempt>` |
+| One command | `ta ship operator-loop <project> <ticket> <attempt>` or `ta run <project> "<goal>"` |
+| Auto-ship (opt-in) | `ta project set-auto-ship <project> on|off` — when on, validated attempts auto-run choose→ship after the ticket batch finishes |
+| Revert frontier | `ta ship revert <project> [--to <shiprun>]` |
 
 **Ship targets** (per project, `ship_target`):
 
@@ -55,9 +57,8 @@ Ticket → TicketAttempt → evaluate/choose-winner → accept-winner → create
 
 ## 3. Gaps (honest)
 
-- Nothing **automatically** runs choose-winner, accept-winner, create-candidate, compose, or ship when tests go green.
+- **Auto-ship** is opt-in per project (`auto_ship`); default remains manual CLI steps unless enabled.
 - No **merge-on-green** policy engine or bot merge of GitHub release PRs beyond existing ship-target behavior.
-- No **`ta ship revert`** to move `shipped_frontier` back to a previous ShipRun base.
 - No **lead-agent** role or project-scoped automation coordinator in product terms.
 - No **daily digest** notification product.
 - No **protected-path gate** (minimal glob list) before ship/merge.

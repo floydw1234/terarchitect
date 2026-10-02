@@ -22,6 +22,7 @@ Commands:
     workspace  leaves | list | create | show | compose | analyze | bless | promote | discard
     graph      get | set
     plan       <project-id>  — generate tickets from graph + notes via LLM
+    run        <project-id> "<goal>" — create ticket, dispatch, wait, and ship
 
 Product model:
     Tickets are intents: goal, rationale, acceptance criteria, constraints, architecture scope.
@@ -39,7 +40,7 @@ import argparse
 from cli._api import API, APIError
 from cli._config import get_api_url
 from cli._output import die
-from cli.commands import attempt, context, graph, plan, project, publish, ship, status, ticket, workspace
+from cli.commands import attempt, context, graph, plan, project, publish, run_goal, ship, status, ticket, workspace
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -81,6 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
     workspace.register(subparsers)
     graph.register(subparsers)
     plan.register(subparsers)
+    run_goal.register(subparsers)
     return parser
 
 

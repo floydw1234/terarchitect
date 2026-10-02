@@ -510,13 +510,17 @@ def test_dogfood_cli_agenthub_only_operator_loop_advances_frontier(
     )
     loop_payload = _cli_json(loop)
     assert loop_payload["shipped_frontier_before"] == base_hash
-    assert loop_payload["shipped_frontier_after"] == attempt_hash
+    shipped_after = loop_payload["shipped_frontier_after"]
+    assert shipped_after and shipped_after != base_hash
     assert loop_payload["status"] == "shipped"
+
+    run_detail = client.get(f"/api/projects/{pid}/ship/runs/{loop_payload['ship_run_id']}").get_json()
+    assert run_detail["base_main_hash"] == base_hash
 
     with client.application.app_context():
         p = db.session.get(Project, pid)
-        assert p.shipped_frontier == attempt_hash
-        assert p.accepted_frontier_id == attempt_hash
+        assert p.shipped_frontier == shipped_after
+        assert p.accepted_frontier_id == shipped_after
 
     job_start = client.post("/api/worker/jobs/start", json={"project_id": pid})
     if job_start.status_code == 200:

@@ -52,6 +52,8 @@ class Project(db.Model):
     # agenthub: advance shipped_frontier from composed AgentHub commits (default).
     # github: open release PRs and merge on GitHub, then import the merge tip into AgentHub.
     ship_target = db.Column(db.String(20), nullable=False, default="agenthub", server_default="agenthub")
+    # When true, validated attempts trigger choose/accept/compose/ship when the ticket batch finishes.
+    auto_ship = db.Column(db.Boolean, nullable=False, default=False, server_default="false")
     # The currently blessed composite workspace (preferred candidate state, pre-ship)
     blessed_workspace_id = db.Column(db.String(255))
     verification_policy = db.Column(JSON_TYPE, default=dict)
@@ -116,6 +118,7 @@ class Ticket(db.Model):
     rationale = db.Column(db.Text)           # why this work matters
     acceptance_criteria = db.Column(db.Text) # what done looks like
     constraints = db.Column(db.Text)         # limits, non-goals, what not to do
+    auto_ship_winner_decision = db.Column(JSON_TYPE)  # LLM/rule auto-ship winner pick audit
     value_score = db.Column(db.Integer)      # optional 1-10 value estimate
     risk_level = db.Column(db.String(50))    # low | medium | high
     created_source = db.Column(db.String(50))# manual | ai | import
