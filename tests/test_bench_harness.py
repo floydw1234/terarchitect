@@ -106,6 +106,8 @@ def test_parse_token_usage():
 
 def test_git_diff_stats_parses_numstat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     def fake_run(cmd, cwd=None, capture_output=True, text=True, check=False):
+        if cmd[:2] == ["git", "add"]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
         assert cmd[:3] == ["git", "diff", "--numstat"]
         return subprocess.CompletedProcess(
             cmd,
@@ -273,3 +275,51 @@ def test_run_compare_main_dry_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         ],
     )
     assert run_compare.main() == 0
+
+
+def test_ta_run_command_and_shipped_envelope(tmp_path: Path):
+    from scripts.bench.harness import TicketSpec, parse_agent_result
+
+    spec = TicketSpec(id="t", title="Title", prompt="Do the thing", project_id="p")
+    cmd = build_terarchitect_command(
+        spec, use_top_level_run=True, use_operator_loop=False, attempt_count=3, timeout_sec=60
+    )
+    assert cmd[-10:] == [
+        "--json", "run", "p", "Title", "--description", "Do the thing",
+        "--timeout", "60", "--attempt-count", "3",
+    ]
+
+    envelope = (
+        'noise {"schema_version": 1, "status": "shipped", "ticket_id": "tk", '
+        '"shipped_frontier_before": "aaa", "shipped_frontier_after": "bbb"}'
+    )
+    assert parse_agent_result(envelope)["status"] == "shipped"
+
+    def runner(cmd, **kwargs):
+        if "--help" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        if "run" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, envelope, "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    result = run_terarchitect_ticket(spec, repo_root=tmp_path, runner=runner, evaluate=False)
+    assert result.shipped is True
+    assert result.ta_ticket_id == "tk"
+    assert result.frontier_after == "bbb"
+    assert result.error is None
+
+
+def test_ta_run_failed_envelope_records_reason(tmp_path: Path):
+    from scripts.bench.harness import TicketSpec
+
+    spec = TicketSpec(id="t", title="Title", prompt="P", project_id="p")
+    failed = '{"schema_version": 1, "status": "failed", "failure_reason": "no validated attempt"}'
+
+    def runner(cmd, **kwargs):
+        if "--help" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 1, failed, "")
+
+    result = run_terarchitect_ticket(spec, repo_root=tmp_path, runner=runner, evaluate=False)
+    assert result.shipped is False
+    assert "no validated attempt" in (result.error or "")

@@ -55,7 +55,7 @@ Options:
 
 ### `terarchitect`
 
-1. If `ta run --help` succeeds → `ta run <project_id> <ticket_id>` (requires IDs in YAML)
+1. If `ta run --help` succeeds → `ta --json run <project_id> "<title>" --description "<prompt>" [--attempt-count N] --timeout T` (needs `project_id` in YAML or `--project-id`). The agent-result envelope gives shipped status and frontier before/after; the shipped commit is fetched from AgentHub (`TERARCHITECT_AGENTHUB_URL`, `AGENTHUB_API_KEY`) into a scratch worktree for `make ci-python` and diff stats.
 2. Else if `project_id`, `ticket_id`, and `attempt_id` are set → `ta ship operator-loop …`
 3. Else exit with a clear **not yet supported** error (full unattended `ta ticket run` → ship is not wired here)
 
