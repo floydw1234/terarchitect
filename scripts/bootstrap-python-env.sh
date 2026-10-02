@@ -11,7 +11,7 @@ cd "${ROOT}"
 
 if [ ! -x "${VENV}/bin/python" ]; then
   if command -v uv >/dev/null 2>&1; then
-    uv venv "${VENV}"
+    uv venv --seed "${VENV}"
   else
     "${PYTHON_BIN}" -m venv "${VENV}"
   fi
