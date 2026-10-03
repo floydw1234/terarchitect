@@ -1,4 +1,5 @@
 import base64
+import os
 from unittest.mock import patch
 
 import pytest
@@ -144,3 +145,64 @@ def test_run_once_reports_ephemeral_runtime_when_shipping_without_project_path(t
         "ephemeral_repo": True,
         "project_path": str(repo_dir),
     }
+
+
+def test_run_once_reports_fail_and_marks_unsuccessful_on_bundle_fetch_error(tmp_path):
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    posts = []
+    commit = "a" * 40
+
+    run_payload = {
+        "run": {"id": "run-12345678", "promotion_candidate_id": "cand-1"},
+        "candidate": {"id": "cand-1"},
+        "project": {
+            "name": "Demo",
+            "project_path": str(repo_dir),
+            "github_url": "",
+            "ship_target": "agenthub",
+            "shipped_frontier": None,
+        },
+        "commit_hashes": [commit],
+        "membership": {},
+    }
+
+    def fake_post(path, body=None):
+        posts.append((path, body))
+        return {}
+
+    with patch.dict(
+        os.environ,
+        {
+            "SHIP_RUN_ID": "run-12345678",
+            "TERARCHITECT_API_URL": "http://backend",
+            "AGENTHUB_URL": "http://agenthub:8080",
+        },
+        clear=False,
+    ):
+        with patch("agent.shipper.shipper._api_get", return_value=run_payload), \
+             patch("agent.shipper.shipper._fetch_bundle", return_value=None), \
+             patch("agent.shipper.shipper.subprocess.run") as subprocess_run, \
+             patch("agent.shipper.shipper._post_to_channel"), \
+             patch("agent.shipper.shipper._api_post", side_effect=fake_post):
+            subprocess_run.return_value = type(
+                "R",
+                (),
+                {"returncode": 1, "stdout": "", "stderr": ""},
+            )()
+            processed, success = shipper._run_once_result()
+
+    assert processed is True
+    assert success is False
+    fail_posts = [body for path, body in posts if path.endswith("/fail")]
+    assert len(fail_posts) == 1
+    assert "Could not fetch attempt commit" in fail_posts[0]["error"]
+    composed_posts = [path for path, _ in posts if path.endswith("/composed")]
+    assert composed_posts == []
+
+
+def test_main_exits_nonzero_when_ship_run_fails():
+    with patch("agent.shipper.shipper._run_once_result", return_value=(True, False)):
+        with pytest.raises(SystemExit) as exc:
+            shipper.main()
+    assert exc.value.code == 1

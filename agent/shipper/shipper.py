@@ -382,7 +382,7 @@ def _compose_release_branch(
     # Ensure all commits are available locally
     for h in commit_hashes:
         if not _ensure_commit(h, project_path, tmp_dir):
-            print(f"[shipper] Warning: could not fetch {h[:12]} from AgentHub", file=sys.stderr)
+            raise ComposeError(f"Could not fetch attempt commit {h[:12]} from AgentHub.")
 
     if base_ref:
         if not _ensure_commit(base_ref, project_path, tmp_dir):
@@ -522,15 +522,19 @@ def _open_release_pr(
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def run_once() -> bool:
-    """Claim and execute one ship run. Returns True if work was done."""
+def _run_once_result() -> tuple[bool, bool]:
+    """Run one ship job. Returns ``(processed, success)``.
+
+    ``processed`` is False when there was nothing to do (idle). When True, ``success`` reflects
+    whether the run composed successfully (failures are reported to the backend when possible).
+    """
     run_id = _env("SHIP_RUN_ID")
 
     if run_id:
         data = _api_get(f"/api/worker/ship-run/{run_id}")
         if not data:
             print(f"[shipper] Could not fetch run {run_id}", file=sys.stderr)
-            return False
+            return False, False
     else:
         resp = requests.post(
             _base_url() + "/api/worker/ship-run/next",
@@ -539,10 +543,10 @@ def run_once() -> bool:
             timeout=15,
         )
         if resp.status_code == 204:
-            return False
+            return False, True
         if not resp.ok:
             print(f"[shipper] Claim failed: {resp.status_code}", file=sys.stderr)
-            return False
+            return True, False
         data = resp.json()
 
     run = data["run"]
@@ -585,14 +589,14 @@ def run_once() -> bool:
                 "The shipper found no accepted AgentHub commits for this ShipRun. "
                 "Ensure agents ran swarm_publish and their completions were recorded.",
         })
-        return True
+        return True, False
 
     if publish_github and not slug:
         _api_post(f"/api/worker/ship-run/{run_id}/fail", {
             "error": "ship_target=github but project has no parseable GitHub URL.",
             "compose_failed": True,
         })
-        return True
+        return True, False
 
     run_short_id = run_id.replace("-", "")[:8]
 
@@ -617,7 +621,7 @@ def run_once() -> bool:
                     "ephemeral_repo": False,
                 },
             })
-            return True
+            return True, False
 
         # --- Compose release branch ---
         _post_to_channel(
@@ -678,7 +682,7 @@ def run_once() -> bool:
                 "fix_ticket_description":
                     f"The shipper encountered conflicts composing this ShipRun.\n\nDetails:\n{str(e)[:2000]}",
             })
-            return True
+            return True, False
 
         # --- Run tests ---
         test_status, test_output = _run_tests(runtime_repo_path)
@@ -703,7 +707,7 @@ def run_once() -> bool:
                 "fix_ticket_description":
                     f"Tests failed after composing this ShipRun.\n\nOutput:\n{test_output[:2000]}",
             })
-            return True
+            return True, False
 
         if not composed_commit_hash:
             head_r = _git(["rev-parse", "HEAD"], cwd=runtime_repo_path, check=False)
@@ -739,7 +743,7 @@ def run_once() -> bool:
                     "compose_failed": True,
                     "runtime": runtime_repo,
                 })
-                return True
+                return True, False
 
             pr_url, pr_number = _open_release_pr(
                 runtime_repo_path, slug, branch,
@@ -772,7 +776,7 @@ def run_once() -> bool:
                     "compose_failed": True,
                     "runtime": runtime_repo,
                 })
-                return True
+                return True, False
             _post_to_channel(
                 ship_ch,
                 _event_content(
@@ -813,9 +817,17 @@ def run_once() -> bool:
                 f"[shipper] ShipRun composed (AgentHub-only). commit={(composed_commit_hash or '')[:12]} "
                 f"tests={test_status} files={len(changed_files)}"
             )
-        return True
+        return True, True
+
+
+def run_once() -> bool:
+    """Claim and execute one ship run. Returns True if work was done."""
+    processed, _success = _run_once_result()
+    return processed
 
 
 def main() -> None:
-    run_once()
-    sys.exit(0)
+    processed, success = _run_once_result()
+    if not processed:
+        sys.exit(0)
+    sys.exit(0 if success else 1)
