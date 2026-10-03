@@ -228,7 +228,8 @@ def claim_ship_run(base_url: str) -> Optional[dict]:
 
 # Env vars forwarded from coordinator to workspace composer subprocess.
 _COMPOSER_ENV_KEYS = (
-    "TERARCHITECT_API_URL", "TERARCHITECT_WORKER_API_KEY",
+    "TERARCHITECT_API_URL", "TERARCHITECT_WORKER_API_KEY", "TERARCHITECT_WORKER_API_KEY_PATH",
+    "TERARCHITECT_IN_CONTAINER",
     "AGENTHUB_URL", "AGENTHUB_API_KEY",
     "WORKSPACE_TEST_COMMAND", "MERGE_TEST_COMMAND",
     "GIT_USER_NAME", "GIT_USER_EMAIL",
@@ -236,14 +237,16 @@ _COMPOSER_ENV_KEYS = (
 
 
 def _apply_host_agenthub_url_remap(env: dict) -> None:
-    """Remap docker-internal AgentHub URLs for host-side subprocesses (spark dogfood parity)."""
-    raw = env.get("AGENTHUB_URL")
-    if not raw:
-        return
-    from cli._shipper import remap_agenthub_url_for_host
+    """Remap docker-internal AgentHub URLs for host-side coordinator subprocesses only.
 
-    remapped, warning = remap_agenthub_url_for_host(raw)
-    env["AGENTHUB_URL"] = remapped
+    In-compose coordinator (``TERARCHITECT_IN_CONTAINER=1``) keeps ``AGENTHUB_URL`` as-is so
+    shipper/composer reach the AgentHub service on the Docker network.
+    """
+    from cli._shipper import resolve_shipper_agenthub_url
+
+    remapped, warning = resolve_shipper_agenthub_url()
+    if remapped:
+        env["AGENTHUB_URL"] = remapped
     if warning:
         print(warning, file=sys.stderr, flush=True)
 
@@ -260,6 +263,7 @@ def _run_workspace_composer(base_url: str, job_data: dict) -> None:
         val = os.environ.get(key)
         if val:
             env[key] = val
+    _apply_host_agenthub_url_remap(env)
     env["WORKSPACE_ID"] = str(ws_id)
 
     repo_root = _repo_root()
@@ -282,7 +286,8 @@ def _run_workspace_composer(base_url: str, job_data: dict) -> None:
 
 # Env vars forwarded from coordinator to shipper subprocess.
 _SHIPPER_ENV_KEYS = (
-    "TERARCHITECT_API_URL", "TERARCHITECT_WORKER_API_KEY",
+    "TERARCHITECT_API_URL", "TERARCHITECT_WORKER_API_KEY", "TERARCHITECT_WORKER_API_KEY_PATH",
+    "TERARCHITECT_IN_CONTAINER",
     "AGENTHUB_URL", "AGENTHUB_API_KEY",
     "MERGE_TEST_COMMAND",
     "GIT_USER_NAME", "GIT_USER_EMAIL",

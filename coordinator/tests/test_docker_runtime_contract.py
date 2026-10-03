@@ -199,11 +199,30 @@ class TestDockerRuntimeContract(unittest.TestCase):
 
         env = {"AGENTHUB_URL": "http://agenthub:8080"}
         with patch("builtins.print") as print_mock:
-            _apply_host_agenthub_url_remap(env)
+            with patch.dict(os.environ, {"AGENTHUB_URL": "http://agenthub:8080"}, clear=False):
+                _apply_host_agenthub_url_remap(env)
 
         self.assertEqual(env["AGENTHUB_URL"], "http://127.0.0.1:8088")
         printed = " ".join(str(call.args[0]) for call in print_mock.call_args_list)
         self.assertIn("remapped AGENTHUB_URL", printed)
+
+    def test_apply_host_agenthub_url_remap_skips_remap_in_compose_coordinator(self):
+        from coordinator.coordinator import _apply_host_agenthub_url_remap
+
+        env = {"AGENTHUB_URL": "http://agenthub:8080"}
+        with patch("builtins.print") as print_mock:
+            with patch.dict(
+                os.environ,
+                {
+                    "AGENTHUB_URL": "http://agenthub:8080",
+                    "TERARCHITECT_IN_CONTAINER": "1",
+                },
+                clear=False,
+            ):
+                _apply_host_agenthub_url_remap(env)
+
+        self.assertEqual(env["AGENTHUB_URL"], "http://agenthub:8080")
+        print_mock.assert_not_called()
 
     def test_apply_host_agenthub_url_remap_leaves_localhost_alone(self):
         from coordinator.coordinator import _apply_host_agenthub_url_remap
