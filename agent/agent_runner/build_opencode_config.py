@@ -6,7 +6,7 @@ Prints JSON to stdout; prints nothing if no WORKER_* env are set.
 import json
 import os
 
-# OpenCode tools that default to "ask" in unattended worker containers.
+# Permission keys from OpenCode 1.2.x config schema (GET /doc PermissionConfig).
 _OPENCODE_ALLOW_PERMISSIONS = {
     "read": "allow",
     "edit": "allow",
@@ -17,12 +17,15 @@ _OPENCODE_ALLOW_PERMISSIONS = {
     "task": "allow",
     "skill": "allow",
     "lsp": "allow",
-    "question": "allow",
     "webfetch": "allow",
     "websearch": "allow",
+    "codesearch": "allow",
     "external_directory": "allow",
     "doom_loop": "allow",
     "todowrite": "allow",
+    "todoread": "allow",
+    # Unattended workers must not block on the question tool.
+    "question": "deny",
 }
 
 

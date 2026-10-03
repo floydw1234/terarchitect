@@ -121,11 +121,16 @@ def run_local_shipper(api_url: str, ship_run_id: str, *, capture_stdout: bool = 
     ``SHIP_RUN_ID``; the shipper accepts a queued run when fetched by id.
     """
     env: dict[str, str] = {}
+    worker_key = (
+        (os.environ.get("TERARCHITECT_WORKER_API_KEY") or os.environ.get("WORKER_API_KEY") or "").strip()
+    )
+    if worker_key:
+        env["TERARCHITECT_WORKER_API_KEY"] = worker_key
     for key in SHIPPER_ENV_KEYS:
         val = os.environ.get(key)
         if not val:
             continue
-        if key in {"AGENTHUB_URL", "TERARCHITECT_AGENTHUB_URL"}:
+        if key in {"AGENTHUB_URL", "TERARCHITECT_AGENTHUB_URL", "TERARCHITECT_WORKER_API_KEY"}:
             continue
         env[key] = val
     remapped, warning = resolve_shipper_agenthub_url()

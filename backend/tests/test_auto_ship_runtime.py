@@ -13,7 +13,20 @@ def test_auto_ship_runtime_issues_when_misconfigured():
     with patch.dict(os.environ, {}, clear=True):
         issues = auto_ship_runtime_issues()
     assert any("AGENTHUB_URL" in item for item in issues)
-    assert any("TERARCHITECT_WORKER_API_KEY" in item for item in issues)
+    assert any("WORKER_API_KEY" in item or "TERARCHITECT_WORKER_API_KEY" in item for item in issues)
+
+
+def test_auto_ship_runtime_ok_with_worker_api_key_fallback():
+    with patch.dict(
+        os.environ,
+        {
+            "AGENTHUB_URL": "http://agenthub:8080",
+            "AGENTHUB_API_KEY": "secret",
+            "WORKER_API_KEY": "worker-from-env",
+        },
+        clear=True,
+    ):
+        assert auto_ship_runtime_issues() == []
 
 
 def test_auto_ship_runtime_ok_in_compose():

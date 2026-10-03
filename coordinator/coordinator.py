@@ -135,7 +135,7 @@ _COORDINATOR_AGENT_ENV_KEYS = (
 )
 
 def _headers() -> dict:
-    token = _env("TERARCHITECT_WORKER_API_KEY")
+    token = (_env("TERARCHITECT_WORKER_API_KEY") or _env("WORKER_API_KEY")).strip()
     if not token:
         return {}
     return {"Authorization": f"Bearer {token}"}

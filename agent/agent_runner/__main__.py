@@ -82,7 +82,10 @@ def run_ticket() -> None:
         or os.environ.get("GITHUB_AGENT_TOKEN", "").strip()
         or os.environ.get("github_agent_token", "").strip()
     )
-    auth_token = (os.environ.get("TERARCHITECT_WORKER_API_KEY") or "").strip() or None
+    auth_token = (
+        (os.environ.get("TERARCHITECT_WORKER_API_KEY") or os.environ.get("WORKER_API_KEY") or "").strip()
+        or None
+    )
 
     try:
         ticket_id = uuid.UUID(ticket_id_str)
@@ -115,7 +118,7 @@ def run_ticket() -> None:
     _ensure_git_config(work_dir)
 
     from middle_agent.backend import HttpAgentBackend
-    from middle_agent.agent import MiddleAgent, WorkerUnavailableError
+    from middle_agent.agent import MiddleAgent, WorkerStalledError, WorkerUnavailableError
 
     backend = HttpAgentBackend(base_url=base_url, auth_token=auth_token)
     docker_error = os.environ.get("TERARCHITECT_DOCKER_RUN_ERROR", "").strip()
@@ -130,6 +133,11 @@ def run_ticket() -> None:
     agent = MiddleAgent(backend=backend)
     try:
         agent.process_ticket(ticket_id, project_path=work_dir, project_id=project_id)
+    except WorkerStalledError as e:
+        msg = str(e) or "stalled waiting for input/no progress"
+        print(f"[agent_runner] Worker stalled: {msg}", file=sys.stderr)
+        backend.log(project_id, ticket_id, str(uuid.uuid4()), "worker_stalled", msg)
+        sys.exit(1)
     except WorkerUnavailableError as e:
         print(f"[agent_runner] Worker unavailable: {e}", file=sys.stderr)
         backend.log(project_id, ticket_id, str(uuid.uuid4()), "worker_unavailable", str(e),

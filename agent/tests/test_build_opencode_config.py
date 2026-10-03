@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 class BuildOpencodeConfigTests(unittest.TestCase):
-    def test_includes_allow_all_permissions(self):
+    def test_includes_unattended_permissions(self):
         script = Path(__file__).resolve().parents[1] / "agent_runner" / "build_opencode_config.py"
         env = {
             **os.environ,
@@ -22,8 +22,10 @@ class BuildOpencodeConfigTests(unittest.TestCase):
             check=True,
         )
         payload = json.loads(proc.stdout.strip())
-        self.assertEqual(payload.get("permission", {}).get("question"), "allow")
+        self.assertEqual(payload.get("permission", {}).get("question"), "deny")
+        self.assertEqual(payload.get("permission", {}).get("bash"), "allow")
         self.assertEqual(payload.get("permission", {}).get("external_directory"), "allow")
+        self.assertEqual(payload.get("permission", {}).get("todoread"), "allow")
 
 
 if __name__ == "__main__":

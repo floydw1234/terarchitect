@@ -78,7 +78,7 @@ def _base_url() -> str:
 
 
 def _auth_headers() -> dict:
-    key = _env("TERARCHITECT_WORKER_API_KEY")
+    key = (_env("TERARCHITECT_WORKER_API_KEY") or _env("WORKER_API_KEY")).strip()
     return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
 
@@ -807,7 +807,7 @@ def run_once() -> bool:
 
 
 def main() -> None:
-    if not _env("TERARCHITECT_WORKER_API_KEY"):
-        print("[shipper] Warning: TERARCHITECT_WORKER_API_KEY not set", file=sys.stderr)
+    if not (_env("TERARCHITECT_WORKER_API_KEY") or _env("WORKER_API_KEY")):
+        print("[shipper] Warning: TERARCHITECT_WORKER_API_KEY (or WORKER_API_KEY) not set", file=sys.stderr)
     run_once()
     sys.exit(0)
