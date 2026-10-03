@@ -6,6 +6,31 @@ Prints JSON to stdout; prints nothing if no WORKER_* env are set.
 import json
 import os
 
+# OpenCode tools that default to "ask" in unattended worker containers.
+_OPENCODE_ALLOW_PERMISSIONS = {
+    "read": "allow",
+    "edit": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "bash": "allow",
+    "task": "allow",
+    "skill": "allow",
+    "lsp": "allow",
+    "question": "allow",
+    "webfetch": "allow",
+    "websearch": "allow",
+    "external_directory": "allow",
+    "doom_loop": "allow",
+    "todowrite": "allow",
+}
+
+
+def worker_permission_config() -> dict[str, str]:
+    """Full allow-list for non-interactive worker runs inside job containers."""
+    return dict(_OPENCODE_ALLOW_PERMISSIONS)
+
+
 # Same structure as backend/scripts/test_opencode_server.py build_provider_config_from_settings()
 def main() -> None:
     base_url = (os.environ.get("WORKER_LLM_URL") or "").strip().rstrip("/")
@@ -34,6 +59,7 @@ def main() -> None:
             }
         },
         "model": f"{provider_id}/{model_id}",
+        "permission": worker_permission_config(),
     }
     print(json.dumps(payload))
 

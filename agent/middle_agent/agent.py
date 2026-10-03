@@ -521,6 +521,14 @@ class WorkerUnavailableError(Exception):
         self.cause = cause
 
 
+class WorkerStalledError(Exception):
+    """Raised when the worker stops producing progress (often waiting for permission or user input)."""
+
+    def __init__(self, message: str = "stalled waiting for input/no progress", cause: Optional[Exception] = None):
+        super().__init__(message)
+        self.cause = cause
+
+
 class MiddleAgent:
     """Agent that orchestrates a worker backend for implementation tasks."""
 
@@ -600,6 +608,47 @@ class MiddleAgent:
         self._active_project_id: Optional[uuid.UUID] = None
         self._active_ticket_id: Optional[uuid.UUID] = None
         self._current_phase: str = "setup"
+
+    @staticmethod
+    def _worker_inactivity_timeout_sec() -> int:
+        raw = (get_setting_or_env("WORKER_INACTIVITY_TIMEOUT_SEC") or "600").strip()
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            return 600
+
+    @staticmethod
+    def _sse_event_is_progress(resolved_type: str) -> bool:
+        lowered = (resolved_type or "").lower()
+        if not lowered or lowered in {"server.connected", "server.heartbeat"}:
+            return False
+        return True
+
+    def _opencode_auto_allow_permission(
+        self,
+        base: str,
+        worker_session_id: str,
+        props: dict,
+    ) -> None:
+        permission_id = (
+            props.get("id")
+            or props.get("permissionID")
+            or props.get("permission_id")
+            or (props.get("permission") or {}).get("id")
+        )
+        if not permission_id:
+            self._debug_log("permission.asked without permission id; cannot auto-allow")
+            return
+        try:
+            requests.post(
+                f"{base}/session/{worker_session_id}/permissions/{permission_id}",
+                json={"response": "always"},
+                auth=self._opencode_auth,
+                timeout=15,
+            )
+            self._debug_log(f"auto-allowed OpenCode permission {permission_id}")
+        except requests.RequestException as exc:
+            self._debug_log(f"OpenCode permission auto-allow failed: {exc}")
 
     def _env_has_container_url(self, key: str) -> bool:
         """True if env has key with host.docker.internal (coordinator set container-safe URL; don't overwrite with backend localhost)."""
@@ -2440,9 +2489,21 @@ class MiddleAgent:
         # from sessions running in a different directory.
         event_url = f"{base}/global/event"
         deadline = time.monotonic() + timeout_sec
+        inactivity_limit = self._worker_inactivity_timeout_sec()
+        last_progress = time.monotonic()
         last_log_time = time.monotonic()
         log_interval = 15.0  # post a heartbeat log at most once per 15s
         tool_calls_seen: List[str] = []
+
+        def _touch_progress() -> None:
+            nonlocal last_progress
+            last_progress = time.monotonic()
+
+        def _check_inactivity() -> None:
+            if inactivity_limit <= 0:
+                return
+            if time.monotonic() - last_progress >= inactivity_limit:
+                raise WorkerStalledError("stalled waiting for input/no progress")
 
         self._debug_log(f"SSE stream: waiting for session.idle on worker_session={worker_session_id} dir={project_path!r}")
         try:
@@ -2463,6 +2524,7 @@ class MiddleAgent:
                     if time.monotonic() > deadline:
                         self._debug_log(f"SSE stream: timeout after {timeout_sec}s")
                         break
+                    _check_inactivity()
                     if stop_event is not None and stop_event.is_set():
                         self._debug_log("SSE stream: stop requested, exiting early")
                         break
@@ -2508,6 +2570,11 @@ class MiddleAgent:
                         resolved_type = event_type or (inner.get("type") or "")
                         if "delta" not in resolved_type:
                             self._debug_log(f"SSE event: type={resolved_type!r} sess={evt_session_id!r}")
+                        if "permission" in resolved_type.lower() and "ask" in resolved_type.lower():
+                            self._opencode_auto_allow_permission(base, worker_session_id, props)
+                            _touch_progress()
+                        elif self._sse_event_is_progress(resolved_type):
+                            _touch_progress()
                         if "tool" in resolved_type.lower() or "part" in resolved_type.lower():
                             part = props.get("part") or props
                             tool_name = (
@@ -2545,6 +2612,7 @@ class MiddleAgent:
             ) from e
 
         # Timed out or stream ended without idle; try to fetch whatever messages exist.
+        _check_inactivity()
         self._debug_log(f"SSE stream: ended without session.idle; fetching messages as fallback")
         return self._fetch_opencode_last_message(base, worker_session_id)
 

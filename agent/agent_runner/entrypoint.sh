@@ -73,7 +73,7 @@ if [ "$_worker_mode" = "opencode" ]; then
   # Enable OpenCode's built-in websearch tool (Exa-backed) for the worker.
   # No API key required; OPENCODE_ENABLE_EXA activates the websearch tool.
   export OPENCODE_ENABLE_EXA="${OPENCODE_ENABLE_EXA:-1}"
-  opencode serve --port "$_oc_port" --hostname 127.0.0.1 &
+  opencode serve --auto --port "$_oc_port" --hostname 127.0.0.1 &
   _i=0
   while [ $_i -lt 30 ]; do
     if curl -sf "http://127.0.0.1:${_oc_port}/global/health" >/dev/null 2>&1; then break; fi

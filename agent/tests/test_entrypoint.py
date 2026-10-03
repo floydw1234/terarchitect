@@ -110,7 +110,7 @@ class TestAgentEntrypoint(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn(
-            "serve --port 4096 --hostname 127.0.0.1",
+            "serve --auto --port 4096 --hostname 127.0.0.1",
             (logs_dir / "opencode.log").read_text(),
         )
         self.assertIn(

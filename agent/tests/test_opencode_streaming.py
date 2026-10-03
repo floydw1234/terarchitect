@@ -346,6 +346,36 @@ class TestStreamOpencodeUntilIdle(unittest.TestCase):
         self.assertEqual(result, "fallback output")
 
 
+class TestOpencodeInactivityWatchdog(unittest.TestCase):
+
+    def test_stalls_when_only_heartbeats(self):
+        times = iter([0.0, 0.0, 2.0, 2.0, 2.0])
+
+        def fake_monotonic():
+            return next(times, 2.0)
+
+        sse_events = iter(['event: server.heartbeat\n\n'])
+
+        with patch.dict(os.environ, {"WORKER_INACTIVITY_TIMEOUT_SEC": "1"}, clear=False):
+            agent = _make_agent()
+            with patch("time.monotonic", side_effect=fake_monotonic):
+                with patch("requests.get") as mock_get:
+                    mock_get.return_value = _mock_get_response(sse_events)
+                    with self.assertRaises(Exception) as ctx:
+                        agent._stream_opencode_until_idle(
+                            base="http://localhost:4096",
+                            worker_session_id="oc-worker-sess",
+                            timeout_sec=30,
+                            project_id=None,
+                            ticket_id=None,
+                            session_id="sess",
+                            project_path=None,
+                        )
+        from middle_agent.agent import WorkerStalledError
+
+        self.assertIsInstance(ctx.exception, WorkerStalledError)
+
+
 # ---------------------------------------------------------------------------
 # _send_to_worker: API call ordering and endpoint validation
 # ---------------------------------------------------------------------------

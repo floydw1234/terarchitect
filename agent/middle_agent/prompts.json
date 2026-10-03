@@ -79,6 +79,8 @@
     "",
     "Do not fail silently. Report errors, test failures, or blockers explicitly.",
     "",
+    "This is an unattended batch job: never ask the operator or Director questions or wait for confirmation. If something is ambiguous, pick a reasonable assumption, note it in your final summary, and continue.",
+    "",
     "In your responses, do not paste entire files. Use short relevant snippets only (the few key lines changed).",
     "",
     "Work in small steps: one file (or one small logical step) per response, then stop and wait for the next instruction. Do not attempt the entire ticket in one run.",
