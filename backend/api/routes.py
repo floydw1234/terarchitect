@@ -3136,8 +3136,19 @@ def memory_retrieve(project_id):
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 503
     except Exception as e:
-        current_app.logger.exception("Memory retrieve failed")
-        return jsonify({"error": "Retrieve failed", "detail": str(e)}), 500
+        import time
+
+        cooldown = int(os.environ.get("MEMORY_RETRIEVE_ERROR_COOLDOWN_SEC") or "300")
+        now = time.monotonic()
+        last = current_app.config.get("_memory_retrieve_error_logged_at")
+        if last is None or now - float(last) >= cooldown:
+            current_app.logger.warning(
+                "Memory retrieve failed (similar errors suppressed for %ss): %s",
+                cooldown,
+                e,
+            )
+            current_app.config["_memory_retrieve_error_logged_at"] = now
+        return jsonify({"error": "Retrieve failed", "detail": str(e)}), 503
     return jsonify({"results": results, "enabled": True})
 
 
