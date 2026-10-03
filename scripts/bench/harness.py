@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import re
 import shlex
 import subprocess
@@ -148,6 +149,23 @@ def write_csv(path: Path | str, results: Sequence[BenchmarkResult]) -> None:
         writer.writerows(rows)
 
 
+def append_results_csv(path: Path | str, results: Sequence[BenchmarkResult]) -> None:
+    """Rewrite CSV with all rows accumulated so far (safe for interrupted runs)."""
+    write_csv(path, results)
+
+
+def flush_results_snapshot(
+    path: Path | str,
+    results: Sequence[BenchmarkResult],
+    *,
+    title: str,
+) -> None:
+    """Persist partial bench output (CSV + markdown) after each ticket."""
+    out_dir = Path(path)
+    append_results_csv(out_dir / "results.csv", results)
+    write_markdown(out_dir / "results.md", results, title=title)
+
+
 def render_markdown_table(results: Sequence[BenchmarkResult]) -> str:
     if not results:
         return "| (no results) |\n| --- |\n"
@@ -177,11 +195,18 @@ def parse_token_usage(text: str) -> tuple[int | None, int | None, str | None]:
     tokens_out: int | None = None
     cost: str | None = None
 
+    json_in = re.search(r'"input_tokens"\s*:\s*(\d+)', text)
+    json_out = re.search(r'"output_tokens"\s*:\s*(\d+)', text)
+    if json_in:
+        tokens_in = int(json_in.group(1))
+    if json_out:
+        tokens_out = int(json_out.group(1))
+
     in_match = re.search(r"(?:input|prompt)\s*tokens?[:\s]+(\d+)", text, re.I)
     out_match = re.search(r"(?:output|completion)\s*tokens?[:\s]+(\d+)", text, re.I)
-    if in_match:
+    if in_match and tokens_in is None:
         tokens_in = int(in_match.group(1))
-    if out_match:
+    if out_match and tokens_out is None:
         tokens_out = int(out_match.group(1))
 
     cost_match = re.search(r"\$\s*([0-9]+(?:\.[0-9]+)?)", text)
@@ -232,26 +257,45 @@ def run_subprocess(
     *,
     cwd: Path | None = None,
     timeout: float | None = None,
+    env: dict[str, str] | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     run = runner or subprocess.run
-    return run(
-        list(cmd),
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
+    kwargs: dict = {
+        "cwd": cwd,
+        "capture_output": True,
+        "text": True,
+        "timeout": timeout,
+        "check": False,
+    }
+    if env is not None:
+        kwargs["env"] = env
+    return run(list(cmd), **kwargs)
+
+
+def ci_subprocess_env(repo_root: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env.setdefault("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    venv_python = repo_root / ".venv" / "bin" / "python"
+    if venv_python.is_file():
+        env["PYTEST_PYTHON"] = str(venv_python)
+    return env
 
 
 def run_ci_python(
     repo_root: Path,
     *,
     ci_command: Sequence[str] = DEFAULT_CI_COMMAND,
+    cwd: Path | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> bool:
-    proc = run_subprocess(ci_command, cwd=repo_root, runner=runner)
+    target = cwd or repo_root
+    env = ci_subprocess_env(repo_root)
+    if ci_command == DEFAULT_CI_COMMAND:
+        script = repo_root / "scripts" / "ci-python.sh"
+        proc = run_subprocess(["bash", str(script)], cwd=target, env=env, runner=runner)
+    else:
+        proc = run_subprocess(ci_command, cwd=target, env=env, runner=runner)
     return proc.returncode == 0
 
 
@@ -405,7 +449,7 @@ def run_baseline_ticket(
         if agent_proc.returncode != 0:
             result.error = f"agent exited {agent_proc.returncode}: {agent_proc.stderr.strip()[:500]}"
 
-        result.ci_pass = run_ci_python(worktree, ci_command=ci_command, runner=runner)
+        result.ci_pass = run_ci_python(worktree, ci_command=ci_command, cwd=worktree, runner=runner)
         files, added, removed = git_diff_stats(worktree, base_ref=None, runner=runner)
         result.files_changed = files
         result.lines_added = added
@@ -484,6 +528,7 @@ def run_harness(
     dry_run: bool = False,
     ta_bin: str | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    on_result: Callable[[BenchmarkResult, list[BenchmarkResult]], None] | None = None,
 ) -> list[BenchmarkResult]:
     if mode not in {"terarchitect", "baseline"}:
         raise HarnessError(f"unsupported mode: {mode}")
@@ -491,22 +536,21 @@ def run_harness(
     results: list[BenchmarkResult] = []
     for spec in specs:
         if mode == "baseline":
-            results.append(
-                run_baseline_ticket(
-                    spec,
-                    repo_root=repo_root,
-                    dry_run=dry_run,
-                    runner=runner,
-                )
+            row = run_baseline_ticket(
+                spec,
+                repo_root=repo_root,
+                dry_run=dry_run,
+                runner=runner,
             )
         else:
-            results.append(
-                run_terarchitect_ticket(
-                    spec,
-                    repo_root=repo_root,
-                    dry_run=dry_run,
-                    ta_bin=ta_bin,
-                    runner=runner,
-                )
+            row = run_terarchitect_ticket(
+                spec,
+                repo_root=repo_root,
+                dry_run=dry_run,
+                ta_bin=ta_bin,
+                runner=runner,
             )
+        results.append(row)
+        if on_result is not None:
+            on_result(row, results)
     return results

@@ -14,6 +14,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from scripts.bench.harness import (  # noqa: E402
     HarnessError,
+    flush_results_snapshot,
     load_ticket_specs,
     run_harness,
     write_csv,
@@ -71,15 +72,23 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     out_dir = args.output_dir or _default_output_dir()
+    title = f"Bench results ({args.mode})"
 
     try:
         specs = load_ticket_specs(args.spec)
+
+        def _persist(_row, rows) -> None:
+            if args.dry_run:
+                return
+            flush_results_snapshot(out_dir, rows, title=title)
+
         results = run_harness(
             specs,
             mode=args.mode,
             repo_root=args.repo_root.resolve(),
             dry_run=args.dry_run,
             ta_bin=args.ta_bin,
+            on_result=_persist,
         )
     except HarnessError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -90,11 +99,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[dry-run] {row.ticket_id}: {row.error or 'ok'}")
     else:
         write_csv(out_dir / "results.csv", results)
-        write_markdown(
-            out_dir / "results.md",
-            results,
-            title=f"Bench results ({args.mode})",
-        )
+        write_markdown(out_dir / "results.md", results, title=title)
         print(f"Wrote {out_dir / 'results.csv'}")
         print(f"Wrote {out_dir / 'results.md'}")
 
