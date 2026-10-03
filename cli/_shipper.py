@@ -121,9 +121,9 @@ def run_local_shipper(api_url: str, ship_run_id: str, *, capture_stdout: bool = 
     ``SHIP_RUN_ID``; the shipper accepts a queued run when fetched by id.
     """
     env: dict[str, str] = {}
-    worker_key = (
-        (os.environ.get("TERARCHITECT_WORKER_API_KEY") or os.environ.get("WORKER_API_KEY") or "").strip()
-    )
+    from agent.utils.worker_api_key import resolve_terarchitect_worker_api_key
+
+    worker_key = resolve_terarchitect_worker_api_key()
     if worker_key:
         env["TERARCHITECT_WORKER_API_KEY"] = worker_key
     for key in SHIPPER_ENV_KEYS:

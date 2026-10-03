@@ -13,23 +13,34 @@ def test_auto_ship_runtime_issues_when_misconfigured():
     with patch.dict(os.environ, {}, clear=True):
         issues = auto_ship_runtime_issues()
     assert any("AGENTHUB_URL" in item for item in issues)
-    assert any("WORKER_API_KEY" in item or "TERARCHITECT_WORKER_API_KEY" in item for item in issues)
 
 
-def test_auto_ship_runtime_ok_with_worker_api_key_fallback():
+def test_auto_ship_runtime_ok_without_worker_key_when_auth_disabled():
     with patch.dict(
         os.environ,
         {
             "AGENTHUB_URL": "http://agenthub:8080",
             "AGENTHUB_API_KEY": "secret",
-            "WORKER_API_KEY": "worker-from-env",
+            "WORKER_API_KEY": "llm-provider-key-not-worker-auth",
         },
         clear=True,
     ):
         assert auto_ship_runtime_issues() == []
 
 
-def test_auto_ship_runtime_ok_in_compose():
+def test_auto_ship_runtime_ok_with_agenthub_auth_disabled():
+    with patch.dict(
+        os.environ,
+        {
+            "AGENTHUB_URL": "http://agenthub:8080",
+            "AGENTHUB_AUTH_DISABLED": "1",
+        },
+        clear=True,
+    ):
+        assert auto_ship_runtime_issues() == []
+
+
+def test_auto_ship_runtime_ok_in_compose_with_worker_key():
     with patch.dict(
         os.environ,
         {
@@ -41,3 +52,32 @@ def test_auto_ship_runtime_ok_in_compose():
     ):
         assert auto_ship_runtime_issues() == []
         assert format_auto_ship_runtime_error() == ""
+
+
+def test_auto_ship_runtime_requires_worker_key_when_auth_enabled(tmp_path):
+    key_file = tmp_path / "worker.key"
+    key_file.write_text("from-file\n", encoding="utf-8")
+    with patch.dict(
+        os.environ,
+        {
+            "AGENTHUB_URL": "http://agenthub:8080",
+            "AGENTHUB_API_KEY": "secret",
+            "TERARCHITECT_WORKER_API_KEY_PATH": str(key_file),
+        },
+        clear=True,
+    ):
+        assert auto_ship_runtime_issues() == []
+
+
+def test_auto_ship_runtime_fails_when_worker_auth_configured_but_unreadable(tmp_path):
+    with patch.dict(
+        os.environ,
+        {
+            "AGENTHUB_URL": "http://agenthub:8080",
+            "AGENTHUB_API_KEY": "secret",
+            "TERARCHITECT_WORKER_API_KEY_PATH": str(tmp_path / "missing"),
+        },
+        clear=True,
+    ):
+        issues = auto_ship_runtime_issues()
+    assert any("could not be resolved" in item for item in issues)

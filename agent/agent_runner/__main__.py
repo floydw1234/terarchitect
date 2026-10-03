@@ -82,10 +82,9 @@ def run_ticket() -> None:
         or os.environ.get("GITHUB_AGENT_TOKEN", "").strip()
         or os.environ.get("github_agent_token", "").strip()
     )
-    auth_token = (
-        (os.environ.get("TERARCHITECT_WORKER_API_KEY") or os.environ.get("WORKER_API_KEY") or "").strip()
-        or None
-    )
+    from agent.utils.worker_api_key import resolve_terarchitect_worker_api_key
+
+    auth_token = resolve_terarchitect_worker_api_key() or None
 
     try:
         ticket_id = uuid.UUID(ticket_id_str)

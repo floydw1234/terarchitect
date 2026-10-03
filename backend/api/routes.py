@@ -520,7 +520,9 @@ def _ui_auth_check():
     # Also pass through requests carrying a valid worker token.
     # Some worker-facing endpoints live under /projects/... (complete, logs, cancel-requested,
     # worker-context) and are not covered by the prefix check above.
-    worker_token = (get_value("TERARCHITECT_WORKER_API_KEY") or "").strip()
+    from utils.worker_api_key import configured_worker_api_token
+
+    worker_token = configured_worker_api_token()
     if worker_token:
         auth_header = request.headers.get("Authorization") or ""
         if auth_header.startswith("Bearer ") and auth_header[7:].strip() == worker_token:
@@ -532,9 +534,18 @@ def _ui_auth_check():
 # Worker-facing API: auth via Bearer token. Set TERARCHITECT_WORKER_API_KEY in the backend env to require auth; if unset, no auth (dev).
 def _require_worker_auth():
     """Return (None, None) if authorized, else (response, status_code) to return."""
-    token = (get_value("TERARCHITECT_WORKER_API_KEY") or "").strip()
-    if not token:
+    from utils.worker_api_key import (
+        configured_worker_api_token,
+        is_worker_api_auth_enforced,
+    )
+
+    if not is_worker_api_auth_enforced():
         return None, None  # No key configured: allow (dev)
+    token = configured_worker_api_token()
+    if not token:
+        return jsonify(
+            {"error": "Worker API auth is enabled but TERARCHITECT_WORKER_API_KEY could not be loaded"}
+        ), 503
     auth = request.headers.get("Authorization") or ""
     if not auth.startswith("Bearer "):
         return jsonify({"error": "Missing or invalid Authorization header (expected Bearer <token>)"}), 401

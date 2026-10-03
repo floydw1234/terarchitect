@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from urllib.parse import urlparse
 
-from utils.worker_api_key import effective_terarchitect_worker_api_key
+from utils.worker_api_key import is_worker_api_auth_enforced, resolve_terarchitect_worker_api_key
 
 _DOCKER_AGENTHUB_HOSTS = frozenset({"agenthub"})
 
@@ -38,12 +38,12 @@ def auto_ship_runtime_issues() -> list[str]:
     if not api_key and not auth_disabled:
         issues.append("AGENTHUB_API_KEY is not set in backend runtime (required for auto-ship compose).")
 
-    worker_key = effective_terarchitect_worker_api_key()
-    if not worker_key:
-        issues.append(
-            "TERARCHITECT_WORKER_API_KEY (or WORKER_API_KEY) is not set in backend runtime "
-            "(required for in-process shipper API calls)."
-        )
+    if is_worker_api_auth_enforced():
+        if not resolve_terarchitect_worker_api_key():
+            issues.append(
+                "TERARCHITECT_WORKER_API_KEY is configured but could not be resolved "
+                "(check TERARCHITECT_WORKER_API_KEY or TERARCHITECT_WORKER_API_KEY_PATH)."
+            )
     return issues
 
 

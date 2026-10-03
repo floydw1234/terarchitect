@@ -38,7 +38,7 @@ def test_remap_agenthub_url_for_host_leaves_localhost_alone(url):
     assert warning is None
 
 
-def test_run_local_shipper_uses_worker_api_key_fallback(capsys):
+def test_run_local_shipper_omits_worker_key_when_auth_disabled(capsys):
     captured: dict = {}
 
     def fake_run(cmd, env, cwd, **kwargs):
@@ -54,7 +54,7 @@ def test_run_local_shipper_uses_worker_api_key_fallback(capsys):
         with patch.dict(
             os.environ,
             {
-                "WORKER_API_KEY": "worker-from-spark-env",
+                "WORKER_API_KEY": "llm-provider-key",
                 "AGENTHUB_URL": "http://agenthub:8080",
                 "TERARCHITECT_IN_CONTAINER": "1",
             },
@@ -62,7 +62,7 @@ def test_run_local_shipper_uses_worker_api_key_fallback(capsys):
         ):
             run_local_shipper("http://localhost:5010/", "run-abc")
 
-    assert captured["env"]["TERARCHITECT_WORKER_API_KEY"] == "worker-from-spark-env"
+    assert "TERARCHITECT_WORKER_API_KEY" not in captured["env"]
     assert captured["env"]["AGENTHUB_URL"] == "http://agenthub:8080"
 
 

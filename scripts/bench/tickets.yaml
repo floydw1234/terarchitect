@@ -27,7 +27,7 @@ tickets:
     title: Surface auto-ship runtime issues in project status
     prompt: |
       When a project has auto_ship enabled, execution_readiness issues should mention missing in-compose
-      AGENTHUB_URL/AGENTHUB_API_KEY or TERARCHITECT_WORKER_API_KEY needed for in-backend auto-ship.
+      AGENTHUB_URL plus AGENTHUB_API_KEY (or AGENTHUB_AUTH_DISABLED) needed for in-backend auto-ship; TERARCHITECT_WORKER_API_KEY only when worker auth is enabled.
       If this is already implemented, add a focused unit test in backend/tests asserting the issue strings;
       otherwise implement in backend/utils/auto_ship_runtime.py and project status. Run `make ci-python`.
     terarchitect:
