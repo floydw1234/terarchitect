@@ -104,6 +104,34 @@ def test_parse_token_usage():
     assert cost == "0.42"
 
 
+def test_parse_token_usage_json_fields():
+    text = '{"usage": {"input_tokens": 99, "output_tokens": 12}}'
+    tin, tout, cost = parse_token_usage(text)
+    assert tin == 99
+    assert tout == 12
+    assert cost is None
+
+
+def test_ci_subprocess_env_sets_pytest_autoload_off(tmp_path: Path):
+    from scripts.bench.harness import ci_subprocess_env
+
+    env = ci_subprocess_env(tmp_path)
+    assert env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+
+
+def test_flush_results_snapshot_writes_incremental_rows(tmp_path: Path):
+    from scripts.bench.harness import BenchmarkResult, flush_results_snapshot
+
+    rows = [
+        BenchmarkResult(ticket_id="a", mode="baseline", ci_pass=True),
+        BenchmarkResult(ticket_id="b", mode="baseline", ci_pass=False),
+    ]
+    flush_results_snapshot(tmp_path / "out", rows, title="Partial")
+    csv_text = (tmp_path / "out" / "results.csv").read_text(encoding="utf-8")
+    assert "ticket_id" in csv_text
+    assert "| a |" in (tmp_path / "out" / "results.md").read_text(encoding="utf-8")
+
+
 def test_git_diff_stats_parses_numstat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     def fake_run(cmd, cwd=None, capture_output=True, text=True, check=False):
         assert cmd[:3] == ["git", "diff", "--numstat"]
@@ -197,7 +225,7 @@ def test_run_baseline_ticket_mocked_subprocess(tmp_path: Path):
 
     calls: list[list[str]] = []
 
-    def runner(cmd, cwd=None, capture_output=True, text=True, timeout=None, check=False):
+    def runner(cmd, cwd=None, capture_output=True, text=True, timeout=None, check=False, env=None):
         calls.append(list(cmd))
         if cmd[:2] == ["git", "fetch"]:
             return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -209,6 +237,8 @@ def test_run_baseline_ticket_mocked_subprocess(tmp_path: Path):
             return subprocess.CompletedProcess(
                 cmd, 0, "output tokens: 50", "", 
             )
+        if cmd[0] == "bash" and "ci-python.sh" in " ".join(cmd):
+            return subprocess.CompletedProcess(cmd, 0, "", "")
         if cmd[0] == "make":
             return subprocess.CompletedProcess(cmd, 0, "", "")
         if cmd[:3] == ["git", "diff", "--numstat"]:

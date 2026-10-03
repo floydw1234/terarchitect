@@ -195,6 +195,8 @@ The agent can also use **OpenCode**. The container entrypoint starts `opencode s
 
 **Required env (set in coordinator env and forwarded to container):** `WORKER_LLM_URL`, `WORKER_MODEL`, `WORKER_API_KEY`. **Timeout:** `WORKER_TIMEOUT_SEC` (default 3600).
 
+**Inactivity watchdog (OpenCode):** `WORKER_INACTIVITY_TIMEOUT_SEC` (default `600`) ends a worker turn when OpenCode produces no progress events for that many seconds (for example while waiting on permission prompts). Set to `0` to disable. Failures surface as a non-zero job exit with reason `stalled waiting for input/no progress`.
+
 ---
 
 ### Alternate backend: Claude Code

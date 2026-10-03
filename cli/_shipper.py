@@ -37,6 +37,34 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def is_compose_agenthub_url(url: str) -> bool:
+    """True when URL targets the in-compose AgentHub service hostname."""
+    hostname = (urlparse((url or "").strip()).hostname or "").lower()
+    return hostname in _DOCKER_AGENTHUB_HOSTS
+
+
+def resolve_shipper_agenthub_url() -> tuple[str, Optional[str]]:
+    """Pick AgentHub URL for the shipper subprocess.
+
+    In-compose backend/coordinator runs keep ``AGENTHUB_URL=http://agenthub:…`` as-is when
+    ``TERARCHITECT_IN_CONTAINER=1``. Host CLI runs remap docker-internal hostnames (or honor
+    ``TERARCHITECT_AGENTHUB_URL``).
+    """
+    container_ah = (os.environ.get("AGENTHUB_URL") or "").strip()
+    host_ah = (os.environ.get("TERARCHITECT_AGENTHUB_URL") or "").strip()
+    in_container = (os.environ.get("TERARCHITECT_IN_CONTAINER") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if in_container and is_compose_agenthub_url(container_ah):
+        return container_ah, None
+    if host_ah:
+        return remap_agenthub_url_for_host(host_ah)
+    return remap_agenthub_url_for_host(container_ah)
+
+
 def remap_agenthub_url_for_host(url: str) -> tuple[str, Optional[str]]:
     """Remap docker-internal AgentHub URLs for host-side CLI shipper runs.
 
@@ -93,20 +121,23 @@ def run_local_shipper(api_url: str, ship_run_id: str, *, capture_stdout: bool = 
     ``SHIP_RUN_ID``; the shipper accepts a queued run when fetched by id.
     """
     env: dict[str, str] = {}
-    host_agenthub = (os.environ.get("TERARCHITECT_AGENTHUB_URL") or "").strip()
+    from agent.utils.worker_api_key import resolve_terarchitect_worker_api_key
+
+    worker_key = resolve_terarchitect_worker_api_key()
+    if worker_key:
+        env["TERARCHITECT_WORKER_API_KEY"] = worker_key
     for key in SHIPPER_ENV_KEYS:
         val = os.environ.get(key)
         if not val:
             continue
-        if key in {"AGENTHUB_URL", "TERARCHITECT_AGENTHUB_URL"}:
+        if key in {"AGENTHUB_URL", "TERARCHITECT_AGENTHUB_URL", "TERARCHITECT_WORKER_API_KEY"}:
             continue
         env[key] = val
-    ah_raw = host_agenthub or (os.environ.get("AGENTHUB_URL") or "").strip()
-    if ah_raw:
-        remapped, warning = remap_agenthub_url_for_host(ah_raw)
+    remapped, warning = resolve_shipper_agenthub_url()
+    if remapped:
         env["AGENTHUB_URL"] = remapped
-        if warning:
-            print(warning, file=sys.stderr)
+    if warning:
+        print(warning, file=sys.stderr)
     env["TERARCHITECT_API_URL"] = api_url.rstrip("/")
     env["SHIP_RUN_ID"] = str(ship_run_id)
 

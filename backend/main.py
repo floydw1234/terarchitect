@@ -76,6 +76,12 @@ def create_app():
         else:
             _run_migrations()
 
+    from utils.auto_ship_runtime import format_auto_ship_runtime_error
+
+    auto_ship_err = format_auto_ship_runtime_error()
+    if auto_ship_err:
+        app.logger.warning(auto_ship_err)
+
     # Register blueprints
     from api import api_bp
     from api.embedding_openai import embedding_bp

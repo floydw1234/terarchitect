@@ -64,3 +64,45 @@ def test_ticket_complete_triggers_auto_ship_when_enabled(client, project):
     mocked.assert_called_once()
 
 
+
+
+def _running_job(client, pid):
+    from models.db import AgentJob
+
+    ticket_resp = client.post(
+        f"/api/projects/{pid}/tickets",
+        json={"column_id": "backlog", "title": "Job exit ticket", "intent_status": "active"},
+    )
+    ticket_id = ticket_resp.get_json()["id"]
+    with client.application.app_context():
+        job = AgentJob(ticket_id=ticket_id, project_id=pid, status="running")
+        db.session.add(job)
+        db.session.commit()
+        return str(job.id), ticket_id
+
+
+def test_worker_job_complete_rechecks_auto_ship(client, project):
+    """The last job leaving ``running`` must re-run auto-ship (batch now settled)."""
+    pid = project["id"]
+    job_id, ticket_id = _running_job(client, pid)
+    client.application.config["AUTO_SHIP_JOB_EXIT_SYNC"] = True
+    try:
+        with patch("api.routes._maybe_auto_ship_after_validation", return_value=None) as mocked:
+            resp = client.post(f"/api/worker/jobs/{job_id}/complete", json={})
+    finally:
+        client.application.config.pop("AUTO_SHIP_JOB_EXIT_SYNC", None)
+    assert resp.status_code == 200
+    mocked.assert_called_once_with(str(pid), str(ticket_id))
+
+
+def test_worker_job_fail_rechecks_auto_ship(client, project):
+    pid = project["id"]
+    job_id, ticket_id = _running_job(client, pid)
+    client.application.config["AUTO_SHIP_JOB_EXIT_SYNC"] = True
+    try:
+        with patch("api.routes._maybe_auto_ship_after_validation", return_value=None) as mocked:
+            resp = client.post(f"/api/worker/jobs/{job_id}/fail", json={})
+    finally:
+        client.application.config.pop("AUTO_SHIP_JOB_EXIT_SYNC", None)
+    assert resp.status_code == 200
+    mocked.assert_called_once_with(str(pid), str(ticket_id))

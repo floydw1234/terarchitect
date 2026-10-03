@@ -18,6 +18,7 @@ Covers:
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -344,6 +345,153 @@ class TestStreamOpencodeUntilIdle(unittest.TestCase):
                 project_path=None,
             )
         self.assertEqual(result, "fallback output")
+
+
+class TestOpencodeInactivityWatchdog(unittest.TestCase):
+
+    def test_stalls_when_only_heartbeats(self):
+        times = iter([0.0, 0.0, 2.0, 2.0, 2.0])
+
+        def fake_monotonic():
+            return next(times, 2.0)
+
+        sse_events = iter(['event: server.heartbeat\n\n'])
+
+        with patch.dict(os.environ, {"WORKER_INACTIVITY_TIMEOUT_SEC": "1"}, clear=False):
+            agent = _make_agent()
+            with patch("time.monotonic", side_effect=fake_monotonic):
+                with patch("requests.get") as mock_get:
+                    mock_get.return_value = _mock_get_response(sse_events)
+                    with self.assertRaises(Exception) as ctx:
+                        agent._stream_opencode_until_idle(
+                            base="http://localhost:4096",
+                            worker_session_id="oc-worker-sess",
+                            timeout_sec=30,
+                            project_id=None,
+                            ticket_id=None,
+                            session_id="sess",
+                            project_path=None,
+                        )
+        from middle_agent.agent import WorkerStalledError
+
+        self.assertIsInstance(ctx.exception, WorkerStalledError)
+
+    def test_does_not_stall_during_long_running_tool_with_only_heartbeats(self):
+        tick = {"t": 0.0}
+
+        def fake_monotonic():
+            return tick["t"]
+
+        sse_events = _sse_lines(
+            (
+                "message.part.updated",
+                {
+                    "sessionID": "oc-worker-sess",
+                    "part": {"type": "tool", "tool": "bash", "state": "running"},
+                },
+            ),
+            ("server.heartbeat", {}),
+            ("server.heartbeat", {}),
+            ("session.idle", {"sessionID": "oc-worker-sess"}),
+        )
+
+        with patch.dict(os.environ, {"WORKER_INACTIVITY_TIMEOUT_SEC": "1"}, clear=False):
+            agent = _make_agent()
+            with patch("time.monotonic", side_effect=fake_monotonic):
+                with patch("requests.get") as mock_get:
+                    mock_get.side_effect = [
+                        _mock_get_response(sse_events),
+                        _mock_messages_response("done after bash"),
+                    ]
+                    tick["t"] = 120.0
+                    result = agent._stream_opencode_until_idle(
+                        base="http://localhost:4096",
+                        worker_session_id="oc-worker-sess",
+                        timeout_sec=600,
+                        project_id=None,
+                        ticket_id=None,
+                        session_id="sess",
+                        project_path="/tmp/repo",
+                    )
+        self.assertEqual(result, "done after bash")
+
+
+class TestOpencodeUnattendedPrompts(unittest.TestCase):
+    def test_auto_allows_permission_via_reply_endpoint(self):
+        agent = _make_agent()
+        posted = []
+
+        def fake_post(url, **kwargs):
+            posted.append((url, kwargs.get("json"), kwargs.get("params")))
+            mock_resp = MagicMock()
+            mock_resp.raise_for_status.return_value = None
+            return mock_resp
+
+        sse_events = _sse_lines(
+            (
+                "permission.asked",
+                {"sessionID": "oc-worker-sess", "id": "per_test123", "permission": "bash"},
+            ),
+            ("session.idle", {"sessionID": "oc-worker-sess"}),
+        )
+        with tempfile.TemporaryDirectory() as repo_dir, patch(
+            "requests.post", side_effect=fake_post
+        ), patch("requests.get") as mock_get:
+            mock_get.side_effect = [
+                _mock_get_response(sse_events),
+                _mock_messages_response("ok"),
+            ]
+            agent._stream_opencode_until_idle(
+                base="http://localhost:4096",
+                worker_session_id="oc-worker-sess",
+                timeout_sec=30,
+                project_id=None,
+                ticket_id=None,
+                session_id="sess",
+                project_path=repo_dir,
+            )
+
+        self.assertTrue(
+            any("/permission/per_test123/reply" in url for url, _, _ in posted),
+            f"expected /permission/{{id}}/reply, got {posted}",
+        )
+        reply_call = next(c for c in posted if "/permission/per_test123/reply" in c[0])
+        self.assertEqual(reply_call[1], {"reply": "always"})
+        self.assertEqual(reply_call[2], {"directory": repo_dir})
+
+    def test_auto_rejects_question_asked(self):
+        agent = _make_agent()
+        posted = []
+
+        def fake_post(url, **kwargs):
+            posted.append(url)
+            mock_resp = MagicMock()
+            mock_resp.raise_for_status.return_value = None
+            return mock_resp
+
+        sse_events = _sse_lines(
+            ("question.asked", {"sessionID": "oc-worker-sess", "id": "que_test456", "questions": []}),
+            ("session.idle", {"sessionID": "oc-worker-sess"}),
+        )
+        with patch("requests.post", side_effect=fake_post), patch("requests.get") as mock_get:
+            mock_get.side_effect = [
+                _mock_get_response(sse_events),
+                _mock_messages_response("ok"),
+            ]
+            agent._stream_opencode_until_idle(
+                base="http://localhost:4096",
+                worker_session_id="oc-worker-sess",
+                timeout_sec=30,
+                project_id=None,
+                ticket_id=None,
+                session_id="sess",
+                project_path="/tmp/repo",
+            )
+
+        self.assertTrue(
+            any("/question/que_test456/reject" in url for url in posted),
+            f"expected question reject POST, got {posted}",
+        )
 
 
 # ---------------------------------------------------------------------------

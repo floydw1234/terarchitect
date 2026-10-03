@@ -35,6 +35,8 @@ from typing import Optional
 
 import requests
 
+from agent.utils.worker_api_key import agenthub_request_headers, terarchitect_worker_request_headers
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -49,8 +51,7 @@ def _base_url() -> str:
 
 
 def _auth_headers() -> dict:
-    key = _env("TERARCHITECT_WORKER_API_KEY")
-    return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    return terarchitect_worker_request_headers()
 
 
 def _ah_url() -> str:
@@ -58,7 +59,7 @@ def _ah_url() -> str:
 
 
 def _ah_headers() -> dict:
-    return {"Authorization": f"Bearer {_env('AGENTHUB_API_KEY')}"}
+    return agenthub_request_headers()
 
 
 def _git(args: list, cwd: str, check: bool = True, timeout: int = 60) -> subprocess.CompletedProcess:
@@ -369,7 +370,5 @@ def run_once() -> bool:
 
 
 def main() -> None:
-    if not _env("TERARCHITECT_WORKER_API_KEY"):
-        print("[composer] Warning: TERARCHITECT_WORKER_API_KEY not set", file=sys.stderr)
     run_once()
     sys.exit(0)

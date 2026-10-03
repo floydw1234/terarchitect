@@ -135,7 +135,9 @@ _COORDINATOR_AGENT_ENV_KEYS = (
 )
 
 def _headers() -> dict:
-    token = _env("TERARCHITECT_WORKER_API_KEY")
+    from agent.utils.worker_api_key import resolve_terarchitect_worker_api_key
+
+    token = resolve_terarchitect_worker_api_key()
     if not token:
         return {}
     return {"Authorization": f"Bearer {token}"}

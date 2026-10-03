@@ -189,6 +189,12 @@ def run_promotion_spine_for_attempt(
 
 
 def _run_local_shipper_for_run(run_id: str) -> None:
+    from utils.auto_ship_runtime import format_auto_ship_runtime_error
+
+    preflight = format_auto_ship_runtime_error()
+    if preflight:
+        raise PromotionSpineError(preflight, status_code=503)
+
     api_url = (os.environ.get("TERARCHITECT_API_URL") or "http://127.0.0.1:5010").rstrip("/")
     try:
         from cli._shipper import run_local_shipper

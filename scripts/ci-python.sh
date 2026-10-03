@@ -11,6 +11,8 @@ export PYTEST_DISABLE_PLUGIN_AUTOLOAD="${PYTEST_DISABLE_PLUGIN_AUTOLOAD:-1}"
 
 if [[ -n "${PYTEST:-}" ]]; then
   RUNNER=( "${PYTEST}" )
+elif [[ -n "${PYTEST_PYTHON:-}" ]]; then
+  RUNNER=( "${PYTEST_PYTHON}" -m pytest )
 elif [[ -x "${ROOT}/.venv/bin/python" ]]; then
   RUNNER=( "${ROOT}/.venv/bin/python" -m pytest )
 else

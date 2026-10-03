@@ -330,6 +330,11 @@ def project_doctor_report(project: Project) -> dict:
         readiness_issues.append("AGENTHUB_URL is not configured in backend runtime.")
     if not agenthub_key and not agenthub_auth_disabled:
         readiness_issues.append("AGENTHUB_API_KEY or AGENTHUB_ADMIN_KEY is not configured in backend runtime.")
+    if get_project_auto_ship(project):
+        from utils.auto_ship_runtime import auto_ship_runtime_issues
+
+        for issue in auto_ship_runtime_issues():
+            readiness_issues.append(issue)
     if latest_attempt_payload and latest_attempt_payload.get("stale") is True:
         readiness_issues.append("Latest attempt is stale against project.accepted_frontier_id.")
 

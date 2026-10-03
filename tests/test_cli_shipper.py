@@ -38,6 +38,34 @@ def test_remap_agenthub_url_for_host_leaves_localhost_alone(url):
     assert warning is None
 
 
+def test_run_local_shipper_omits_worker_key_when_auth_disabled(capsys):
+    captured: dict = {}
+
+    def fake_run(cmd, env, cwd, **kwargs):
+        captured["env"] = env
+
+        class Result:
+            returncode = 0
+            stdout = b""
+
+        return Result()
+
+    with patch("cli._shipper.subprocess.run", side_effect=fake_run):
+        with patch.dict(
+            os.environ,
+            {
+                "WORKER_API_KEY": "llm-provider-key",
+                "AGENTHUB_URL": "http://agenthub:8080",
+                "TERARCHITECT_IN_CONTAINER": "1",
+            },
+            clear=False,
+        ):
+            run_local_shipper("http://localhost:5010/", "run-abc")
+
+    assert "TERARCHITECT_WORKER_API_KEY" not in captured["env"]
+    assert captured["env"]["AGENTHUB_URL"] == "http://agenthub:8080"
+
+
 def test_run_local_shipper_invokes_agent_shipper_with_env(capsys):
     captured: dict = {}
 
@@ -73,6 +101,36 @@ def test_run_local_shipper_invokes_agent_shipper_with_env(capsys):
     assert "agent" in captured["env"]["PYTHONPATH"]
     stderr = capsys.readouterr().err
     assert "remapped AGENTHUB_URL" in stderr
+
+
+def test_run_local_shipper_keeps_compose_agenthub_url(capsys):
+    captured: dict = {}
+
+    def fake_run(cmd, env, cwd, **kwargs):
+        captured["env"] = env
+
+        class Result:
+            returncode = 0
+            stdout = b""
+
+        return Result()
+
+    with patch("cli._shipper.subprocess.run", side_effect=fake_run):
+        with patch.dict(
+            os.environ,
+            {
+                "AGENTHUB_URL": "http://agenthub:8080",
+                "AGENTHUB_API_KEY": "secret",
+                "TERARCHITECT_AGENTHUB_URL": "http://127.0.0.1:8088",
+                "TERARCHITECT_WORKER_API_KEY": "worker-key",
+                "TERARCHITECT_IN_CONTAINER": "1",
+            },
+            clear=False,
+        ):
+            run_local_shipper("http://backend:5010/", "run-compose")
+
+    assert captured["env"]["AGENTHUB_URL"] == "http://agenthub:8080"
+    assert capsys.readouterr().err == ""
 
 
 def test_run_local_shipper_leaves_localhost_agenthub_url(capsys):

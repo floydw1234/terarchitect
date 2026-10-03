@@ -521,6 +521,14 @@ class WorkerUnavailableError(Exception):
         self.cause = cause
 
 
+class WorkerStalledError(Exception):
+    """Raised when the worker stops producing progress (often waiting for permission or user input)."""
+
+    def __init__(self, message: str = "stalled waiting for input/no progress", cause: Optional[Exception] = None):
+        super().__init__(message)
+        self.cause = cause
+
+
 class MiddleAgent:
     """Agent that orchestrates a worker backend for implementation tasks."""
 
@@ -600,6 +608,117 @@ class MiddleAgent:
         self._active_project_id: Optional[uuid.UUID] = None
         self._active_ticket_id: Optional[uuid.UUID] = None
         self._current_phase: str = "setup"
+
+    @staticmethod
+    def _worker_inactivity_timeout_sec() -> int:
+        raw = (get_setting_or_env("WORKER_INACTIVITY_TIMEOUT_SEC") or "600").strip()
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            return 600
+
+    @staticmethod
+    def _sse_event_is_progress(resolved_type: str) -> bool:
+        lowered = (resolved_type or "").lower()
+        if not lowered or lowered in {"server.connected", "server.heartbeat"}:
+            return False
+        return True
+
+    def _opencode_request_params(self, project_path: Optional[str]) -> Optional[dict]:
+        if project_path and os.path.isdir(project_path):
+            return {"directory": project_path}
+        return None
+
+    def _opencode_auto_allow_permission(
+        self,
+        base: str,
+        worker_session_id: str,
+        props: dict,
+        project_path: Optional[str],
+    ) -> None:
+        request_id = (
+            props.get("id")
+            or props.get("permissionID")
+            or props.get("permission_id")
+            or (props.get("permission") or {}).get("id")
+        )
+        if not request_id:
+            self._debug_log("permission.asked without permission id; cannot auto-allow")
+            return
+        params = self._opencode_request_params(project_path)
+        body_new = {"reply": "always"}
+        body_legacy = {"response": "always"}
+        urls = [
+            f"{base}/permission/{request_id}/reply",
+            f"{base}/session/{worker_session_id}/permissions/{request_id}",
+        ]
+        for idx, url in enumerate(urls):
+            try:
+                requests.post(
+                    url,
+                    json=body_new if idx == 0 else body_legacy,
+                    params=params,
+                    auth=self._opencode_auth,
+                    timeout=15,
+                )
+                self._debug_log(f"auto-allowed OpenCode permission {request_id} via {url}")
+                return
+            except requests.RequestException as exc:
+                self._debug_log(f"OpenCode permission auto-allow failed for {url}: {exc}")
+
+    _OPENCODE_QUESTION_AUTO_MESSAGE = (
+        "No human is available. Make a reasonable assumption, note it in your final summary, and continue."
+    )
+
+    def _opencode_auto_dismiss_question(
+        self,
+        base: str,
+        props: dict,
+        project_path: Optional[str],
+    ) -> None:
+        request_id = props.get("id") or props.get("questionID") or props.get("question_id")
+        if not request_id:
+            self._debug_log("question.asked without question id; cannot auto-dismiss")
+            return
+        params = self._opencode_request_params(project_path)
+        try:
+            requests.post(
+                f"{base}/question/{request_id}/reject",
+                params=params,
+                auth=self._opencode_auth,
+                timeout=15,
+            )
+            self._debug_log(f"auto-rejected OpenCode question {request_id}")
+        except requests.RequestException as exc:
+            self._debug_log(f"OpenCode question auto-reject failed: {exc}")
+
+    @staticmethod
+    def _opencode_event_tool_in_progress(props: dict) -> bool:
+        """True when SSE indicates a tool call is still running (long bash, etc.)."""
+        part = props.get("part") if isinstance(props.get("part"), dict) else props
+        if not isinstance(part, dict):
+            return False
+        ptype = (part.get("type") or "").lower()
+        if ptype not in ("tool", "tool-call", "toolcall", "tool_call", ""):
+            if not (part.get("tool") or part.get("toolName") or part.get("name")):
+                return False
+        state_raw = part.get("state") or part.get("status") or part.get("phase")
+        if isinstance(state_raw, dict):
+            state = (state_raw.get("type") or state_raw.get("status") or "").lower()
+        elif isinstance(state_raw, str):
+            state = state_raw.lower()
+        else:
+            state = ""
+        if state in ("completed", "complete", "done", "success", "failed", "error", "cancelled"):
+            return False
+        if part.get("tool") or part.get("toolName") or part.get("name") or ptype in (
+            "tool",
+            "tool-call",
+            "toolcall",
+            "tool_call",
+        ):
+            return True
+        return False
 
     def _env_has_container_url(self, key: str) -> bool:
         """True if env has key with host.docker.internal (coordinator set container-safe URL; don't overwrite with backend localhost)."""
@@ -2440,9 +2559,24 @@ class MiddleAgent:
         # from sessions running in a different directory.
         event_url = f"{base}/global/event"
         deadline = time.monotonic() + timeout_sec
+        inactivity_limit = self._worker_inactivity_timeout_sec()
+        last_progress = time.monotonic()
         last_log_time = time.monotonic()
         log_interval = 15.0  # post a heartbeat log at most once per 15s
         tool_calls_seen: List[str] = []
+        tool_in_progress = False
+
+        def _touch_progress() -> None:
+            nonlocal last_progress
+            last_progress = time.monotonic()
+
+        def _check_inactivity() -> None:
+            if inactivity_limit <= 0:
+                return
+            if tool_in_progress:
+                return
+            if time.monotonic() - last_progress >= inactivity_limit:
+                raise WorkerStalledError("stalled waiting for input/no progress")
 
         self._debug_log(f"SSE stream: waiting for session.idle on worker_session={worker_session_id} dir={project_path!r}")
         try:
@@ -2463,6 +2597,7 @@ class MiddleAgent:
                     if time.monotonic() > deadline:
                         self._debug_log(f"SSE stream: timeout after {timeout_sec}s")
                         break
+                    _check_inactivity()
                     if stop_event is not None and stop_event.is_set():
                         self._debug_log("SSE stream: stop requested, exiting early")
                         break
@@ -2508,8 +2643,33 @@ class MiddleAgent:
                         resolved_type = event_type or (inner.get("type") or "")
                         if "delta" not in resolved_type:
                             self._debug_log(f"SSE event: type={resolved_type!r} sess={evt_session_id!r}")
+                        if "permission" in resolved_type.lower() and "ask" in resolved_type.lower():
+                            self._opencode_auto_allow_permission(
+                                base, worker_session_id, props, project_path
+                            )
+                            _touch_progress()
+                        elif "question" in resolved_type.lower() and "ask" in resolved_type.lower():
+                            self._opencode_auto_dismiss_question(base, props, project_path)
+                            _touch_progress()
+                        elif self._opencode_event_tool_in_progress(props):
+                            tool_in_progress = True
+                            _touch_progress()
+                        elif self._sse_event_is_progress(resolved_type):
+                            _touch_progress()
+                            if tool_in_progress and resolved_type.lower() == "session.idle":
+                                tool_in_progress = False
                         if "tool" in resolved_type.lower() or "part" in resolved_type.lower():
                             part = props.get("part") or props
+                            if self._opencode_event_tool_in_progress(props):
+                                tool_in_progress = True
+                            elif isinstance(part, dict):
+                                state_raw = part.get("state") or part.get("status")
+                                if isinstance(state_raw, dict):
+                                    state = (state_raw.get("type") or "").lower()
+                                else:
+                                    state = (state_raw or "").lower()
+                                if state in ("completed", "complete", "done", "success", "failed", "error"):
+                                    tool_in_progress = False
                             tool_name = (
                                 part.get("tool") or part.get("name")
                                 or part.get("toolName") or part.get("call", {}).get("name")
@@ -2545,6 +2705,7 @@ class MiddleAgent:
             ) from e
 
         # Timed out or stream ended without idle; try to fetch whatever messages exist.
+        _check_inactivity()
         self._debug_log(f"SSE stream: ended without session.idle; fetching messages as fallback")
         return self._fetch_opencode_last_message(base, worker_session_id)
 

@@ -1,6 +1,7 @@
 """
 API Routes for Terarchitect
 """
+import threading
 import json
 import os
 import subprocess
@@ -519,7 +520,9 @@ def _ui_auth_check():
     # Also pass through requests carrying a valid worker token.
     # Some worker-facing endpoints live under /projects/... (complete, logs, cancel-requested,
     # worker-context) and are not covered by the prefix check above.
-    worker_token = (get_value("TERARCHITECT_WORKER_API_KEY") or "").strip()
+    from utils.worker_api_key import configured_worker_api_token
+
+    worker_token = configured_worker_api_token()
     if worker_token:
         auth_header = request.headers.get("Authorization") or ""
         if auth_header.startswith("Bearer ") and auth_header[7:].strip() == worker_token:
@@ -531,9 +534,18 @@ def _ui_auth_check():
 # Worker-facing API: auth via Bearer token. Set TERARCHITECT_WORKER_API_KEY in the backend env to require auth; if unset, no auth (dev).
 def _require_worker_auth():
     """Return (None, None) if authorized, else (response, status_code) to return."""
-    token = (get_value("TERARCHITECT_WORKER_API_KEY") or "").strip()
-    if not token:
+    from utils.worker_api_key import (
+        configured_worker_api_token,
+        is_worker_api_auth_enforced,
+    )
+
+    if not is_worker_api_auth_enforced():
         return None, None  # No key configured: allow (dev)
+    token = configured_worker_api_token()
+    if not token:
+        return jsonify(
+            {"error": "Worker API auth is enabled but TERARCHITECT_WORKER_API_KEY could not be loaded"}
+        ), 503
     auth = request.headers.get("Authorization") or ""
     if not auth.startswith("Bearer "):
         return jsonify({"error": "Missing or invalid Authorization header (expected Bearer <token>)"}), 401
@@ -2758,6 +2770,47 @@ def worker_jobs_start():
         return jsonify(payload), 200
 
 
+def _trigger_auto_ship_after_job_exit(job) -> None:
+    """Re-check auto-ship once a worker job leaves ``running``.
+
+    The ticket ``/complete`` hook fires from inside the worker while its own AgentJob is
+    still ``running``, so the last attempt of a batch never sees the batch as settled.
+    The coordinator marks the job completed/failed only after the container exits; run
+    the auto-ship check then (in a background thread so the coordinator is not blocked
+    by compose/ship).
+    """
+    if not job.ticket_id or not job.project_id:
+        return
+    project_id = str(job.project_id)
+    ticket_id = str(job.ticket_id)
+    app = current_app._get_current_object()
+
+    def _run() -> None:
+        with app.app_context():
+            try:
+                result = _maybe_auto_ship_after_validation(project_id, ticket_id)
+                if result is not None:
+                    app.logger.info(
+                        "auto_ship after job exit project=%s ticket=%s shipped=%s",
+                        project_id,
+                        ticket_id,
+                        result.get("shipped"),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                app.logger.warning("auto_ship after job exit failed: %s", exc)
+                try:
+                    db.session.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+            finally:
+                db.session.remove()
+
+    if app.config.get("TESTING") and app.config.get("AUTO_SHIP_JOB_EXIT_SYNC"):
+        _run()
+        return
+    threading.Thread(target=_run, name=f"auto-ship-{ticket_id[:8]}", daemon=True).start()
+
+
 @api_bp.route("/worker/jobs/<uuid:job_id>/complete", methods=["POST"])
 def worker_jobs_complete(job_id):
     """Phase 1: Mark job completed when container exits."""
@@ -2769,6 +2822,7 @@ def worker_jobs_complete(job_id):
         return jsonify({"error": "Job not running", "status": job.status}), 409
     job.status = "completed"
     db.session.commit()
+    _trigger_auto_ship_after_job_exit(job)
     return jsonify({"message": "Job completed", "job_id": str(job_id)})
 
 
@@ -2783,6 +2837,7 @@ def worker_jobs_fail(job_id):
         return jsonify({"error": "Job not running", "status": job.status}), 409
     _fail_job_with_ticket_recovery(job)
     db.session.commit()
+    _trigger_auto_ship_after_job_exit(job)
     if job.ticket_id:
         _post_event(
             _ticket_channel(str(job.ticket_id)),
@@ -3136,8 +3191,19 @@ def memory_retrieve(project_id):
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 503
     except Exception as e:
-        current_app.logger.exception("Memory retrieve failed")
-        return jsonify({"error": "Retrieve failed", "detail": str(e)}), 500
+        import time
+
+        cooldown = int(os.environ.get("MEMORY_RETRIEVE_ERROR_COOLDOWN_SEC") or "300")
+        now = time.monotonic()
+        last = current_app.config.get("_memory_retrieve_error_logged_at")
+        if last is None or now - float(last) >= cooldown:
+            current_app.logger.warning(
+                "Memory retrieve failed (similar errors suppressed for %ss): %s",
+                cooldown,
+                e,
+            )
+            current_app.config["_memory_retrieve_error_logged_at"] = now
+        return jsonify({"error": "Retrieve failed", "detail": str(e)}), 503
     return jsonify({"results": results, "enabled": True})
 
 
