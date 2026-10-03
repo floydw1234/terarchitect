@@ -18,6 +18,7 @@ Covers:
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -376,10 +377,10 @@ class TestOpencodeInactivityWatchdog(unittest.TestCase):
         self.assertIsInstance(ctx.exception, WorkerStalledError)
 
     def test_does_not_stall_during_long_running_tool_with_only_heartbeats(self):
-        times = iter([0.0, 0.0, 500.0, 500.0, 500.0, 500.0])
+        tick = {"t": 0.0}
 
         def fake_monotonic():
-            return next(times, 500.0)
+            return tick["t"]
 
         sse_events = _sse_lines(
             (
@@ -402,6 +403,7 @@ class TestOpencodeInactivityWatchdog(unittest.TestCase):
                         _mock_get_response(sse_events),
                         _mock_messages_response("done after bash"),
                     ]
+                    tick["t"] = 120.0
                     result = agent._stream_opencode_until_idle(
                         base="http://localhost:4096",
                         worker_session_id="oc-worker-sess",
@@ -432,7 +434,9 @@ class TestOpencodeUnattendedPrompts(unittest.TestCase):
             ),
             ("session.idle", {"sessionID": "oc-worker-sess"}),
         )
-        with patch("requests.post", side_effect=fake_post), patch("requests.get") as mock_get:
+        with tempfile.TemporaryDirectory() as repo_dir, patch(
+            "requests.post", side_effect=fake_post
+        ), patch("requests.get") as mock_get:
             mock_get.side_effect = [
                 _mock_get_response(sse_events),
                 _mock_messages_response("ok"),
@@ -444,7 +448,7 @@ class TestOpencodeUnattendedPrompts(unittest.TestCase):
                 project_id=None,
                 ticket_id=None,
                 session_id="sess",
-                project_path="/tmp/repo",
+                project_path=repo_dir,
             )
 
         self.assertTrue(
@@ -453,7 +457,7 @@ class TestOpencodeUnattendedPrompts(unittest.TestCase):
         )
         reply_call = next(c for c in posted if "/permission/per_test123/reply" in c[0])
         self.assertEqual(reply_call[1], {"reply": "always"})
-        self.assertEqual(reply_call[2], {"directory": "/tmp/repo"})
+        self.assertEqual(reply_call[2], {"directory": repo_dir})
 
     def test_auto_rejects_question_asked(self):
         agent = _make_agent()

@@ -702,7 +702,13 @@ class MiddleAgent:
         if ptype not in ("tool", "tool-call", "toolcall", "tool_call", ""):
             if not (part.get("tool") or part.get("toolName") or part.get("name")):
                 return False
-        state = (part.get("state") or part.get("status") or part.get("phase") or "").lower()
+        state_raw = part.get("state") or part.get("status") or part.get("phase")
+        if isinstance(state_raw, dict):
+            state = (state_raw.get("type") or state_raw.get("status") or "").lower()
+        elif isinstance(state_raw, str):
+            state = state_raw.lower()
+        else:
+            state = ""
         if state in ("completed", "complete", "done", "success", "failed", "error", "cancelled"):
             return False
         if part.get("tool") or part.get("toolName") or part.get("name") or ptype in (
@@ -2657,7 +2663,11 @@ class MiddleAgent:
                             if self._opencode_event_tool_in_progress(props):
                                 tool_in_progress = True
                             elif isinstance(part, dict):
-                                state = (part.get("state") or part.get("status") or "").lower()
+                                state_raw = part.get("state") or part.get("status")
+                                if isinstance(state_raw, dict):
+                                    state = (state_raw.get("type") or "").lower()
+                                else:
+                                    state = (state_raw or "").lower()
                                 if state in ("completed", "complete", "done", "success", "failed", "error"):
                                     tool_in_progress = False
                             tool_name = (
