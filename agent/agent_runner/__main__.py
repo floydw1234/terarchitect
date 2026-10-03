@@ -13,16 +13,20 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-_AGENT_DIR = Path(__file__).resolve().parent.parent
-_TOP_LEVEL_IMPORT_ROOTS = (str(_AGENT_DIR), str(_AGENT_DIR.parent))
-for _path in reversed(_TOP_LEVEL_IMPORT_ROOTS):
-    if _path not in sys.path:
-        sys.path.insert(0, _path)
+_AGENT_DIR = str(Path(__file__).resolve().parent.parent)
+while _AGENT_DIR in sys.path:
+    sys.path.remove(_AGENT_DIR)
+sys.path.insert(0, _AGENT_DIR)
 
 from middle_agent.git_backend import (
     AgentHubMaterializationError,
     materialize_workspace_from_agenthub,
 )
+
+try:
+    from agent.utils.worker_api_key import resolve_terarchitect_worker_api_key
+except ModuleNotFoundError:
+    from utils.worker_api_key import resolve_terarchitect_worker_api_key
 
 
 def _env(key: str, required: bool = True) -> str:
@@ -82,8 +86,6 @@ def run_ticket() -> None:
         or os.environ.get("GITHUB_AGENT_TOKEN", "").strip()
         or os.environ.get("github_agent_token", "").strip()
     )
-    from agent.utils.worker_api_key import resolve_terarchitect_worker_api_key
-
     auth_token = resolve_terarchitect_worker_api_key() or None
 
     try:

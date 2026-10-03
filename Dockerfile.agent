@@ -79,7 +79,7 @@ RUN pip install --no-cache-dir -r /app/requirements-agent.txt
 # Copy agent code into flat layout under /app (runner expects middle_agent, agent_runner, utils)
 COPY agent/middle_agent /app/middle_agent
 COPY agent/agent_runner /app/agent_runner
-COPY agent/utils/__init__.py agent/utils/app_settings.py /app/utils/
+COPY agent/utils/__init__.py agent/utils/app_settings.py agent/utils/worker_api_key.py /app/utils/
 
 ENV PYTHONPATH=/app
 # Allow --dangerously-skip-permissions inside root containers (CI/DinD environments).

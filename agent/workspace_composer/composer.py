@@ -31,11 +31,20 @@ import re
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 from typing import Optional
 
 import requests
 
-from agent.utils.worker_api_key import agenthub_request_headers, terarchitect_worker_request_headers
+_AGENT_DIR = str(Path(__file__).resolve().parent.parent)
+while _AGENT_DIR in sys.path:
+    sys.path.remove(_AGENT_DIR)
+sys.path.insert(0, _AGENT_DIR)
+
+try:
+    from agent.utils.worker_api_key import agenthub_request_headers, terarchitect_worker_request_headers
+except ModuleNotFoundError:
+    from utils.worker_api_key import agenthub_request_headers, terarchitect_worker_request_headers
 
 
 # ---------------------------------------------------------------------------
