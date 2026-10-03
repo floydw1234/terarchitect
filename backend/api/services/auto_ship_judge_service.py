@@ -113,6 +113,7 @@ def _attempt_payload(project: Project, attempt: TicketAttempt) -> dict[str, Any]
         "attempt_num": attempt.attempt_num,
         "agent_id": attempt.agent_id,
         "commit_hash": attempt.agenthub_commit_hash,
+        "final_summary": (attempt.summary or "").strip() or None,
         "validation": _validation_summary(attempt),
         "reviewer_notes": _reviewer_notes(project.id, attempt.id),
         "diff": diff_info.get("diff") or "",
@@ -129,8 +130,12 @@ def _build_judge_prompt(ticket: Ticket, attempts_payload: list[dict[str, Any]]) 
     }
     return (
         "You are selecting the best validated implementation attempt for automatic shipping.\n"
-        "Pick the attempt that best fulfills the ticket, preferring correct and complete work, "
-        "then the smallest and cleanest change.\n\n"
+        "Correctness against the actual current codebase comes first: read each attempt's diff, "
+        "final_summary, and validation output. An attempt that correctly finds the work is already "
+        "done, the ticket premise is outdated, or the right outcome is a minimal/no-op change with "
+        "a clear explanation can be the winner.\n"
+        "Prefer the attempt that best matches reality and the ticket intent, then the smallest clean "
+        "change that achieves that outcome.\n\n"
         f"Ticket:\n{json.dumps(ticket_block, ensure_ascii=False, indent=2)}\n\n"
         f"Eligible attempts:\n{json.dumps(attempts_payload, ensure_ascii=False, indent=2)}\n\n"
         "Respond with strict JSON only (no markdown), shape:\n"

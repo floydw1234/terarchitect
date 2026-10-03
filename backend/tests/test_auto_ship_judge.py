@@ -173,3 +173,30 @@ def test_pick_auto_winner_prefers_passed_test_on_fallback(client, project):
             winner, decision = pick_auto_winner_with_decision(proj, ticket)
     assert winner.agenthub_commit_hash == "b" * 40
     assert decision["judged_by"] == "fallback"
+
+
+def test_judge_prompt_prioritizes_codebase_correctness(client, project):
+    from api.services.auto_ship_judge_service import _build_judge_prompt
+    from models.db import Ticket
+
+    pid = project["id"]
+    with client.application.app_context():
+        ticket = Ticket(
+            project_id=pid,
+            column_id="done",
+            title="Stale ticket",
+            description="Add feature that already exists",
+            intent_status="active",
+        )
+        prompt = _build_judge_prompt(
+            ticket,
+            [
+                {
+                    "attempt_id": "a",
+                    "final_summary": "Work already on main; no change needed.",
+                    "diff": "",
+                }
+            ],
+        )
+    assert "Correctness against the actual current codebase comes first" in prompt
+    assert "final_summary" in prompt
