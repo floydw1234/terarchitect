@@ -2,6 +2,8 @@ flask==3.0.0
 python-dotenv>=1.0.0
 flask-cors==4.0.0
 flask-sqlalchemy==3.1.1
+# SQLAlchemy 2.1+ defaults postgresql:// to psycopg v3; backend ships psycopg2-binary.
+sqlalchemy>=2.0.16,<2.1
 psycopg2-binary==2.9.9
 gunicorn==21.2.0
 # Keep Terarchitect on a modern OpenAI SDK inside its own project venv/container.
