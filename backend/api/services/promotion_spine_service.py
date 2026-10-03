@@ -188,24 +188,62 @@ def run_promotion_spine_for_attempt(
     }
 
 
+def _record_ship_run_auto_ship_failure(run_id: str, message: str, *, compose_failed: bool = False) -> None:
+    """Persist a loud auto-ship failure on the ShipRun when compose cannot proceed in-backend."""
+    run = db.session.get(ShipRun, run_id)
+    if run is None:
+        return
+    if run.status in ("shipped", "shipping"):
+        return
+    run.error = (message or "")[:4000] or None
+    if compose_failed and run.status in ("queued", "composing", "running"):
+        run.status = "compose_failed"
+    elif run.status in ("queued", "composing", "running", "ready_to_ship"):
+        run.status = "failed"
+    db.session.commit()
+
+
 def _run_local_shipper_for_run(run_id: str) -> None:
     from utils.auto_ship_runtime import format_auto_ship_runtime_error
 
     preflight = format_auto_ship_runtime_error()
     if preflight:
+        _record_ship_run_auto_ship_failure(run_id, preflight, compose_failed=True)
         raise PromotionSpineError(preflight, status_code=503)
 
     api_url = (os.environ.get("TERARCHITECT_API_URL") or "http://127.0.0.1:5010").rstrip("/")
     try:
         from cli._shipper import run_local_shipper
-    except ImportError:
-        raise PromotionSpineError(
-            "Local shipper is unavailable (cli._shipper import failed).",
-            status_code=503,
-        )
+    except ImportError as exc:
+        detail = f"Local shipper is unavailable (cli._shipper import failed): {exc}"
+        current_app.logger.error("auto_ship local shipper import failed run=%s: %s", run_id, exc)
+        _record_ship_run_auto_ship_failure(run_id, detail, compose_failed=True)
+        raise PromotionSpineError(detail, status_code=503)
     rc = run_local_shipper(api_url, run_id, capture_stdout=True)
     if rc != 0:
-        raise PromotionSpineError(f"Local shipper exited {rc}", status_code=500)
+        detail = f"Local shipper exited {rc}"
+        _record_ship_run_auto_ship_failure(run_id, detail, compose_failed=True)
+        raise PromotionSpineError(detail, status_code=500)
+
+
+def ship_ready_to_ship_run(project: Project, run_id: str, *, merge_method: str = "merge") -> dict[str, Any]:
+    """POST ship for a run already in ready_to_ship (used by auto-ship finalize)."""
+    project_id = str(project.id)
+    client = _test_client()
+    ship_resp, ship_code = _json_response(
+        client.post(
+            f"/api/projects/{project_id}/ship/runs/{run_id}/ship",
+            json={"merge_method": merge_method},
+        )
+    )
+    if ship_code >= 400:
+        raise PromotionSpineError(
+            (ship_resp or {}).get("error") or "ship-run failed",
+            status_code=ship_code,
+            detail=(ship_resp or {}).get("detail"),
+        )
+    db.session.refresh(project)
+    return ship_resp or {}
 
 
 def pick_auto_winner_attempt(project: Project, ticket: Ticket) -> TicketAttempt | None:

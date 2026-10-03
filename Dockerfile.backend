@@ -22,12 +22,21 @@ RUN case "$TARGETARCH" in \
 
 # Copy requirements first for better caching
 COPY backend/requirements.txt .
+COPY agent/requirements.txt /tmp/agent-requirements.txt
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies (backend + in-container shipper agent)
+RUN pip install --no-cache-dir -r requirements.txt -r /tmp/agent-requirements.txt
 
 # Copy application code
 COPY backend/ .
+
+# Local shipper (cli._shipper → agent.shipper) lives outside backend/ on the host.
+COPY cli/ /opt/terarchitect/cli/
+COPY agent/ /opt/terarchitect/agent/
+
+ENV TERARCHITECT_REPO_ROOT=/opt/terarchitect
+ENV PYTHONPATH=/opt/terarchitect:/opt/terarchitect/agent:/app
+ENV TERARCHITECT_IN_CONTAINER=1
 
 # Make wait-for-db.sh executable
 RUN chmod +x /app/wait-for-db.sh

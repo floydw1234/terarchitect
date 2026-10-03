@@ -4225,6 +4225,17 @@ def worker_ship_run_composed(run_id):
         candidate.status = "composed"
         candidate.composed_commit_hash = run.composed_commit_hash
     db.session.commit()
+    try:
+        from .services.auto_ship_service import maybe_finalize_auto_ship_after_compose
+
+        maybe_finalize_auto_ship_after_compose(run)
+        db.session.refresh(run)
+    except Exception as exc:
+        current_app.logger.error(
+            "auto_ship finalize hook failed for ship run %s: %s",
+            run_id,
+            exc,
+        )
     context = _ship_run_context(run)
     current_app.logger.info(
         "Ship run %s composed: PR #%s branch %s",
